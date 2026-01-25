@@ -5,13 +5,13 @@ import os
 import pytest
 from pydantic import BaseModel
 from sqlalchemy import ForeignKey, String
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from fastapi_toolsets.crud import CrudFactory
 
 # PostgreSQL connection URL from environment or default for local development
-DATABASE_URL = os.getenv(
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://postgres:postgres@localhost:5432/fastapi_toolsets_test",
 )
@@ -149,7 +149,7 @@ async def engine():
 
 
 @pytest.fixture(scope="function")
-async def db_session(engine) -> AsyncSession:
+async def db_session(engine):
     """Create a test database session with tables.
 
     Creates all tables before the test and drops them after.

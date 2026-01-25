@@ -62,7 +62,6 @@ from ..db import get_transaction
 from .fixtures import FixtureRegistry, LoadStrategy
 
 
-
 def register_fixtures(
     registry: FixtureRegistry,
     namespace: dict[str, Any],

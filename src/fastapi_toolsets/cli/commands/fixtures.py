@@ -44,9 +44,7 @@ def _get_db_context(ctx: typer.Context):
 
     get_db_context = getattr(config, "get_db_context", None)
     if get_db_context is None:
-        raise typer.BadParameter(
-            "Config module must have a 'get_db_context' function."
-        )
+        raise typer.BadParameter("Config module must have a 'get_db_context' function.")
 
     return get_db_context
 
@@ -56,7 +54,11 @@ def list_fixtures(
     ctx: typer.Context,
     context: Annotated[
         str | None,
-        typer.Option("--context", "-c", help="Filter by context (base, production, development, testing)."),
+        typer.Option(
+            "--context",
+            "-c",
+            help="Filter by context (base, production, development, testing).",
+        ),
     ] = None,
 ) -> None:
     """List all registered fixtures."""
@@ -110,7 +112,9 @@ def show_graph(
 
         typer.echo("\nFixture Dependency Graph:\n")
         for fixture in fixtures:
-            deps = f" -> [{', '.join(fixture.depends_on)}]" if fixture.depends_on else ""
+            deps = (
+                f" -> [{', '.join(fixture.depends_on)}]" if fixture.depends_on else ""
+            )
             typer.echo(f"  {fixture.name}{deps}")
 
 
@@ -119,15 +123,21 @@ def load(
     ctx: typer.Context,
     contexts: Annotated[
         list[str] | None,
-        typer.Argument(help="Contexts to load (base, production, development, testing)."),
+        typer.Argument(
+            help="Contexts to load (base, production, development, testing)."
+        ),
     ] = None,
     strategy: Annotated[
         str,
-        typer.Option("--strategy", "-s", help="Load strategy: merge, insert, skip_existing."),
+        typer.Option(
+            "--strategy", "-s", help="Load strategy: merge, insert, skip_existing."
+        ),
     ] = "merge",
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", "-n", help="Show what would be loaded without loading."),
+        typer.Option(
+            "--dry-run", "-n", help="Show what would be loaded without loading."
+        ),
     ] = False,
 ) -> None:
     """Load fixtures into the database."""
@@ -144,7 +154,9 @@ def load(
     try:
         load_strategy = LoadStrategy(strategy)
     except ValueError:
-        typer.echo(f"Invalid strategy: {strategy}. Use: merge, insert, skip_existing", err=True)
+        typer.echo(
+            f"Invalid strategy: {strategy}. Use: merge, insert, skip_existing", err=True
+        )
         raise typer.Exit(1)
 
     # Resolve what will be loaded
@@ -196,7 +208,9 @@ def show_fixture(
 
     typer.echo(f"\nFixture: {fixture.name}")
     typer.echo(f"Contexts: {', '.join(fixture.contexts)}")
-    typer.echo(f"Dependencies: {', '.join(fixture.depends_on) if fixture.depends_on else 'None'}")
+    typer.echo(
+        f"Dependencies: {', '.join(fixture.depends_on) if fixture.depends_on else 'None'}"
+    )
 
     # Show instances
     instances = list(fixture.func())

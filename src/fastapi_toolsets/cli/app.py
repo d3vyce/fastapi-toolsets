@@ -76,7 +76,9 @@ def _load_module_from_path(path: Path) -> object:
     path = path.resolve()
 
     # Add the parent directory to sys.path to support relative imports
-    parent_dir = str(path.parent.parent)  # Go up two levels (e.g., from app/cli_config.py to project root)
+    parent_dir = str(
+        path.parent.parent
+    )  # Go up two levels (e.g., from app/cli_config.py to project root)
     if parent_dir not in sys.path:
         sys.path.insert(0, parent_dir)
 

@@ -2,6 +2,8 @@
 
 FastAPI Toolsets provides production-ready utilities for FastAPI applications built with async SQLAlchemy and PostgreSQL. It includes generic CRUD operations, a fixture system with dependency resolution, a Django-like CLI, standardized API responses, and structured exception handling with automatic OpenAPI documentation.
 
+[![CI](https://github.com/d3vyce/fastapi-toolsets/actions/workflows/ci.yml/badge.svg)](https://github.com/d3vyce/fastapi-toolsets/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/d3vyce/fastapi-toolsets/graph/badge.svg)](https://codecov.io/gh/d3vyce/fastapi-toolsets)
 [![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
