@@ -1,0 +1,81 @@
+[project]
+name = "fastapi-toolsets"
+version = "0.1.0"
+description = "Reusable tools for FastAPI: async CRUD, fixtures, CLI, and standardized responses for SQLAlchemy + PostgreSQL"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "d3vyce", email = "contact@d3vyce.fr" }
+]
+keywords = ["fastapi", "sqlalchemy", "postgresql"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Framework :: FastAPI",
+    "Framework :: Pydantic",
+    "Framework :: SQLAlchemy",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
+dependencies = [
+    "fastapi>=0.100.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29.0",
+    "pydantic>=2.0",
+    "typer>=0.9.0",
+    "httpx>=0.25.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/d3vyce/fastapi-toolsets"
+Documentation = "https://fastapi-toolsets.d3vyce.fr/"
+Repository = "https://github.com/d3vyce/fastapi-toolsets"
+Issues = "https://github.com/d3vyce/fastapi-toolsets/issues"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-anyio>=0.0.0",
+    "coverage>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+dev = [
+    "fastapi-toolsets[test]",
+    "ruff>=0.1.0",
+    "ty>=0.0.1a0",
+]
+
+[project.scripts]
+fastapi-toolsets = "fastapi_toolsets.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["src/fastapi_toolsets"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
