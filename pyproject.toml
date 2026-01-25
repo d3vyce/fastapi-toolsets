@@ -15,7 +15,6 @@ classifiers = [
     "Framework :: AsyncIO",
     "Framework :: FastAPI",
     "Framework :: Pydantic",
-    "Framework :: SQLAlchemy",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Intended Audience :: System Administrators",
@@ -25,7 +24,9 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development",
     "Typing :: Typed",
 ]
 dependencies = [
