@@ -1,6 +1,6 @@
 [project]
 name = "fastapi-toolsets"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reusable tools for FastAPI: async CRUD, fixtures, CLI, and standardized responses for SQLAlchemy + PostgreSQL"
 readme = "README.md"
 license = "MIT"
