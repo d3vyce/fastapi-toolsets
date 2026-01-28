@@ -119,6 +119,25 @@ class RoleNotFoundError(NotFoundError):
     )
 
 
+class NoSearchableFieldsError(ApiException):
+    """Raised when search is requested but no searchable fields are available."""
+
+    api_error = ApiError(
+        code=400,
+        msg="No Searchable Fields",
+        desc="No searchable fields configured for this resource.",
+        err_code="SEARCH-400",
+    )
+
+    def __init__(self, model: type) -> None:
+        self.model = model
+        detail = (
+            f"No searchable fields found for model '{model.__name__}'. "
+            "Provide 'search_fields' parameter or set 'searchable_fields' on the CRUD class."
+        )
+        super().__init__(detail)
+
+
 def generate_error_responses(
     *errors: type[ApiException],
 ) -> dict[int | str, dict[str, Any]]:
