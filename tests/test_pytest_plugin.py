@@ -4,7 +4,8 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from fastapi_toolsets.fixtures import Context, FixtureRegistry, register_fixtures
+from fastapi_toolsets.fixtures import Context, FixtureRegistry
+from fastapi_toolsets.pytest import register_fixtures
 
 from .conftest import Role, RoleCrud, User, UserCrud
 
