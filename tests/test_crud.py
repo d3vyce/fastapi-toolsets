@@ -3,7 +3,8 @@
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_toolsets.crud import AsyncCrud, CrudFactory
+from fastapi_toolsets.crud import CrudFactory
+from fastapi_toolsets.crud.factory import AsyncCrud
 from fastapi_toolsets.exceptions import NotFoundError
 
 from .conftest import (

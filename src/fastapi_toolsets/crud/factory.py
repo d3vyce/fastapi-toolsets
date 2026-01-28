@@ -12,13 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.sql.roles import WhereHavingRole
 
-from .db import get_transaction
-from .exceptions import NotFoundError
-
-__all__ = [
-    "AsyncCrud",
-    "CrudFactory",
-]
+from ..db import get_transaction
+from ..exceptions import NotFoundError
+from .search import SearchConfig, SearchFieldType, build_search_filters
 
 ModelType = TypeVar("ModelType", bound=DeclarativeBase)
 
@@ -27,20 +23,10 @@ class AsyncCrud(Generic[ModelType]):
     """Generic async CRUD operations for SQLAlchemy models.
 
     Subclass this and set the `model` class variable, or use `CrudFactory`.
-
-    Example:
-        class UserCrud(AsyncCrud[User]):
-            model = User
-
-        # Or use the factory:
-        UserCrud = CrudFactory(User)
-
-        # Then use it:
-        user = await UserCrud.get(session, [User.id == 1])
-        users = await UserCrud.get_multi(session, limit=10)
     """
 
     model: ClassVar[type[DeclarativeBase]]
+    searchable_fields: ClassVar[Sequence[SearchFieldType] | None] = None
 
     @classmethod
     async def create(
@@ -313,6 +299,8 @@ class AsyncCrud(Generic[ModelType]):
         order_by: Any | None = None,
         page: int = 1,
         items_per_page: int = 20,
+        search: str | SearchConfig | None = None,
+        search_fields: Sequence[SearchFieldType] | None = None,
     ) -> dict[str, Any]:
         """Get paginated results with metadata.
 
@@ -323,23 +311,54 @@ class AsyncCrud(Generic[ModelType]):
             order_by: Column or list of columns to order by
             page: Page number (1-indexed)
             items_per_page: Number of items per page
+            search: Search query string or SearchConfig object
+            search_fields: Fields to search in (overrides class default)
 
         Returns:
             Dict with 'data' and 'pagination' keys
         """
-        filters = filters or []
+        filters = list(filters) if filters else []
         offset = (page - 1) * items_per_page
+        joins: list[Any] = []
 
-        items = await cls.get_multi(
-            session,
-            filters=filters,
-            load_options=load_options,
-            order_by=order_by,
-            limit=items_per_page,
-            offset=offset,
-        )
+        # Build search filters
+        if search:
+            search_filters, search_joins = build_search_filters(
+                cls.model,
+                search,
+                search_fields=search_fields,
+                default_fields=cls.searchable_fields,
+            )
+            filters.extend(search_filters)
+            joins.extend(search_joins)
 
-        total_count = await cls.count(session, filters=filters)
+        # Build query with joins
+        q = select(cls.model)
+        for join_rel in joins:
+            q = q.outerjoin(join_rel)
+
+        if filters:
+            q = q.where(and_(*filters))
+        if load_options:
+            q = q.options(*load_options)
+        if order_by is not None:
+            q = q.order_by(order_by)
+
+        q = q.offset(offset).limit(items_per_page)
+        result = await session.execute(q)
+        items = result.unique().scalars().all()
+
+        # Count query (with same joins and filters)
+        pk_col = cls.model.__mapper__.primary_key[0]
+        count_q = select(func.count(func.distinct(getattr(cls.model, pk_col.name))))
+        count_q = count_q.select_from(cls.model)
+        for join_rel in joins:
+            count_q = count_q.outerjoin(join_rel)
+        if filters:
+            count_q = count_q.where(and_(*filters))
+
+        count_result = await session.execute(count_q)
+        total_count = count_result.scalar_one()
 
         return {
             "data": items,
@@ -354,11 +373,14 @@ class AsyncCrud(Generic[ModelType]):
 
 def CrudFactory(
     model: type[ModelType],
+    *,
+    searchable_fields: Sequence[SearchFieldType] | None = None,
 ) -> type[AsyncCrud[ModelType]]:
     """Create a CRUD class for a specific model.
 
     Args:
         model: SQLAlchemy model class
+        searchable_fields: Optional list of searchable fields
 
     Returns:
         AsyncCrud subclass bound to the model
@@ -370,9 +392,25 @@ def CrudFactory(
         UserCrud = CrudFactory(User)
         PostCrud = CrudFactory(Post)
 
+        # With searchable fields:
+        UserCrud = CrudFactory(
+            User,
+            searchable_fields=[User.username, User.email, (User.role, Role.name)]
+        )
+
         # Usage
         user = await UserCrud.get(session, [User.id == 1])
         posts = await PostCrud.get_multi(session, filters=[Post.user_id == user.id])
+
+        # With search
+        result = await UserCrud.paginate(session, search="john")
     """
-    cls = type(f"Async{model.__name__}Crud", (AsyncCrud,), {"model": model})
+    cls = type(
+        f"Async{model.__name__}Crud",
+        (AsyncCrud,),
+        {
+            "model": model,
+            "searchable_fields": searchable_fields,
+        },
+    )
     return cast(type[AsyncCrud[ModelType]], cls)

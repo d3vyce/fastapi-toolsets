@@ -2,6 +2,7 @@ from .exceptions import (
     ApiException,
     ConflictError,
     ForbiddenError,
+    NoSearchableFieldsError,
     NotFoundError,
     UnauthorizedError,
     generate_error_responses,
@@ -14,6 +15,7 @@ __all__ = [
     "ApiException",
     "ConflictError",
     "ForbiddenError",
+    "NoSearchableFieldsError",
     "NotFoundError",
     "UnauthorizedError",
 ]
