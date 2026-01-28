@@ -7,6 +7,7 @@ from fastapi_toolsets.fixtures import (
     Context,
     FixtureRegistry,
     LoadStrategy,
+    get_obj_by_attr,
     load_fixtures,
     load_fixtures_by_context,
 )
@@ -330,6 +331,69 @@ class TestLoadFixtures:
         assert role is not None
         assert role.name == "original"
 
+    @pytest.mark.anyio
+    async def test_load_with_insert_strategy(self, db_session: AsyncSession):
+        """Load fixtures with INSERT strategy."""
+        registry = FixtureRegistry()
+
+        @registry.register
+        def roles():
+            return [
+                Role(id=1, name="admin"),
+                Role(id=2, name="user"),
+            ]
+
+        result = await load_fixtures(
+            db_session, registry, "roles", strategy=LoadStrategy.INSERT
+        )
+
+        assert "roles" in result
+        assert len(result["roles"]) == 2
+
+        from .conftest import RoleCrud
+
+        count = await RoleCrud.count(db_session)
+        assert count == 2
+
+    @pytest.mark.anyio
+    async def test_load_empty_fixture(self, db_session: AsyncSession):
+        """Load a fixture that returns an empty list."""
+        registry = FixtureRegistry()
+
+        @registry.register
+        def empty_roles():
+            return []
+
+        result = await load_fixtures(db_session, registry, "empty_roles")
+
+        assert "empty_roles" in result
+        assert result["empty_roles"] == []
+
+    @pytest.mark.anyio
+    async def test_load_multiple_fixtures_without_dependencies(
+        self, db_session: AsyncSession
+    ):
+        """Load multiple independent fixtures."""
+        registry = FixtureRegistry()
+
+        @registry.register
+        def roles():
+            return [Role(id=1, name="admin")]
+
+        @registry.register
+        def other_roles():
+            return [Role(id=2, name="user")]
+
+        result = await load_fixtures(db_session, registry, "roles", "other_roles")
+
+        assert "roles" in result
+        assert "other_roles" in result
+
+        from .conftest import RoleCrud
+
+        count = await RoleCrud.count(db_session)
+        assert count == 2
+
 
 class TestLoadFixturesByContext:
     """Tests for load_fixtures_by_context function."""
@@ -399,3 +463,55 @@ class TestLoadFixturesByContext:
 
         assert await RoleCrud.count(db_session) == 1
         assert await UserCrud.count(db_session) == 1
+
+
+class TestGetObjByAttr:
+    """Tests for get_obj_by_attr helper function."""
+
+    def setup_method(self):
+        """Set up test fixtures for each test."""
+        self.registry = FixtureRegistry()
+
+        @self.registry.register
+        def roles() -> list[Role]:
+            return [
+                Role(id=1, name="admin"),
+                Role(id=2, name="user"),
+                Role(id=3, name="moderator"),
+            ]
+
+        @self.registry.register(depends_on=["roles"])
+        def users() -> list[User]:
+            return [
+                User(id=1, username="alice", email="alice@example.com", role_id=1),
+                User(id=2, username="bob", email="bob@example.com", role_id=1),
+            ]
+
+        self.roles = roles
+        self.users = users
+
+    def test_get_by_id(self):
+        """Get an object by its id attribute."""
+        role = get_obj_by_attr(self.roles, "id", 1)
+        assert role.name == "admin"
+
+    def test_get_user_by_username(self):
+        """Get a user by username."""
+        user = get_obj_by_attr(self.users, "username", "bob")
+        assert user.id == 2
+        assert user.email == "bob@example.com"
+
+    def test_returns_first_match(self):
+        """Returns the first matching object when multiple could match."""
+        user = get_obj_by_attr(self.users, "role_id", 1)
+        assert user.username == "alice"
+
+    def test_no_match_raises_stop_iteration(self):
+        """Raises StopIteration when no object matches."""
+        with pytest.raises(StopIteration):
+            get_obj_by_attr(self.roles, "name", "nonexistent")
+
+    def test_no_match_on_wrong_value_type(self):
+        """Raises StopIteration when value type doesn't match."""
+        with pytest.raises(StopIteration):
+            get_obj_by_attr(self.roles, "id", "1")

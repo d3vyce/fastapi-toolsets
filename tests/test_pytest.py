@@ -1,12 +1,20 @@
-"""Tests for fastapi_toolsets.pytest_plugin module."""
+"""Tests for fastapi_toolsets.pytest module."""
 
 import pytest
+from fastapi import FastAPI
+from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from fastapi_toolsets.fixtures import Context, FixtureRegistry, register_fixtures
+from fastapi_toolsets.fixtures import Context, FixtureRegistry
+from fastapi_toolsets.pytest import (
+    create_async_client,
+    create_db_session,
+    register_fixtures,
+)
 
-from .conftest import Role, RoleCrud, User, UserCrud
+from .conftest import DATABASE_URL, Base, Role, RoleCrud, User, UserCrud
 
 test_registry = FixtureRegistry()
 
@@ -158,3 +166,102 @@ class TestGeneratedFixtures:
 
         assert len(roles) == 2
         assert len(users) == 2
+
+
+class TestCreateAsyncClient:
+    """Tests for create_async_client helper."""
+
+    @pytest.mark.anyio
+    async def test_creates_working_client(self):
+        """Client can make requests to the app."""
+        app = FastAPI()
+
+        @app.get("/health")
+        async def health():
+            return {"status": "ok"}
+
+        async with create_async_client(app) as client:
+            assert isinstance(client, AsyncClient)
+            response = await client.get("/health")
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+
+    @pytest.mark.anyio
+    async def test_custom_base_url(self):
+        """Client uses custom base URL."""
+        app = FastAPI()
+
+        @app.get("/test")
+        async def test_endpoint():
+            return {"url": "test"}
+
+        async with create_async_client(app, base_url="http://custom") as client:
+            assert str(client.base_url) == "http://custom"
+
+    @pytest.mark.anyio
+    async def test_client_closes_properly(self):
+        """Client is properly closed after context exit."""
+        app = FastAPI()
+
+        async with create_async_client(app) as client:
+            client_ref = client
+
+        assert client_ref.is_closed
+
+
+class TestCreateDbSession:
+    """Tests for create_db_session helper."""
+
+    @pytest.mark.anyio
+    async def test_creates_working_session(self):
+        """Session can perform database operations."""
+        async with create_db_session(DATABASE_URL, Base) as session:
+            assert isinstance(session, AsyncSession)
+
+            role = Role(id=9001, name="test_helper_role")
+            session.add(role)
+            await session.commit()
+
+            result = await session.execute(select(Role).where(Role.id == 9001))
+            fetched = result.scalar_one()
+            assert fetched.name == "test_helper_role"
+
+    @pytest.mark.anyio
+    async def test_tables_created_before_session(self):
+        """Tables exist when session is yielded."""
+        async with create_db_session(DATABASE_URL, Base) as session:
+            # Should not raise - tables exist
+            result = await session.execute(select(Role))
+            assert result.all() == []
+
+    @pytest.mark.anyio
+    async def test_tables_dropped_after_session(self):
+        """Tables are dropped after session closes when drop_tables=True."""
+        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
+            role = Role(id=9002, name="will_be_dropped")
+            session.add(role)
+            await session.commit()
+
+        # Verify tables were dropped by creating new session
+        async with create_db_session(DATABASE_URL, Base) as session:
+            result = await session.execute(select(Role))
+            assert result.all() == []
+
+    @pytest.mark.anyio
+    async def test_tables_preserved_when_drop_disabled(self):
+        """Tables are preserved when drop_tables=False."""
+        async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
+            role = Role(id=9003, name="preserved_role")
+            session.add(role)
+            await session.commit()
+
+        # Create another session without dropping
+        async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
+            result = await session.execute(select(Role).where(Role.id == 9003))
+            fetched = result.scalar_one_or_none()
+            assert fetched is not None
+            assert fetched.name == "preserved_role"
+
+        # Cleanup: drop tables manually
+        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as _:
+            pass

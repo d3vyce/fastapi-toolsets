@@ -59,7 +59,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
 from ..db import get_transaction
-from .fixtures import FixtureRegistry, LoadStrategy
+from ..fixtures import FixtureRegistry, LoadStrategy
 
 
 def register_fixtures(
