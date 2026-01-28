@@ -1,7 +1,7 @@
 """Generic async CRUD operations for SQLAlchemy models."""
 
 from ..exceptions import NoSearchableFieldsError
-from .factory import AsyncCrud, CrudFactory
+from .factory import CrudFactory
 from .search import (
     SearchConfig,
     SearchFieldType,
@@ -9,10 +9,9 @@ from .search import (
 )
 
 __all__ = [
-    "AsyncCrud",
     "CrudFactory",
+    "get_searchable_fields",
     "NoSearchableFieldsError",
     "SearchConfig",
     "SearchFieldType",
-    "get_searchable_fields",
 ]

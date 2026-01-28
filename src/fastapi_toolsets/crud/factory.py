@@ -23,17 +23,6 @@ class AsyncCrud(Generic[ModelType]):
     """Generic async CRUD operations for SQLAlchemy models.
 
     Subclass this and set the `model` class variable, or use `CrudFactory`.
-
-    Example:
-        class UserCrud(AsyncCrud[User]):
-            model = User
-
-        # Or use the factory:
-        UserCrud = CrudFactory(User)
-
-        # Then use it:
-        user = await UserCrud.get(session, [User.id == 1])
-        users = await UserCrud.get_multi(session, limit=10)
     """
 
     model: ClassVar[type[DeclarativeBase]]
