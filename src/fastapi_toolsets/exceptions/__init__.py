@@ -1,4 +1,5 @@
 from .exceptions import (
+    ApiError,
     ApiException,
     ConflictError,
     ForbiddenError,
@@ -10,11 +11,12 @@ from .exceptions import (
 from .handler import init_exceptions_handlers
 
 __all__ = [
-    "init_exceptions_handlers",
-    "generate_error_responses",
+    "ApiError",
     "ApiException",
     "ConflictError",
     "ForbiddenError",
+    "generate_error_responses",
+    "init_exceptions_handlers",
     "NoSearchableFieldsError",
     "NotFoundError",
     "UnauthorizedError",
