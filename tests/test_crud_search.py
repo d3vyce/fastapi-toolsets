@@ -1,5 +1,7 @@
 """Tests for CRUD search functionality."""
 
+import uuid
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -271,6 +273,27 @@ class TestPaginateSearch:
         assert result["pagination"]["total_count"] == 3
         usernames = [u.username for u in result["data"]]
         assert usernames == ["alice", "bob", "charlie"]
+
+    @pytest.mark.anyio
+    async def test_search_non_string_column(self, db_session: AsyncSession):
+        """Search on non-string columns (e.g., UUID) works via cast."""
+        user_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        await UserCrud.create(
+            db_session, UserCreate(id=user_id, username="john", email="john@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="jane", email="jane@test.com")
+        )
+
+        # Search by UUID (partial match)
+        result = await UserCrud.paginate(
+            db_session,
+            search="12345678",
+            search_fields=[User.id, User.username],
+        )
+
+        assert result["pagination"]["total_count"] == 1
+        assert result["data"][0].id == user_id
 
 
 class TestSearchConfig:

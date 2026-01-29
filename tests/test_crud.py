@@ -1,5 +1,7 @@
 """Tests for fastapi_toolsets.crud module."""
 
+import uuid
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,8 +91,9 @@ class TestCrudGet:
     @pytest.mark.anyio
     async def test_get_raises_not_found(self, db_session: AsyncSession):
         """Get raises NotFoundError for missing records."""
+        non_existent_id = uuid.uuid4()
         with pytest.raises(NotFoundError):
-            await RoleCrud.get(db_session, [Role.id == 99999])
+            await RoleCrud.get(db_session, [Role.id == non_existent_id])
 
     @pytest.mark.anyio
     async def test_get_with_multiple_filters(self, db_session: AsyncSession):
@@ -223,11 +226,12 @@ class TestCrudUpdate:
     @pytest.mark.anyio
     async def test_update_raises_not_found(self, db_session: AsyncSession):
         """Update raises NotFoundError for missing records."""
+        non_existent_id = uuid.uuid4()
         with pytest.raises(NotFoundError):
             await RoleCrud.update(
                 db_session,
                 RoleUpdate(name="new"),
-                [Role.id == 99999],
+                [Role.id == non_existent_id],
             )
 
     @pytest.mark.anyio
@@ -340,7 +344,8 @@ class TestCrudUpsert:
     @pytest.mark.anyio
     async def test_upsert_insert_new_record(self, db_session: AsyncSession):
         """Upsert inserts a new record when it doesn't exist."""
-        data = RoleCreate(id=1, name="upsert_new")
+        role_id = uuid.uuid4()
+        data = RoleCreate(id=role_id, name="upsert_new")
         role = await RoleCrud.upsert(
             db_session,
             data,
@@ -353,12 +358,13 @@ class TestCrudUpsert:
     @pytest.mark.anyio
     async def test_upsert_update_existing_record(self, db_session: AsyncSession):
         """Upsert updates an existing record."""
+        role_id = uuid.uuid4()
         # First insert
-        data = RoleCreate(id=100, name="original_name")
+        data = RoleCreate(id=role_id, name="original_name")
         await RoleCrud.upsert(db_session, data, index_elements=["id"])
 
         # Upsert with update
-        updated_data = RoleCreate(id=100, name="updated_name")
+        updated_data = RoleCreate(id=role_id, name="updated_name")
         role = await RoleCrud.upsert(
             db_session,
             updated_data,
@@ -370,22 +376,23 @@ class TestCrudUpsert:
         assert role.name == "updated_name"
 
         # Verify only one record exists
-        count = await RoleCrud.count(db_session, [Role.id == 100])
+        count = await RoleCrud.count(db_session, [Role.id == role_id])
         assert count == 1
 
     @pytest.mark.anyio
     async def test_upsert_do_nothing_on_conflict(self, db_session: AsyncSession):
         """Upsert does nothing on conflict when set_ is not provided."""
+        role_id = uuid.uuid4()
         # First insert
-        data = RoleCreate(id=200, name="do_nothing_original")
+        data = RoleCreate(id=role_id, name="do_nothing_original")
         await RoleCrud.upsert(db_session, data, index_elements=["id"])
 
         # Upsert without set_ (do nothing)
-        conflict_data = RoleCreate(id=200, name="do_nothing_conflict")
+        conflict_data = RoleCreate(id=role_id, name="do_nothing_conflict")
         await RoleCrud.upsert(db_session, conflict_data, index_elements=["id"])
 
         # Original value should be preserved
-        role = await RoleCrud.first(db_session, [Role.id == 200])
+        role = await RoleCrud.first(db_session, [Role.id == role_id])
         assert role is not None
         assert role.name == "do_nothing_original"
 
