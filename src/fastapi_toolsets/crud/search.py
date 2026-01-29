@@ -129,11 +129,12 @@ def build_search_filters(
         else:
             column = field
 
-        # Build the filter
+        # Build the filter (cast to String for non-text columns)
+        column_as_string = column.cast(String)
         if config.case_sensitive:
-            filters.append(column.like(f"%{query}%"))
+            filters.append(column_as_string.like(f"%{query}%"))
         else:
-            filters.append(column.ilike(f"%{query}%"))
+            filters.append(column_as_string.ilike(f"%{query}%"))
 
     if not filters:
         return [], []

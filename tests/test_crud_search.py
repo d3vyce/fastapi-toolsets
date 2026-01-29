@@ -1,11 +1,17 @@
 """Tests for CRUD search functionality."""
 
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+import uuid
 
-from fastapi_toolsets.crud import SearchConfig, get_searchable_fields
+import pytest
+from pydantic import BaseModel
+from sqlalchemy import String
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped, mapped_column
+
+from fastapi_toolsets.crud import CrudFactory, SearchConfig, get_searchable_fields
 
 from .conftest import (
+    Base,
     Role,
     RoleCreate,
     RoleCrud,
@@ -271,6 +277,41 @@ class TestPaginateSearch:
         assert result["pagination"]["total_count"] == 3
         usernames = [u.username for u in result["data"]]
         assert usernames == ["alice", "bob", "charlie"]
+
+    @pytest.mark.anyio
+    async def test_search_non_string_column(self, db_session: AsyncSession):
+        """Search on non-string columns (e.g., UUID) works via cast."""
+
+        class Account(Base):
+            __tablename__ = "accounts"
+            id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+            name: Mapped[str] = mapped_column(String(100))
+
+        class AccountCreate(BaseModel):
+            id: uuid.UUID | None = None
+            name: str
+
+        AccountCrud = CrudFactory(Account)
+
+        # Create table for this test
+        async with db_session.get_bind().begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        account_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        await AccountCrud.create(
+            db_session, AccountCreate(id=account_id, name="Test Account")
+        )
+        await AccountCrud.create(db_session, AccountCreate(name="Other Account"))
+
+        # Search by UUID (partial match)
+        result = await AccountCrud.paginate(
+            db_session,
+            search="12345678",
+            search_fields=[Account.id, Account.name],
+        )
+
+        assert result["pagination"]["total_count"] == 1
+        assert result["data"][0].id == account_id
 
 
 class TestSearchConfig:
