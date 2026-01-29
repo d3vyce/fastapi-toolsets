@@ -1,5 +1,7 @@
 """Tests for fastapi_toolsets.fixtures module."""
 
+import uuid
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,20 +59,22 @@ class TestFixtureRegistry:
     def test_register_with_decorator(self):
         """Register fixture with decorator."""
         registry = FixtureRegistry()
+        role_id = uuid.uuid4()
 
         @registry.register
         def roles():
-            return [Role(id=1, name="admin")]
+            return [Role(id=role_id, name="admin")]
 
         assert "roles" in [f.name for f in registry.get_all()]
 
     def test_register_with_custom_name(self):
         """Register fixture with custom name."""
         registry = FixtureRegistry()
+        role_id = uuid.uuid4()
 
         @registry.register(name="custom_roles")
         def roles():
-            return [Role(id=1, name="admin")]
+            return [Role(id=role_id, name="admin")]
 
         fixture = registry.get("custom_roles")
         assert fixture.name == "custom_roles"
@@ -78,14 +82,23 @@ class TestFixtureRegistry:
     def test_register_with_dependencies(self):
         """Register fixture with dependencies."""
         registry = FixtureRegistry()
+        role_id = uuid.uuid4()
+        user_id = uuid.uuid4()
 
         @registry.register
         def roles():
-            return [Role(id=1, name="admin")]
+            return [Role(id=role_id, name="admin")]
 
         @registry.register(depends_on=["roles"])
         def users():
-            return [User(id=1, username="admin", email="admin@test.com", role_id=1)]
+            return [
+                User(
+                    id=user_id,
+                    username="admin",
+                    email="admin@test.com",
+                    role_id=role_id,
+                )
+            ]
 
         fixture = registry.get("users")
         assert fixture.depends_on == ["roles"]
@@ -93,10 +106,11 @@ class TestFixtureRegistry:
     def test_register_with_contexts(self):
         """Register fixture with contexts."""
         registry = FixtureRegistry()
+        role_id = uuid.uuid4()
 
         @registry.register(contexts=[Context.TESTING])
         def test_data():
-            return [Role(id=100, name="test")]
+            return [Role(id=role_id, name="test")]
 
         fixture = registry.get("test_data")
         assert Context.TESTING.value in fixture.contexts
@@ -244,12 +258,14 @@ class TestLoadFixtures:
     async def test_load_single_fixture(self, db_session: AsyncSession):
         """Load a single fixture."""
         registry = FixtureRegistry()
+        role_id_1 = uuid.uuid4()
+        role_id_2 = uuid.uuid4()
 
         @registry.register
         def roles():
             return [
-                Role(id=1, name="admin"),
-                Role(id=2, name="user"),
+                Role(id=role_id_1, name="admin"),
+                Role(id=role_id_2, name="user"),
             ]
 
         result = await load_fixtures(db_session, registry, "roles")
@@ -266,14 +282,23 @@ class TestLoadFixtures:
     async def test_load_with_dependencies(self, db_session: AsyncSession):
         """Load fixtures with dependencies."""
         registry = FixtureRegistry()
+        role_id = uuid.uuid4()
+        user_id = uuid.uuid4()
 
         @registry.register
         def roles():
-            return [Role(id=1, name="admin")]
+            return [Role(id=role_id, name="admin")]
 
         @registry.register(depends_on=["roles"])
         def users():
-            return [User(id=1, username="admin", email="admin@test.com", role_id=1)]
+            return [
+                User(
+                    id=user_id,
+                    username="admin",
+                    email="admin@test.com",
+                    role_id=role_id,
+                )
+            ]
 
         result = await load_fixtures(db_session, registry, "users")
 
@@ -289,10 +314,11 @@ class TestLoadFixtures:
     async def test_load_with_merge_strategy(self, db_session: AsyncSession):
         """Load fixtures with MERGE strategy updates existing."""
         registry = FixtureRegistry()
+        role_id = uuid.uuid4()
 
         @registry.register
         def roles():
-            return [Role(id=1, name="admin")]
+            return [Role(id=role_id, name="admin")]
 
         await load_fixtures(db_session, registry, "roles", strategy=LoadStrategy.MERGE)
         await load_fixtures(db_session, registry, "roles", strategy=LoadStrategy.MERGE)
@@ -306,10 +332,11 @@ class TestLoadFixtures:
     async def test_load_with_skip_existing_strategy(self, db_session: AsyncSession):
         """Load fixtures with SKIP_EXISTING strategy."""
         registry = FixtureRegistry()
+        role_id = uuid.uuid4()
 
         @registry.register
         def roles():
-            return [Role(id=1, name="original")]
+            return [Role(id=role_id, name="original")]
 
         await load_fixtures(
             db_session, registry, "roles", strategy=LoadStrategy.SKIP_EXISTING
@@ -317,7 +344,7 @@ class TestLoadFixtures:
 
         @registry.register(name="roles_updated")
         def roles_v2():
-            return [Role(id=1, name="updated")]
+            return [Role(id=role_id, name="updated")]
 
         registry._fixtures["roles"] = registry._fixtures.pop("roles_updated")
 
@@ -327,7 +354,7 @@ class TestLoadFixtures:
 
         from .conftest import RoleCrud
 
-        role = await RoleCrud.first(db_session, [Role.id == 1])
+        role = await RoleCrud.first(db_session, [Role.id == role_id])
         assert role is not None
         assert role.name == "original"
 
@@ -335,12 +362,14 @@ class TestLoadFixtures:
     async def test_load_with_insert_strategy(self, db_session: AsyncSession):
         """Load fixtures with INSERT strategy."""
         registry = FixtureRegistry()
+        role_id_1 = uuid.uuid4()
+        role_id_2 = uuid.uuid4()
 
         @registry.register
         def roles():
             return [
-                Role(id=1, name="admin"),
-                Role(id=2, name="user"),
+                Role(id=role_id_1, name="admin"),
+                Role(id=role_id_2, name="user"),
             ]
 
         result = await load_fixtures(
@@ -375,14 +404,16 @@ class TestLoadFixtures:
     ):
         """Load multiple independent fixtures."""
         registry = FixtureRegistry()
+        role_id_1 = uuid.uuid4()
+        role_id_2 = uuid.uuid4()
 
         @registry.register
         def roles():
-            return [Role(id=1, name="admin")]
+            return [Role(id=role_id_1, name="admin")]
 
         @registry.register
         def other_roles():
-            return [Role(id=2, name="user")]
+            return [Role(id=role_id_2, name="user")]
 
         result = await load_fixtures(db_session, registry, "roles", "other_roles")
 
@@ -402,14 +433,16 @@ class TestLoadFixturesByContext:
     async def test_load_by_single_context(self, db_session: AsyncSession):
         """Load fixtures by single context."""
         registry = FixtureRegistry()
+        base_role_id = uuid.uuid4()
+        test_role_id = uuid.uuid4()
 
         @registry.register(contexts=[Context.BASE])
         def base_roles():
-            return [Role(id=1, name="base_role")]
+            return [Role(id=base_role_id, name="base_role")]
 
         @registry.register(contexts=[Context.TESTING])
         def test_roles():
-            return [Role(id=100, name="test_role")]
+            return [Role(id=test_role_id, name="test_role")]
 
         await load_fixtures_by_context(db_session, registry, Context.BASE)
 
@@ -418,7 +451,7 @@ class TestLoadFixturesByContext:
         count = await RoleCrud.count(db_session)
         assert count == 1
 
-        role = await RoleCrud.first(db_session, [Role.id == 1])
+        role = await RoleCrud.first(db_session, [Role.id == base_role_id])
         assert role is not None
         assert role.name == "base_role"
 
@@ -426,14 +459,16 @@ class TestLoadFixturesByContext:
     async def test_load_by_multiple_contexts(self, db_session: AsyncSession):
         """Load fixtures by multiple contexts."""
         registry = FixtureRegistry()
+        base_role_id = uuid.uuid4()
+        test_role_id = uuid.uuid4()
 
         @registry.register(contexts=[Context.BASE])
         def base_roles():
-            return [Role(id=1, name="base_role")]
+            return [Role(id=base_role_id, name="base_role")]
 
         @registry.register(contexts=[Context.TESTING])
         def test_roles():
-            return [Role(id=100, name="test_role")]
+            return [Role(id=test_role_id, name="test_role")]
 
         await load_fixtures_by_context(
             db_session, registry, Context.BASE, Context.TESTING
@@ -448,14 +483,23 @@ class TestLoadFixturesByContext:
     async def test_load_context_with_dependencies(self, db_session: AsyncSession):
         """Load context fixtures with cross-context dependencies."""
         registry = FixtureRegistry()
+        role_id = uuid.uuid4()
+        user_id = uuid.uuid4()
 
         @registry.register(contexts=[Context.BASE])
         def roles():
-            return [Role(id=1, name="admin")]
+            return [Role(id=role_id, name="admin")]
 
         @registry.register(depends_on=["roles"], contexts=[Context.TESTING])
         def test_users():
-            return [User(id=1, username="tester", email="test@test.com", role_id=1)]
+            return [
+                User(
+                    id=user_id,
+                    username="tester",
+                    email="test@test.com",
+                    role_id=role_id,
+                )
+            ]
 
         await load_fixtures_by_context(db_session, registry, Context.TESTING)
 
@@ -471,20 +515,41 @@ class TestGetObjByAttr:
     def setup_method(self):
         """Set up test fixtures for each test."""
         self.registry = FixtureRegistry()
+        self.role_id_1 = uuid.uuid4()
+        self.role_id_2 = uuid.uuid4()
+        self.role_id_3 = uuid.uuid4()
+        self.user_id_1 = uuid.uuid4()
+        self.user_id_2 = uuid.uuid4()
+
+        role_id_1 = self.role_id_1
+        role_id_2 = self.role_id_2
+        role_id_3 = self.role_id_3
+        user_id_1 = self.user_id_1
+        user_id_2 = self.user_id_2
 
         @self.registry.register
         def roles() -> list[Role]:
             return [
-                Role(id=1, name="admin"),
-                Role(id=2, name="user"),
-                Role(id=3, name="moderator"),
+                Role(id=role_id_1, name="admin"),
+                Role(id=role_id_2, name="user"),
+                Role(id=role_id_3, name="moderator"),
             ]
 
         @self.registry.register(depends_on=["roles"])
         def users() -> list[User]:
             return [
-                User(id=1, username="alice", email="alice@example.com", role_id=1),
-                User(id=2, username="bob", email="bob@example.com", role_id=1),
+                User(
+                    id=user_id_1,
+                    username="alice",
+                    email="alice@example.com",
+                    role_id=role_id_1,
+                ),
+                User(
+                    id=user_id_2,
+                    username="bob",
+                    email="bob@example.com",
+                    role_id=role_id_1,
+                ),
             ]
 
         self.roles = roles
@@ -492,18 +557,18 @@ class TestGetObjByAttr:
 
     def test_get_by_id(self):
         """Get an object by its id attribute."""
-        role = get_obj_by_attr(self.roles, "id", 1)
+        role = get_obj_by_attr(self.roles, "id", self.role_id_1)
         assert role.name == "admin"
 
     def test_get_user_by_username(self):
         """Get a user by username."""
         user = get_obj_by_attr(self.users, "username", "bob")
-        assert user.id == 2
+        assert user.id == self.user_id_2
         assert user.email == "bob@example.com"
 
     def test_returns_first_match(self):
         """Returns the first matching object when multiple could match."""
-        user = get_obj_by_attr(self.users, "role_id", 1)
+        user = get_obj_by_attr(self.users, "role_id", self.role_id_1)
         assert user.username == "alice"
 
     def test_no_match_raises_stop_iteration(self):
@@ -514,4 +579,4 @@ class TestGetObjByAttr:
     def test_no_match_on_wrong_value_type(self):
         """Raises StopIteration when value type doesn't match."""
         with pytest.raises(StopIteration):
-            get_obj_by_attr(self.roles, "id", "1")
+            get_obj_by_attr(self.roles, "id", "not-a-uuid")

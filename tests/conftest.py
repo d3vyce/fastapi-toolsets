@@ -1,10 +1,11 @@
 """Shared pytest fixtures for fastapi-utils tests."""
 
 import os
+import uuid
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, String, Uuid
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -33,7 +34,7 @@ class Role(Base):
 
     __tablename__ = "roles"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(50), unique=True)
 
     users: Mapped[list["User"]] = relationship(back_populates="role")
@@ -44,11 +45,13 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(50), unique=True)
     email: Mapped[str] = mapped_column(String(100), unique=True)
     is_active: Mapped[bool] = mapped_column(default=True)
-    role_id: Mapped[int | None] = mapped_column(ForeignKey("roles.id"), nullable=True)
+    role_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("roles.id"), nullable=True
+    )
 
     role: Mapped[Role | None] = relationship(back_populates="users")
 
@@ -58,11 +61,11 @@ class Post(Base):
 
     __tablename__ = "posts"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(String(1000), default="")
     is_published: Mapped[bool] = mapped_column(default=False)
-    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
 
 
 # =============================================================================
@@ -73,7 +76,7 @@ class Post(Base):
 class RoleCreate(BaseModel):
     """Schema for creating a role."""
 
-    id: int | None = None
+    id: uuid.UUID | None = None
     name: str
 
 
@@ -86,11 +89,11 @@ class RoleUpdate(BaseModel):
 class UserCreate(BaseModel):
     """Schema for creating a user."""
 
-    id: int | None = None
+    id: uuid.UUID | None = None
     username: str
     email: str
     is_active: bool = True
-    role_id: int | None = None
+    role_id: uuid.UUID | None = None
 
 
 class UserUpdate(BaseModel):
@@ -99,17 +102,17 @@ class UserUpdate(BaseModel):
     username: str | None = None
     email: str | None = None
     is_active: bool | None = None
-    role_id: int | None = None
+    role_id: uuid.UUID | None = None
 
 
 class PostCreate(BaseModel):
     """Schema for creating a post."""
 
-    id: int | None = None
+    id: uuid.UUID | None = None
     title: str
     content: str = ""
     is_published: bool = False
-    author_id: int
+    author_id: uuid.UUID
 
 
 class PostUpdate(BaseModel):
@@ -195,5 +198,5 @@ def sample_post_data() -> PostCreate:
         title="Test Post",
         content="Test content",
         is_published=True,
-        author_id=1,
+        author_id=uuid.uuid4(),
     )

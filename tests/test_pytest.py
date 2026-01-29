@@ -1,5 +1,7 @@
 """Tests for fastapi_toolsets.pytest module."""
 
+import uuid
+
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
@@ -18,27 +20,49 @@ from .conftest import DATABASE_URL, Base, Role, RoleCrud, User, UserCrud
 
 test_registry = FixtureRegistry()
 
+# Fixed UUIDs for test fixtures to allow consistent assertions
+ROLE_ADMIN_ID = uuid.UUID("00000000-0000-0000-0000-000000001000")
+ROLE_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000001001")
+USER_ADMIN_ID = uuid.UUID("00000000-0000-0000-0000-000000002000")
+USER_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000002001")
+USER_EXTRA_ID = uuid.UUID("00000000-0000-0000-0000-000000002002")
+
 
 @test_registry.register(contexts=[Context.BASE])
 def roles() -> list[Role]:
     return [
-        Role(id=1000, name="plugin_admin"),
-        Role(id=1001, name="plugin_user"),
+        Role(id=ROLE_ADMIN_ID, name="plugin_admin"),
+        Role(id=ROLE_USER_ID, name="plugin_user"),
     ]
 
 
 @test_registry.register(depends_on=["roles"], contexts=[Context.BASE])
 def users() -> list[User]:
     return [
-        User(id=1000, username="plugin_admin", email="padmin@test.com", role_id=1000),
-        User(id=1001, username="plugin_user", email="puser@test.com", role_id=1001),
+        User(
+            id=USER_ADMIN_ID,
+            username="plugin_admin",
+            email="padmin@test.com",
+            role_id=ROLE_ADMIN_ID,
+        ),
+        User(
+            id=USER_USER_ID,
+            username="plugin_user",
+            email="puser@test.com",
+            role_id=ROLE_USER_ID,
+        ),
     ]
 
 
 @test_registry.register(depends_on=["users"], contexts=[Context.TESTING])
 def extra_users() -> list[User]:
     return [
-        User(id=1002, username="plugin_extra", email="pextra@test.com", role_id=1001),
+        User(
+            id=USER_EXTRA_ID,
+            username="plugin_extra",
+            email="pextra@test.com",
+            role_id=ROLE_USER_ID,
+        ),
     ]
 
 
@@ -73,7 +97,7 @@ class TestGeneratedFixtures:
         assert fixture_roles[1].name == "plugin_user"
 
         # Verify data is in database
-        count = await RoleCrud.count(db_session, [Role.id >= 1000])
+        count = await RoleCrud.count(db_session)
         assert count == 2
 
     @pytest.mark.anyio
@@ -86,11 +110,11 @@ class TestGeneratedFixtures:
         assert len(fixture_users) == 2
 
         # Roles should also be in database
-        roles_count = await RoleCrud.count(db_session, [Role.id >= 1000])
+        roles_count = await RoleCrud.count(db_session)
         assert roles_count == 2
 
         # Users should be in database
-        users_count = await UserCrud.count(db_session, [User.id >= 1000])
+        users_count = await UserCrud.count(db_session)
         assert users_count == 2
 
     @pytest.mark.anyio
@@ -100,7 +124,7 @@ class TestGeneratedFixtures:
         """Fixture returns actual model instances."""
         user = fixture_users[0]
         assert isinstance(user, User)
-        assert user.id == 1000
+        assert user.id == USER_ADMIN_ID
         assert user.username == "plugin_admin"
 
     @pytest.mark.anyio
@@ -111,7 +135,7 @@ class TestGeneratedFixtures:
         # Load user with role relationship
         user = await UserCrud.get(
             db_session,
-            [User.id == 1000],
+            [User.id == USER_ADMIN_ID],
             load_options=[selectinload(User.role)],
         )
 
@@ -127,8 +151,8 @@ class TestGeneratedFixtures:
         assert len(fixture_extra_users) == 1
 
         # All fixtures should be loaded
-        roles_count = await RoleCrud.count(db_session, [Role.id >= 1000])
-        users_count = await UserCrud.count(db_session, [User.id >= 1000])
+        roles_count = await RoleCrud.count(db_session)
+        users_count = await UserCrud.count(db_session)
 
         assert roles_count == 2
         assert users_count == 3  # 2 from users + 1 from extra_users
@@ -141,8 +165,7 @@ class TestGeneratedFixtures:
         # Get all users loaded by fixture
         users = await UserCrud.get_multi(
             db_session,
-            filters=[User.id >= 1000],
-            order_by=User.id,
+            order_by=User.username,
         )
 
         assert len(users) == 2
@@ -161,8 +184,8 @@ class TestGeneratedFixtures:
         assert len(fixture_users) == 2
 
         # Both should be in database
-        roles = await RoleCrud.get_multi(db_session, filters=[Role.id >= 1000])
-        users = await UserCrud.get_multi(db_session, filters=[User.id >= 1000])
+        roles = await RoleCrud.get_multi(db_session)
+        users = await UserCrud.get_multi(db_session)
 
         assert len(roles) == 2
         assert len(users) == 2
@@ -215,14 +238,15 @@ class TestCreateDbSession:
     @pytest.mark.anyio
     async def test_creates_working_session(self):
         """Session can perform database operations."""
+        role_id = uuid.uuid4()
         async with create_db_session(DATABASE_URL, Base) as session:
             assert isinstance(session, AsyncSession)
 
-            role = Role(id=9001, name="test_helper_role")
+            role = Role(id=role_id, name="test_helper_role")
             session.add(role)
             await session.commit()
 
-            result = await session.execute(select(Role).where(Role.id == 9001))
+            result = await session.execute(select(Role).where(Role.id == role_id))
             fetched = result.scalar_one()
             assert fetched.name == "test_helper_role"
 
@@ -237,8 +261,9 @@ class TestCreateDbSession:
     @pytest.mark.anyio
     async def test_tables_dropped_after_session(self):
         """Tables are dropped after session closes when drop_tables=True."""
+        role_id = uuid.uuid4()
         async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
-            role = Role(id=9002, name="will_be_dropped")
+            role = Role(id=role_id, name="will_be_dropped")
             session.add(role)
             await session.commit()
 
@@ -250,14 +275,15 @@ class TestCreateDbSession:
     @pytest.mark.anyio
     async def test_tables_preserved_when_drop_disabled(self):
         """Tables are preserved when drop_tables=False."""
+        role_id = uuid.uuid4()
         async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
-            role = Role(id=9003, name="preserved_role")
+            role = Role(id=role_id, name="preserved_role")
             session.add(role)
             await session.commit()
 
         # Create another session without dropping
         async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
-            result = await session.execute(select(Role).where(Role.id == 9003))
+            result = await session.execute(select(Role).where(Role.id == role_id))
             fetched = result.scalar_one_or_none()
             assert fetched is not None
             assert fetched.name == "preserved_role"
