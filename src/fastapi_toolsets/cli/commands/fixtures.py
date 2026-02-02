@@ -1,6 +1,5 @@
 """Fixture management commands."""
 
-import asyncio
 from typing import Annotated
 
 import typer
@@ -9,6 +8,7 @@ from rich.table import Table
 
 from ...fixtures import Context, LoadStrategy, load_fixtures_by_context
 from ..config import CliConfig
+from ..utils import async_command
 
 fixture_cli = typer.Typer(
     name="fixtures",
@@ -56,7 +56,8 @@ def list_fixtures(
 
 
 @fixture_cli.command("load")
-def load(
+@async_command
+async def load(
     ctx: typer.Context,
     contexts: Annotated[
         list[str] | None,
@@ -109,12 +110,10 @@ def load(
         print("\n[Dry run - no changes made]")
         return
 
-    async def do_load():
-        async with get_db_context() as session:
-            return await load_fixtures_by_context(
-                session, registry, *context_list, strategy=load_strategy
-            )
+    async with get_db_context() as session:
+        result = await load_fixtures_by_context(
+            session, registry, *context_list, strategy=load_strategy
+        )
 
-    result = asyncio.run(do_load())
     total = sum(len(items) for items in result.values())
     print(f"\nLoaded {total} record(s) successfully.")

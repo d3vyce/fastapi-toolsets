@@ -1,15 +1,13 @@
 """Tests for fastapi_toolsets.cli module."""
 
-import os
 import sys
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
 from fastapi_toolsets.cli.config import CliConfig, _import_from_string, load_config
-from fastapi_toolsets.fixtures import Context, FixtureRegistry
+from fastapi_toolsets.cli.utils import async_command
+from fastapi_toolsets.fixtures import FixtureRegistry
 
 runner = CliRunner()
 
@@ -279,3 +277,46 @@ class TestCliWithoutFixturesConfig:
 
         assert result.exit_code == 0
         assert "fixtures" not in result.output
+
+
+class TestAsyncCommand:
+    """Tests for async_command decorator."""
+
+    def test_async_command_runs_coroutine(self):
+        """async_command runs async function synchronously."""
+
+        @async_command
+        async def async_func(value: int) -> int:
+            return value * 2
+
+        result = async_func(21)
+        assert result == 42
+
+    def test_async_command_preserves_signature(self):
+        """async_command preserves function signature."""
+
+        @async_command
+        async def async_func(name: str, count: int = 1) -> str:
+            return f"{name} x {count}"
+
+        result = async_func("test", count=3)
+        assert result == "test x 3"
+
+    def test_async_command_preserves_docstring(self):
+        """async_command preserves function docstring."""
+
+        @async_command
+        async def async_func() -> None:
+            """This is a docstring."""
+            pass
+
+        assert async_func.__doc__ == """This is a docstring."""
+
+    def test_async_command_preserves_name(self):
+        """async_command preserves function name."""
+
+        @async_command
+        async def my_async_function() -> None:
+            pass
+
+        assert my_async_function.__name__ == "my_async_function"
