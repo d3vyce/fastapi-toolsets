@@ -5,51 +5,22 @@ from typing import Annotated
 
 import typer
 
-from ...fixtures import Context, FixtureRegistry, LoadStrategy, load_fixtures_by_context
+from ...fixtures import Context, LoadStrategy, load_fixtures_by_context
+from ..config import CliConfig
 
-app = typer.Typer(
+fixture_cli = typer.Typer(
     name="fixtures",
     help="Manage database fixtures.",
     no_args_is_help=True,
 )
 
 
-def _get_registry(ctx: typer.Context) -> FixtureRegistry:
-    """Get fixture registry from context."""
-    config = ctx.obj.get("config_module") if ctx.obj else None
-    if config is None:
-        raise typer.BadParameter(
-            "No config provided. Use --config to specify a config file with a 'fixtures' registry."
-        )
-
-    registry = getattr(config, "fixtures", None)
-    if registry is None:
-        raise typer.BadParameter(
-            "Config module must have a 'fixtures' attribute (FixtureRegistry instance)."
-        )
-
-    if not isinstance(registry, FixtureRegistry):
-        raise typer.BadParameter(
-            f"'fixtures' must be a FixtureRegistry instance, got {type(registry).__name__}"
-        )
-
-    return registry
+def _get_config(ctx: typer.Context) -> CliConfig:
+    """Get CLI config from context."""
+    return ctx.obj["config"]
 
 
-def _get_db_context(ctx: typer.Context):
-    """Get database context manager from config."""
-    config = ctx.obj.get("config_module") if ctx.obj else None
-    if config is None:
-        raise typer.BadParameter("No config provided.")
-
-    get_db_context = getattr(config, "get_db_context", None)
-    if get_db_context is None:
-        raise typer.BadParameter("Config module must have a 'get_db_context' function.")
-
-    return get_db_context
-
-
-@app.command("list")
+@fixture_cli.command("list")
 def list_fixtures(
     ctx: typer.Context,
     context: Annotated[
@@ -62,12 +33,9 @@ def list_fixtures(
     ] = None,
 ) -> None:
     """List all registered fixtures."""
-    registry = _get_registry(ctx)
-
-    if context:
-        fixtures = registry.get_by_context(context)
-    else:
-        fixtures = registry.get_all()
+    config = _get_config(ctx)
+    registry = config.get_fixtures_registry()
+    fixtures = registry.get_by_context(context) if context else registry.get_all()
 
     if not fixtures:
         typer.echo("No fixtures found.")
@@ -84,7 +52,7 @@ def list_fixtures(
     typer.echo(f"\nTotal: {len(fixtures)} fixture(s)")
 
 
-@app.command("graph")
+@fixture_cli.command("graph")
 def show_graph(
     ctx: typer.Context,
     fixture_name: Annotated[
@@ -93,23 +61,23 @@ def show_graph(
     ] = None,
 ) -> None:
     """Show fixture dependency graph."""
-    registry = _get_registry(ctx)
+    config = _get_config(ctx)
+    registry = config.get_fixtures_registry()
 
     if fixture_name:
         try:
             order = registry.resolve_dependencies(fixture_name)
-            typer.echo(f"\nDependency chain for '{fixture_name}':\n")
-            for i, name in enumerate(order):
-                indent = "  " * i
-                arrow = "└─> " if i > 0 else ""
-                typer.echo(f"{indent}{arrow}{name}")
         except KeyError:
             typer.echo(f"Fixture '{fixture_name}' not found.", err=True)
             raise typer.Exit(1)
-    else:
-        # Show full graph
-        fixtures = registry.get_all()
 
+        typer.echo(f"\nDependency chain for '{fixture_name}':\n")
+        for i, name in enumerate(order):
+            indent = "  " * i
+            arrow = "└─> " if i > 0 else ""
+            typer.echo(f"{indent}{arrow}{name}")
+    else:
+        fixtures = registry.get_all()
         typer.echo("\nFixture Dependency Graph:\n")
         for fixture in fixtures:
             deps = (
@@ -118,7 +86,7 @@ def show_graph(
             typer.echo(f"  {fixture.name}{deps}")
 
 
-@app.command("load")
+@fixture_cli.command("load")
 def load(
     ctx: typer.Context,
     contexts: Annotated[
@@ -141,16 +109,12 @@ def load(
     ] = False,
 ) -> None:
     """Load fixtures into the database."""
-    registry = _get_registry(ctx)
-    get_db_context = _get_db_context(ctx)
+    config = _get_config(ctx)
+    registry = config.get_fixtures_registry()
+    get_db_context = config.get_db_context()
 
-    # Parse contexts
-    if contexts:
-        context_list = contexts
-    else:
-        context_list = [Context.BASE]
+    context_list = contexts if contexts else [Context.BASE]
 
-    # Parse strategy
     try:
         load_strategy = LoadStrategy(strategy)
     except ValueError:
@@ -159,7 +123,6 @@ def load(
         )
         raise typer.Exit(1)
 
-    # Resolve what will be loaded
     ordered = registry.resolve_context_dependencies(*context_list)
 
     if not ordered:
@@ -181,24 +144,23 @@ def load(
 
     async def do_load():
         async with get_db_context() as session:
-            result = await load_fixtures_by_context(
+            return await load_fixtures_by_context(
                 session, registry, *context_list, strategy=load_strategy
             )
-            return result
 
     result = asyncio.run(do_load())
-
     total = sum(len(items) for items in result.values())
     typer.echo(f"\nLoaded {total} record(s) successfully.")
 
 
-@app.command("show")
+@fixture_cli.command("show")
 def show_fixture(
     ctx: typer.Context,
     name: Annotated[str, typer.Argument(help="Fixture name to show.")],
 ) -> None:
     """Show details of a specific fixture."""
-    registry = _get_registry(ctx)
+    config = _get_config(ctx)
+    registry = config.get_fixtures_registry()
 
     try:
         fixture = registry.get(name)
@@ -212,12 +174,11 @@ def show_fixture(
         f"Dependencies: {', '.join(fixture.depends_on) if fixture.depends_on else 'None'}"
     )
 
-    # Show instances
     instances = list(fixture.func())
     if instances:
         model_name = type(instances[0]).__name__
         typer.echo(f"\nInstances ({len(instances)} {model_name}):")
-        for instance in instances[:10]:  # Limit to 10
+        for instance in instances[:10]:
             typer.echo(f"  - {instance!r}")
         if len(instances) > 10:
             typer.echo(f"  ... and {len(instances) - 10} more")
