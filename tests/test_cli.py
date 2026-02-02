@@ -235,52 +235,6 @@ class TestFixturesCli:
         assert "users" not in result.output
         assert "Total: 1 fixture(s)" in result.output
 
-    def test_fixtures_show(self, cli_env):
-        """fixtures show displays fixture details."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "show", "roles"])
-
-        assert result.exit_code == 0
-        assert "Fixture: roles" in result.output
-        assert "Contexts: base" in result.output
-        assert "Dependencies: None" in result.output
-        assert "Instances (2" in result.output
-
-    def test_fixtures_show_not_found(self, cli_env):
-        """fixtures show with unknown fixture shows error."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "show", "nonexistent"])
-
-        assert result.exit_code == 1
-        assert "not found" in result.output
-
-    def test_fixtures_graph(self, cli_env):
-        """fixtures graph shows dependency graph."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "graph"])
-
-        assert result.exit_code == 0
-        assert "Fixture Dependency Graph" in result.output
-        assert "roles" in result.output
-        assert "users" in result.output
-
-    def test_fixtures_graph_single(self, cli_env):
-        """fixtures graph with fixture name shows dependency chain."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "graph", "users"])
-
-        assert result.exit_code == 0
-        assert "Dependency chain for 'users'" in result.output
-        assert "roles" in result.output
-
-    def test_fixtures_graph_not_found(self, cli_env):
-        """fixtures graph with unknown fixture shows error."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "graph", "nonexistent"])
-
-        assert result.exit_code == 1
-        assert "not found" in result.output
-
     def test_fixtures_load_dry_run(self, cli_env):
         """fixtures load --dry-run shows what would be loaded."""
         tmp_path, cli = cli_env

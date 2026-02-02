@@ -4,6 +4,8 @@ import asyncio
 from typing import Annotated
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from ...fixtures import Context, LoadStrategy, load_fixtures_by_context
 from ..config import CliConfig
@@ -13,6 +15,7 @@ fixture_cli = typer.Typer(
     help="Manage database fixtures.",
     no_args_is_help=True,
 )
+console = Console()
 
 
 def _get_config(ctx: typer.Context) -> CliConfig:
@@ -38,52 +41,18 @@ def list_fixtures(
     fixtures = registry.get_by_context(context) if context else registry.get_all()
 
     if not fixtures:
-        typer.echo("No fixtures found.")
+        print("No fixtures found.")
         return
 
-    typer.echo(f"\n{'Name':<30} {'Contexts':<30} {'Dependencies'}")
-    typer.echo("-" * 80)
+    table = Table("Name", "Contexts", "Dependencies")
 
     for fixture in fixtures:
         contexts = ", ".join(fixture.contexts)
         deps = ", ".join(fixture.depends_on) if fixture.depends_on else "-"
-        typer.echo(f"{fixture.name:<30} {contexts:<30} {deps}")
+        table.add_row(fixture.name, contexts, deps)
 
-    typer.echo(f"\nTotal: {len(fixtures)} fixture(s)")
-
-
-@fixture_cli.command("graph")
-def show_graph(
-    ctx: typer.Context,
-    fixture_name: Annotated[
-        str | None,
-        typer.Argument(help="Show dependencies for a specific fixture."),
-    ] = None,
-) -> None:
-    """Show fixture dependency graph."""
-    config = _get_config(ctx)
-    registry = config.get_fixtures_registry()
-
-    if fixture_name:
-        try:
-            order = registry.resolve_dependencies(fixture_name)
-        except KeyError:
-            typer.echo(f"Fixture '{fixture_name}' not found.", err=True)
-            raise typer.Exit(1)
-
-        typer.echo(f"\nDependency chain for '{fixture_name}':\n")
-        for i, name in enumerate(order):
-            indent = "  " * i
-            arrow = "└─> " if i > 0 else ""
-            typer.echo(f"{indent}{arrow}{name}")
-    else:
-        fixtures = registry.get_all()
-        typer.echo("\nFixture Dependency Graph:\n")
-        for fixture in fixtures:
-            deps = (
-                f" -> [{', '.join(fixture.depends_on)}]" if fixture.depends_on else ""
-            )
-            typer.echo(f"  {fixture.name}{deps}")
+    console.print(table)
+    print(f"\nTotal: {len(fixtures)} fixture(s)")
 
 
 @fixture_cli.command("load")
@@ -126,21 +95,19 @@ def load(
     ordered = registry.resolve_context_dependencies(*context_list)
 
     if not ordered:
-        typer.echo("No fixtures to load for the specified context(s).")
+        print("No fixtures to load for the specified context(s).")
         return
 
-    typer.echo(f"\nFixtures to load ({load_strategy.value} strategy):")
+    print(f"\nFixtures to load ({load_strategy.value} strategy):")
     for name in ordered:
         fixture = registry.get(name)
         instances = list(fixture.func())
         model_name = type(instances[0]).__name__ if instances else "?"
-        typer.echo(f"  - {name}: {len(instances)} {model_name}(s)")
+        print(f"  - {name}: {len(instances)} {model_name}(s)")
 
     if dry_run:
-        typer.echo("\n[Dry run - no changes made]")
+        print("\n[Dry run - no changes made]")
         return
-
-    typer.echo("\nLoading...")
 
     async def do_load():
         async with get_db_context() as session:
@@ -150,37 +117,4 @@ def load(
 
     result = asyncio.run(do_load())
     total = sum(len(items) for items in result.values())
-    typer.echo(f"\nLoaded {total} record(s) successfully.")
-
-
-@fixture_cli.command("show")
-def show_fixture(
-    ctx: typer.Context,
-    name: Annotated[str, typer.Argument(help="Fixture name to show.")],
-) -> None:
-    """Show details of a specific fixture."""
-    config = _get_config(ctx)
-    registry = config.get_fixtures_registry()
-
-    try:
-        fixture = registry.get(name)
-    except KeyError:
-        typer.echo(f"Fixture '{name}' not found.", err=True)
-        raise typer.Exit(1)
-
-    typer.echo(f"\nFixture: {fixture.name}")
-    typer.echo(f"Contexts: {', '.join(fixture.contexts)}")
-    typer.echo(
-        f"Dependencies: {', '.join(fixture.depends_on) if fixture.depends_on else 'None'}"
-    )
-
-    instances = list(fixture.func())
-    if instances:
-        model_name = type(instances[0]).__name__
-        typer.echo(f"\nInstances ({len(instances)} {model_name}):")
-        for instance in instances[:10]:
-            typer.echo(f"  - {instance!r}")
-        if len(instances) > 10:
-            typer.echo(f"  ... and {len(instances) - 10} more")
-    else:
-        typer.echo("\nNo instances (empty fixture)")
+    print(f"\nLoaded {total} record(s) successfully.")
