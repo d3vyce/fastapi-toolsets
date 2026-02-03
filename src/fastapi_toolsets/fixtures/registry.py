@@ -50,8 +50,16 @@ class FixtureRegistry:
             ]
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        contexts: list[str | Context] | None = None,
+    ) -> None:
         self._fixtures: dict[str, Fixture] = {}
+        self._default_contexts: list[str] | None = (
+            [c.value if isinstance(c, Context) else c for c in contexts]
+            if contexts
+            else None
+        )
 
     def register(
         self,
@@ -85,10 +93,14 @@ class FixtureRegistry:
             fn: Callable[[], Sequence[DeclarativeBase]],
         ) -> Callable[[], Sequence[DeclarativeBase]]:
             fixture_name = name or cast(Any, fn).__name__
-            fixture_contexts = [
-                c.value if isinstance(c, Context) else c
-                for c in (contexts or [Context.BASE])
-            ]
+            if contexts is not None:
+                fixture_contexts = [
+                    c.value if isinstance(c, Context) else c for c in contexts
+                ]
+            elif self._default_contexts is not None:
+                fixture_contexts = self._default_contexts
+            else:
+                fixture_contexts = [Context.BASE.value]
 
             self._fixtures[fixture_name] = Fixture(
                 name=fixture_name,
@@ -101,6 +113,32 @@ class FixtureRegistry:
         if func is not None:
             return decorator(func)
         return decorator
+
+    def include_registry(self, registry: "FixtureRegistry") -> None:
+        """Include another `FixtureRegistry` in the same current `FixtureRegistry`.
+
+        Args:
+            registry: The `FixtureRegistry` to include
+
+        Raises:
+            ValueError: If a fixture name already exists in the current registry
+
+        Example:
+            registry = FixtureRegistry()
+            dev_registry = FixtureRegistry()
+
+            @dev_registry.register
+            def dev_data():
+                return [...]
+
+            registry.include_registry(registry=dev_registry)
+        """
+        for name, fixture in registry._fixtures.items():
+            if name in self._fixtures:
+                raise ValueError(
+                    f"Fixture '{name}' already exists in the current registry"
+                )
+            self._fixtures[name] = fixture
 
     def get(self, name: str) -> Fixture:
         """Get a fixture by name."""
