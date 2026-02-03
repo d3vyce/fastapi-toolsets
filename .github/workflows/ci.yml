@@ -89,12 +89,20 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
         run: |
-          uv run pytest --cov --cov-report=xml --cov-report=term-missing
+          uv run pytest --cov --cov-report=xml --cov-report=term-missing  --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.14'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: coverage
           files: ./coverage.xml
           fail_ci_if_error: false
+
+      - name: Upload test results to Codecov
+        if: matrix.python-version == '3.14'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
