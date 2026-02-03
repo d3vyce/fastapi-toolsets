@@ -159,6 +159,178 @@ class TestFixtureRegistry:
         assert names == {"test_data"}
 
 
+class TestIncludeRegistry:
+    """Tests for FixtureRegistry.include_registry method."""
+
+    def test_include_empty_registry(self):
+        """Include an empty registry does nothing."""
+        main_registry = FixtureRegistry()
+        other_registry = FixtureRegistry()
+
+        @main_registry.register
+        def roles():
+            return []
+
+        main_registry.include_registry(other_registry)
+
+        assert len(main_registry.get_all()) == 1
+
+    def test_include_registry_adds_fixtures(self):
+        """Include registry adds all fixtures from the other registry."""
+        main_registry = FixtureRegistry()
+        other_registry = FixtureRegistry()
+
+        @main_registry.register
+        def roles():
+            return []
+
+        @other_registry.register
+        def users():
+            return []
+
+        @other_registry.register
+        def posts():
+            return []
+
+        main_registry.include_registry(other_registry)
+
+        names = {f.name for f in main_registry.get_all()}
+        assert names == {"roles", "users", "posts"}
+
+    def test_include_registry_preserves_dependencies(self):
+        """Include registry preserves fixture dependencies."""
+        main_registry = FixtureRegistry()
+        other_registry = FixtureRegistry()
+
+        @main_registry.register
+        def roles():
+            return []
+
+        @other_registry.register(depends_on=["roles"])
+        def users():
+            return []
+
+        main_registry.include_registry(other_registry)
+
+        fixture = main_registry.get("users")
+        assert fixture.depends_on == ["roles"]
+
+    def test_include_registry_preserves_contexts(self):
+        """Include registry preserves fixture contexts."""
+        main_registry = FixtureRegistry()
+        other_registry = FixtureRegistry()
+
+        @other_registry.register(contexts=[Context.TESTING, Context.DEVELOPMENT])
+        def test_data():
+            return []
+
+        main_registry.include_registry(other_registry)
+
+        fixture = main_registry.get("test_data")
+        assert Context.TESTING.value in fixture.contexts
+        assert Context.DEVELOPMENT.value in fixture.contexts
+
+    def test_include_registry_raises_on_duplicate(self):
+        """Include registry raises ValueError on duplicate fixture names."""
+        main_registry = FixtureRegistry()
+        other_registry = FixtureRegistry()
+
+        @main_registry.register(name="roles")
+        def roles_main():
+            return []
+
+        @other_registry.register(name="roles")
+        def roles_other():
+            return []
+
+        with pytest.raises(ValueError, match="already exists"):
+            main_registry.include_registry(other_registry)
+
+    def test_include_multiple_registries(self):
+        """Include multiple registries sequentially."""
+        main_registry = FixtureRegistry()
+        dev_registry = FixtureRegistry()
+        test_registry = FixtureRegistry()
+
+        @main_registry.register
+        def base():
+            return []
+
+        @dev_registry.register
+        def dev_data():
+            return []
+
+        @test_registry.register
+        def test_data():
+            return []
+
+        main_registry.include_registry(dev_registry)
+        main_registry.include_registry(test_registry)
+
+        names = {f.name for f in main_registry.get_all()}
+        assert names == {"base", "dev_data", "test_data"}
+
+
+class TestDefaultContexts:
+    """Tests for FixtureRegistry default contexts."""
+
+    def test_default_contexts_applied_to_fixtures(self):
+        """Default contexts are applied when no contexts specified."""
+        registry = FixtureRegistry(contexts=[Context.TESTING])
+
+        @registry.register
+        def test_data():
+            return []
+
+        fixture = registry.get("test_data")
+        assert fixture.contexts == [Context.TESTING.value]
+
+    def test_explicit_contexts_override_default(self):
+        """Explicit contexts override default contexts."""
+        registry = FixtureRegistry(contexts=[Context.TESTING])
+
+        @registry.register(contexts=[Context.PRODUCTION])
+        def prod_data():
+            return []
+
+        fixture = registry.get("prod_data")
+        assert fixture.contexts == [Context.PRODUCTION.value]
+
+    def test_no_default_contexts_uses_base(self):
+        """Without default contexts, BASE is used."""
+        registry = FixtureRegistry()
+
+        @registry.register
+        def data():
+            return []
+
+        fixture = registry.get("data")
+        assert fixture.contexts == [Context.BASE.value]
+
+    def test_multiple_default_contexts(self):
+        """Multiple default contexts are applied."""
+        registry = FixtureRegistry(contexts=[Context.DEVELOPMENT, Context.TESTING])
+
+        @registry.register
+        def dev_test_data():
+            return []
+
+        fixture = registry.get("dev_test_data")
+        assert Context.DEVELOPMENT.value in fixture.contexts
+        assert Context.TESTING.value in fixture.contexts
+
+    def test_default_contexts_with_string_values(self):
+        """Default contexts work with string values."""
+        registry = FixtureRegistry(contexts=["custom_context"])
+
+        @registry.register
+        def custom_data():
+            return []
+
+        fixture = registry.get("custom_data")
+        assert fixture.contexts == ["custom_context"]
+
+
 class TestDependencyResolution:
     """Tests for fixture dependency resolution."""
 
