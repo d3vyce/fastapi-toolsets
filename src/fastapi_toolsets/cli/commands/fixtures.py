@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ...fixtures import Context, LoadStrategy, load_fixtures_by_context
-from ..config import CliConfig
+from ..config import get_db_context, get_fixtures_registry
 from ..utils import async_command
 
 fixture_cli = typer.Typer(
@@ -18,27 +18,21 @@ fixture_cli = typer.Typer(
 console = Console()
 
 
-def _get_config(ctx: typer.Context) -> CliConfig:
-    """Get CLI config from context."""
-    return ctx.obj["config"]
-
-
 @fixture_cli.command("list")
 def list_fixtures(
     ctx: typer.Context,
     context: Annotated[
-        str | None,
+        Context | None,
         typer.Option(
             "--context",
             "-c",
-            help="Filter by context (base, production, development, testing).",
+            help="Filter by context.",
         ),
     ] = None,
 ) -> None:
     """List all registered fixtures."""
-    config = _get_config(ctx)
-    registry = config.get_fixtures_registry()
-    fixtures = registry.get_by_context(context) if context else registry.get_all()
+    registry = get_fixtures_registry()
+    fixtures = registry.get_by_context(context.value) if context else registry.get_all()
 
     if not fixtures:
         print("No fixtures found.")
@@ -60,17 +54,13 @@ def list_fixtures(
 async def load(
     ctx: typer.Context,
     contexts: Annotated[
-        list[str] | None,
-        typer.Argument(
-            help="Contexts to load (base, production, development, testing)."
-        ),
+        list[Context] | None,
+        typer.Argument(help="Contexts to load."),
     ] = None,
     strategy: Annotated[
-        str,
-        typer.Option(
-            "--strategy", "-s", help="Load strategy: merge, insert, skip_existing."
-        ),
-    ] = "merge",
+        LoadStrategy,
+        typer.Option("--strategy", "-s", help="Load strategy."),
+    ] = LoadStrategy.MERGE,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -79,19 +69,10 @@ async def load(
     ] = False,
 ) -> None:
     """Load fixtures into the database."""
-    config = _get_config(ctx)
-    registry = config.get_fixtures_registry()
-    get_db_context = config.get_db_context()
+    registry = get_fixtures_registry()
+    db_context = get_db_context()
 
-    context_list = contexts if contexts else [Context.BASE]
-
-    try:
-        load_strategy = LoadStrategy(strategy)
-    except ValueError:
-        typer.echo(
-            f"Invalid strategy: {strategy}. Use: merge, insert, skip_existing", err=True
-        )
-        raise typer.Exit(1)
+    context_list = [c.value for c in contexts] if contexts else [Context.BASE]
 
     ordered = registry.resolve_context_dependencies(*context_list)
 
@@ -99,7 +80,7 @@ async def load(
         print("No fixtures to load for the specified context(s).")
         return
 
-    print(f"\nFixtures to load ({load_strategy.value} strategy):")
+    print(f"\nFixtures to load ({strategy.value} strategy):")
     for name in ordered:
         fixture = registry.get(name)
         instances = list(fixture.func())
@@ -110,9 +91,9 @@ async def load(
         print("\n[Dry run - no changes made]")
         return
 
-    async with get_db_context() as session:
+    async with db_context() as session:
         result = await load_fixtures_by_context(
-            session, registry, *context_list, strategy=load_strategy
+            session, registry, *context_list, strategy=strategy
         )
 
     total = sum(len(items) for items in result.values())

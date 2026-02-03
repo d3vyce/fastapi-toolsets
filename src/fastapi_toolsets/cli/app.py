@@ -2,17 +2,23 @@
 
 import typer
 
-from .config import load_config
+from .config import get_custom_cli
+from .pyproject import load_pyproject
 
-cli = typer.Typer(
-    name="manager",
-    help="CLI utilities for FastAPI projects.",
-    no_args_is_help=True,
-)
+# Use custom CLI if configured, otherwise create default one
+_custom_cli = get_custom_cli()
 
-_config = load_config()
+if _custom_cli is not None:
+    cli = _custom_cli
+else:
+    cli = typer.Typer(
+        name="manager",
+        help="CLI utilities for FastAPI projects.",
+        no_args_is_help=True,
+    )
 
-if _config.fixtures:
+_config = load_pyproject()
+if _config.get("fixtures") and _config.get("db_context"):
     from .commands.fixtures import fixture_cli
 
     cli.add_typer(fixture_cli, name="fixtures")
@@ -22,4 +28,3 @@ if _config.fixtures:
 def main(ctx: typer.Context) -> None:
     """FastAPI utilities CLI."""
     ctx.ensure_object(dict)
-    ctx.obj["config"] = _config

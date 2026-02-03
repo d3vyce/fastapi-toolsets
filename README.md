@@ -28,7 +28,7 @@ uv add fastapi-toolsets
 
 - **CRUD**: Generic async CRUD operations with `CrudFactory`
 - **Fixtures**: Fixture system with dependency management, context support and pytest integration
-- **CLI**: Django-like command-line interface for fixtures and custom commands
+- **CLI**: Django-like command-line interface with fixture management and custom commands support
 - **Standardized API Responses**: Consistent response format across your API
 - **Exception Handling**: Structured error responses with automatic OpenAPI documentation
 
