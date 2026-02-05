@@ -39,7 +39,7 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
-        assert result["pagination"]["total_count"] == 2
+        assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
     async def test_search_multiple_columns(self, db_session: AsyncSession):
@@ -57,7 +57,7 @@ class TestPaginateSearch:
             search_fields=[User.username, User.email],
         )
 
-        assert result["pagination"]["total_count"] == 2
+        assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
     async def test_search_relationship_depth1(self, db_session: AsyncSession):
@@ -84,7 +84,7 @@ class TestPaginateSearch:
             search_fields=[(User.role, Role.name)],
         )
 
-        assert result["pagination"]["total_count"] == 2
+        assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
     async def test_search_mixed_direct_and_relation(self, db_session: AsyncSession):
@@ -102,7 +102,7 @@ class TestPaginateSearch:
             search_fields=[User.username, (User.role, Role.name)],
         )
 
-        assert result["pagination"]["total_count"] == 1
+        assert result.pagination.total_count == 1
 
     @pytest.mark.anyio
     async def test_search_case_insensitive(self, db_session: AsyncSession):
@@ -117,7 +117,7 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
-        assert result["pagination"]["total_count"] == 1
+        assert result.pagination.total_count == 1
 
     @pytest.mark.anyio
     async def test_search_case_sensitive(self, db_session: AsyncSession):
@@ -132,7 +132,7 @@ class TestPaginateSearch:
             search=SearchConfig(query="johndoe", case_sensitive=True),
             search_fields=[User.username],
         )
-        assert result["pagination"]["total_count"] == 0
+        assert result.pagination.total_count == 0
 
         # Should find (case match)
         result = await UserCrud.paginate(
@@ -140,7 +140,7 @@ class TestPaginateSearch:
             search=SearchConfig(query="JohnDoe", case_sensitive=True),
             search_fields=[User.username],
         )
-        assert result["pagination"]["total_count"] == 1
+        assert result.pagination.total_count == 1
 
     @pytest.mark.anyio
     async def test_search_empty_query(self, db_session: AsyncSession):
@@ -153,10 +153,10 @@ class TestPaginateSearch:
         )
 
         result = await UserCrud.paginate(db_session, search="")
-        assert result["pagination"]["total_count"] == 2
+        assert result.pagination.total_count == 2
 
         result = await UserCrud.paginate(db_session, search=None)
-        assert result["pagination"]["total_count"] == 2
+        assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
     async def test_search_with_existing_filters(self, db_session: AsyncSession):
@@ -177,8 +177,8 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
-        assert result["pagination"]["total_count"] == 1
-        assert result["data"][0].username == "active_john"
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "active_john"
 
     @pytest.mark.anyio
     async def test_search_auto_detect_fields(self, db_session: AsyncSession):
@@ -189,7 +189,7 @@ class TestPaginateSearch:
 
         result = await UserCrud.paginate(db_session, search="findme")
 
-        assert result["pagination"]["total_count"] == 1
+        assert result.pagination.total_count == 1
 
     @pytest.mark.anyio
     async def test_search_no_results(self, db_session: AsyncSession):
@@ -204,8 +204,8 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
-        assert result["pagination"]["total_count"] == 0
-        assert result["data"] == []
+        assert result.pagination.total_count == 0
+        assert result.data == []
 
     @pytest.mark.anyio
     async def test_search_with_pagination(self, db_session: AsyncSession):
@@ -224,9 +224,9 @@ class TestPaginateSearch:
             items_per_page=5,
         )
 
-        assert result["pagination"]["total_count"] == 15
-        assert len(result["data"]) == 5
-        assert result["pagination"]["has_more"] is True
+        assert result.pagination.total_count == 15
+        assert len(result.data) == 5
+        assert result.pagination.has_more is True
 
     @pytest.mark.anyio
     async def test_search_null_relationship(self, db_session: AsyncSession):
@@ -248,7 +248,7 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
-        assert result["pagination"]["total_count"] == 2
+        assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
     async def test_search_with_order_by(self, db_session: AsyncSession):
@@ -270,8 +270,8 @@ class TestPaginateSearch:
             order_by=User.username,
         )
 
-        assert result["pagination"]["total_count"] == 3
-        usernames = [u.username for u in result["data"]]
+        assert result.pagination.total_count == 3
+        usernames = [u.username for u in result.data]
         assert usernames == ["alice", "bob", "charlie"]
 
     @pytest.mark.anyio
@@ -292,8 +292,8 @@ class TestPaginateSearch:
             search_fields=[User.id, User.username],
         )
 
-        assert result["pagination"]["total_count"] == 1
-        assert result["data"][0].id == user_id
+        assert result.pagination.total_count == 1
+        assert result.data[0].id == user_id
 
 
 class TestSearchConfig:
@@ -318,8 +318,8 @@ class TestSearchConfig:
             search_fields=[User.username, User.email],
         )
 
-        assert result["pagination"]["total_count"] == 1
-        assert result["data"][0].username == "john_test"
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "john_test"
 
     @pytest.mark.anyio
     async def test_search_config_with_fields(self, db_session: AsyncSession):
@@ -333,7 +333,7 @@ class TestSearchConfig:
             search=SearchConfig(query="findme", fields=[User.email]),
         )
 
-        assert result["pagination"]["total_count"] == 1
+        assert result.pagination.total_count == 1
 
 
 class TestNoSearchableFieldsError:

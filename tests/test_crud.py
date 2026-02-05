@@ -429,11 +429,11 @@ class TestCrudPaginate:
 
         result = await RoleCrud.paginate(db_session, page=1, items_per_page=10)
 
-        assert len(result["data"]) == 10
-        assert result["pagination"]["total_count"] == 25
-        assert result["pagination"]["page"] == 1
-        assert result["pagination"]["items_per_page"] == 10
-        assert result["pagination"]["has_more"] is True
+        assert len(result.data) == 10
+        assert result.pagination.total_count == 25
+        assert result.pagination.page == 1
+        assert result.pagination.items_per_page == 10
+        assert result.pagination.has_more is True
 
     @pytest.mark.anyio
     async def test_paginate_last_page(self, db_session: AsyncSession):
@@ -443,8 +443,8 @@ class TestCrudPaginate:
 
         result = await RoleCrud.paginate(db_session, page=3, items_per_page=10)
 
-        assert len(result["data"]) == 5
-        assert result["pagination"]["has_more"] is False
+        assert len(result.data) == 5
+        assert result.pagination.has_more is False
 
     @pytest.mark.anyio
     async def test_paginate_with_filters(self, db_session: AsyncSession):
@@ -466,7 +466,7 @@ class TestCrudPaginate:
             items_per_page=10,
         )
 
-        assert result["pagination"]["total_count"] == 5
+        assert result.pagination.total_count == 5
 
     @pytest.mark.anyio
     async def test_paginate_with_ordering(self, db_session: AsyncSession):
@@ -482,7 +482,7 @@ class TestCrudPaginate:
             items_per_page=10,
         )
 
-        names = [r.name for r in result["data"]]
+        names = [r.name for r in result.data]
         assert names == ["alpha", "bravo", "charlie"]
 
 
@@ -690,8 +690,8 @@ class TestCrudJoins:
             items_per_page=10,
         )
 
-        assert result["pagination"]["total_count"] == 3
-        assert len(result["data"]) == 3
+        assert result.pagination.total_count == 3
+        assert len(result.data) == 3
 
     @pytest.mark.anyio
     async def test_paginate_with_outer_join(self, db_session: AsyncSession):
@@ -721,8 +721,8 @@ class TestCrudJoins:
             items_per_page=10,
         )
 
-        assert result["pagination"]["total_count"] == 2
-        assert len(result["data"]) == 2
+        assert result.pagination.total_count == 2
+        assert len(result.data) == 2
 
     @pytest.mark.anyio
     async def test_multiple_joins(self, db_session: AsyncSession):
@@ -752,3 +752,63 @@ class TestCrudJoins:
         )
         assert len(users) == 1
         assert users[0].username == "multi_join"
+
+
+class TestAsResponse:
+    """Tests for as_response parameter."""
+
+    @pytest.mark.anyio
+    async def test_create_as_response(self, db_session: AsyncSession):
+        """Create with as_response=True returns Response."""
+        from fastapi_toolsets.schemas import Response
+
+        data = RoleCreate(name="response_role")
+        result = await RoleCrud.create(db_session, data, as_response=True)
+
+        assert isinstance(result, Response)
+        assert result.data is not None
+        assert result.data.name == "response_role"
+
+    @pytest.mark.anyio
+    async def test_get_as_response(self, db_session: AsyncSession):
+        """Get with as_response=True returns Response."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="get_response"))
+        result = await RoleCrud.get(
+            db_session, [Role.id == created.id], as_response=True
+        )
+
+        assert isinstance(result, Response)
+        assert result.data is not None
+        assert result.data.id == created.id
+
+    @pytest.mark.anyio
+    async def test_update_as_response(self, db_session: AsyncSession):
+        """Update with as_response=True returns Response."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="old_name"))
+        result = await RoleCrud.update(
+            db_session,
+            RoleUpdate(name="new_name"),
+            [Role.id == created.id],
+            as_response=True,
+        )
+
+        assert isinstance(result, Response)
+        assert result.data is not None
+        assert result.data.name == "new_name"
+
+    @pytest.mark.anyio
+    async def test_delete_as_response(self, db_session: AsyncSession):
+        """Delete with as_response=True returns Response."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="to_delete"))
+        result = await RoleCrud.delete(
+            db_session, [Role.id == created.id], as_response=True
+        )
+
+        assert isinstance(result, Response)
+        assert result.data is None
