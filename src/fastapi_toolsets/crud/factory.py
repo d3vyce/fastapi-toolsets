@@ -14,6 +14,7 @@ from sqlalchemy.sql.roles import WhereHavingRole
 
 from ..db import get_transaction
 from ..exceptions import NotFoundError
+from ..schemas import PaginatedResponse, Pagination
 from .search import SearchConfig, SearchFieldType, build_search_filters
 
 ModelType = TypeVar("ModelType", bound=DeclarativeBase)
@@ -363,7 +364,7 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
-    ) -> dict[str, Any]:
+    ) -> PaginatedResponse[ModelType]:
         """Get paginated results with metadata.
 
         Args:
@@ -420,7 +421,7 @@ class AsyncCrud(Generic[ModelType]):
 
         q = q.offset(offset).limit(items_per_page)
         result = await session.execute(q)
-        items = result.unique().scalars().all()
+        items = cast(list[ModelType], result.unique().scalars().all())
 
         # Count query (with same joins and filters)
         pk_col = cls.model.__mapper__.primary_key[0]
@@ -446,15 +447,15 @@ class AsyncCrud(Generic[ModelType]):
         count_result = await session.execute(count_q)
         total_count = count_result.scalar_one()
 
-        return {
-            "data": items,
-            "pagination": {
-                "total_count": total_count,
-                "items_per_page": items_per_page,
-                "page": page,
-                "has_more": page * items_per_page < total_count,
-            },
-        }
+        return PaginatedResponse(
+            data=items,
+            pagination=Pagination(
+                total_count=total_count,
+                items_per_page=items_per_page,
+                page=page,
+                has_more=page * items_per_page < total_count,
+            ),
+        )
 
 
 def CrudFactory(

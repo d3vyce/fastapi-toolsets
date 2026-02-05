@@ -429,11 +429,11 @@ class TestCrudPaginate:
 
         result = await RoleCrud.paginate(db_session, page=1, items_per_page=10)
 
-        assert len(result["data"]) == 10
-        assert result["pagination"]["total_count"] == 25
-        assert result["pagination"]["page"] == 1
-        assert result["pagination"]["items_per_page"] == 10
-        assert result["pagination"]["has_more"] is True
+        assert len(result.data) == 10
+        assert result.pagination.total_count == 25
+        assert result.pagination.page == 1
+        assert result.pagination.items_per_page == 10
+        assert result.pagination.has_more is True
 
     @pytest.mark.anyio
     async def test_paginate_last_page(self, db_session: AsyncSession):
@@ -443,8 +443,8 @@ class TestCrudPaginate:
 
         result = await RoleCrud.paginate(db_session, page=3, items_per_page=10)
 
-        assert len(result["data"]) == 5
-        assert result["pagination"]["has_more"] is False
+        assert len(result.data) == 5
+        assert result.pagination.has_more is False
 
     @pytest.mark.anyio
     async def test_paginate_with_filters(self, db_session: AsyncSession):
@@ -466,7 +466,7 @@ class TestCrudPaginate:
             items_per_page=10,
         )
 
-        assert result["pagination"]["total_count"] == 5
+        assert result.pagination.total_count == 5
 
     @pytest.mark.anyio
     async def test_paginate_with_ordering(self, db_session: AsyncSession):
@@ -482,7 +482,7 @@ class TestCrudPaginate:
             items_per_page=10,
         )
 
-        names = [r.name for r in result["data"]]
+        names = [r.name for r in result.data]
         assert names == ["alpha", "bravo", "charlie"]
 
 
@@ -690,8 +690,8 @@ class TestCrudJoins:
             items_per_page=10,
         )
 
-        assert result["pagination"]["total_count"] == 3
-        assert len(result["data"]) == 3
+        assert result.pagination.total_count == 3
+        assert len(result.data) == 3
 
     @pytest.mark.anyio
     async def test_paginate_with_outer_join(self, db_session: AsyncSession):
@@ -721,8 +721,8 @@ class TestCrudJoins:
             items_per_page=10,
         )
 
-        assert result["pagination"]["total_count"] == 2
-        assert len(result["data"]) == 2
+        assert result.pagination.total_count == 2
+        assert len(result.data) == 2
 
     @pytest.mark.anyio
     async def test_multiple_joins(self, db_session: AsyncSession):
