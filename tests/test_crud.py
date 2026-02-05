@@ -752,3 +752,63 @@ class TestCrudJoins:
         )
         assert len(users) == 1
         assert users[0].username == "multi_join"
+
+
+class TestAsResponse:
+    """Tests for as_response parameter."""
+
+    @pytest.mark.anyio
+    async def test_create_as_response(self, db_session: AsyncSession):
+        """Create with as_response=True returns Response."""
+        from fastapi_toolsets.schemas import Response
+
+        data = RoleCreate(name="response_role")
+        result = await RoleCrud.create(db_session, data, as_response=True)
+
+        assert isinstance(result, Response)
+        assert result.data is not None
+        assert result.data.name == "response_role"
+
+    @pytest.mark.anyio
+    async def test_get_as_response(self, db_session: AsyncSession):
+        """Get with as_response=True returns Response."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="get_response"))
+        result = await RoleCrud.get(
+            db_session, [Role.id == created.id], as_response=True
+        )
+
+        assert isinstance(result, Response)
+        assert result.data is not None
+        assert result.data.id == created.id
+
+    @pytest.mark.anyio
+    async def test_update_as_response(self, db_session: AsyncSession):
+        """Update with as_response=True returns Response."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="old_name"))
+        result = await RoleCrud.update(
+            db_session,
+            RoleUpdate(name="new_name"),
+            [Role.id == created.id],
+            as_response=True,
+        )
+
+        assert isinstance(result, Response)
+        assert result.data is not None
+        assert result.data.name == "new_name"
+
+    @pytest.mark.anyio
+    async def test_delete_as_response(self, db_session: AsyncSession):
+        """Delete with as_response=True returns Response."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="to_delete"))
+        result = await RoleCrud.delete(
+            db_session, [Role.id == created.id], as_response=True
+        )
+
+        assert isinstance(result, Response)
+        assert result.data is None
