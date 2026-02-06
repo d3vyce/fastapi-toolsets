@@ -2,6 +2,7 @@
 
 import typer
 
+from ..logger import configure_logging
 from .config import get_custom_cli
 from .pyproject import load_pyproject
 
@@ -27,4 +28,5 @@ if _config.get("fixtures") and _config.get("db_context"):
 @cli.callback()
 def main(ctx: typer.Context) -> None:
     """FastAPI utilities CLI."""
+    configure_logging()
     ctx.ensure_object(dict)

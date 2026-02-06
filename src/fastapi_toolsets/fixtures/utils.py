@@ -1,4 +1,3 @@
-import logging
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
@@ -6,10 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
 from ..db import get_transaction
+from ..logger import get_logger
 from .enum import LoadStrategy
 from .registry import Context, FixtureRegistry
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 T = TypeVar("T", bound=DeclarativeBase)
 
