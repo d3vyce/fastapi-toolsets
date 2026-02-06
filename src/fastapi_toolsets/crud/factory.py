@@ -1,5 +1,7 @@
 """Generic async CRUD operations for SQLAlchemy models."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 from typing import Any, ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
