@@ -1,15 +1,15 @@
 """Fixture system with dependency management and context support."""
 
-import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
 from sqlalchemy.orm import DeclarativeBase
 
+from ..logger import get_logger
 from .enum import Context
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 
 @dataclass
