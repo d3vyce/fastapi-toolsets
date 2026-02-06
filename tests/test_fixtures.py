@@ -744,8 +744,11 @@ class TestGetObjByAttr:
         assert user.username == "alice"
 
     def test_no_match_raises_stop_iteration(self):
-        """Raises StopIteration when no object matches."""
-        with pytest.raises(StopIteration):
+        """Raises StopIteration with contextual message when no object matches."""
+        with pytest.raises(
+            StopIteration,
+            match="No object with name=nonexistent found in fixture 'roles'",
+        ):
             get_obj_by_attr(self.roles, "name", "nonexistent")
 
     def test_no_match_on_wrong_value_type(self):
