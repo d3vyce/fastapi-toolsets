@@ -29,9 +29,14 @@ def get_obj_by_attr(
         The first model instance where the attribute matches the given value.
 
     Raises:
-        StopIteration: If no matching object is found.
+        StopIteration: If no matching object is found in the fixture group.
     """
-    return next(obj for obj in fixtures() if getattr(obj, attr_name) == value)
+    try:
+        return next(obj for obj in fixtures() if getattr(obj, attr_name) == value)
+    except StopIteration:
+        raise StopIteration(
+            f"No object with {attr_name}={value} found in fixture '{getattr(fixtures, '__name__', repr(fixtures))}'"
+        ) from None
 
 
 async def load_fixtures(
