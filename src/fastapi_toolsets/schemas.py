@@ -10,6 +10,7 @@ __all__ = [
     "ErrorResponse",
     "Pagination",
     "PaginatedResponse",
+    "PydanticBase",
     "Response",
     "ResponseStatus",
 ]
