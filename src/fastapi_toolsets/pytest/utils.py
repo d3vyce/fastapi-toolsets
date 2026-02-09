@@ -2,9 +2,10 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -108,3 +109,61 @@ async def create_db_session(
                 await conn.run_sync(base.metadata.drop_all)
     finally:
         await engine.dispose()
+
+
+def _normalize_expected(
+    expected: BaseModel | list[BaseModel] | dict | list[dict],
+) -> Any:
+    """Normalize expected data to a JSON-compatible structure."""
+    if isinstance(expected, BaseModel):
+        return expected.model_dump(mode="json")
+    if isinstance(expected, list):
+        return [
+            item.model_dump(mode="json") if isinstance(item, BaseModel) else item
+            for item in expected
+        ]
+    return expected
+
+
+HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+async def assert_endpoint(
+    client: AsyncClient,
+    method: HttpMethod,
+    url: str,
+    *,
+    expected_status: int = 200,
+    expected_data: BaseModel | list[BaseModel] | dict | list[dict] | None = None,
+    request_headers: dict[str, str] | None = None,
+    request_json: Any | None = None,
+    request_params: dict[str, Any] | None = None,
+    request_content: bytes | None = None,
+) -> Response:
+    """Assert an API endpoint returns the expected status and data."""
+    kwargs: dict[str, Any] = {}
+    if request_headers is not None:
+        kwargs["headers"] = request_headers
+    if request_json is not None:
+        kwargs["json"] = request_json
+    if request_params is not None:
+        kwargs["params"] = request_params
+    if request_content is not None:
+        kwargs["content"] = request_content
+
+    response = await client.request(method, url, **kwargs)
+
+    assert response.status_code == expected_status, (
+        f"Expected status {expected_status}, got {response.status_code}. "
+        f"Response body: {response.text}"
+    )
+
+    if expected_data is not None:
+        response_json = response.json()
+        actual_data = response_json.get("data")
+        normalized = _normalize_expected(expected_data)
+        assert actual_data == normalized, (
+            f"Response data mismatch.\nExpected: {normalized}\nActual:   {actual_data}"
+        )
+
+    return response
