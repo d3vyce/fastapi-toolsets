@@ -1,11 +1,18 @@
 """Pytest helper utilities for FastAPI testing."""
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase
 
 from ..db import create_db_context
@@ -108,3 +115,147 @@ async def create_db_session(
                 await conn.run_sync(base.metadata.drop_all)
     finally:
         await engine.dispose()
+
+
+def _get_xdist_worker() -> str | None:
+    """Return the pytest-xdist worker name, or ``None`` when not running under xdist.
+
+    Reads the ``PYTEST_XDIST_WORKER`` environment variable that xdist sets
+    automatically in each worker process (e.g. ``"gw0"``, ``"gw1"``).
+    When xdist is not installed or not active, the variable is absent and
+    ``None`` is returned.
+    """
+    return os.environ.get("PYTEST_XDIST_WORKER")
+
+
+def worker_database_url(database_url: str) -> str:
+    """Derive a per-worker database URL for pytest-xdist parallel runs.
+
+    Appends ``_{worker_name}`` to the database name so each xdist worker
+    operates on its own database.  When not running under xdist the
+    original URL is returned unchanged.
+
+    The worker name is read from the ``PYTEST_XDIST_WORKER`` environment
+    variable (set automatically by xdist in each worker process).
+
+    Args:
+        database_url: Original database connection URL.
+
+    Returns:
+        A database URL with the worker-specific database name, or the
+        original URL when not running under xdist.
+
+    Example:
+        ```python
+        # With PYTEST_XDIST_WORKER="gw0":
+        url = worker_database_url(
+            "postgresql+asyncpg://user:pass@localhost/test_db"
+        )
+        # "postgresql+asyncpg://user:pass@localhost/test_db_gw0"
+        ```
+    """
+    worker = _get_xdist_worker()
+    if worker is None:
+        return database_url
+
+    url = make_url(database_url)
+    url = url.set(database=f"{url.database}_{worker}")
+    return url.render_as_string(hide_password=False)
+
+
+@asynccontextmanager
+async def create_worker_database(
+    database_url: str,
+) -> AsyncGenerator[str, None]:
+    """Create and drop a per-worker database for pytest-xdist isolation.
+
+    Intended for use as a **session-scoped** fixture.  Connects to the server
+    using the original *database_url* (with ``AUTOCOMMIT`` isolation for DDL),
+    creates a dedicated database for the worker, and yields the worker-specific
+    URL.  On cleanup the worker database is dropped.
+
+    When not running under xdist (``PYTEST_XDIST_WORKER`` is unset), the
+    original URL is yielded without any database creation or teardown.
+
+    Args:
+        database_url: Original database connection URL.
+
+    Yields:
+        The worker-specific database URL.
+
+    Example:
+        ```python
+        from fastapi_toolsets.pytest import (
+            create_worker_database, create_db_session, cleanup_tables
+        )
+
+        DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/test_db"
+
+        @pytest.fixture(scope="session")
+        async def worker_db_url():
+            async with create_worker_database(DATABASE_URL) as url:
+                yield url
+
+        @pytest.fixture
+        async def db_session(worker_db_url):
+            async with create_db_session(worker_db_url, Base) as session:
+                yield session
+                await cleanup_tables(session, Base)
+        ```
+    """
+    if _get_xdist_worker() is None:
+        yield database_url
+        return
+
+    worker_url = worker_database_url(database_url)
+    worker_db_name = make_url(worker_url).database
+
+    engine = create_async_engine(
+        database_url,
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text(f"DROP DATABASE IF EXISTS {worker_db_name}"))
+            await conn.execute(text(f"CREATE DATABASE {worker_db_name}"))
+
+        yield worker_url
+
+        async with engine.connect() as conn:
+            await conn.execute(text(f"DROP DATABASE IF EXISTS {worker_db_name}"))
+    finally:
+        await engine.dispose()
+
+
+async def cleanup_tables(
+    session: AsyncSession,
+    base: type[DeclarativeBase],
+) -> None:
+    """Truncate all tables for fast between-test cleanup.
+
+    Executes a single ``TRUNCATE … RESTART IDENTITY CASCADE`` statement
+    across every table in *base*'s metadata, which is significantly faster
+    than dropping and re-creating tables between tests.
+
+    This is a no-op when the metadata contains no tables.
+
+    Args:
+        session: An active async database session.
+        base: SQLAlchemy DeclarativeBase class containing model metadata.
+
+    Example:
+        ```python
+        @pytest.fixture
+        async def db_session(worker_db_url):
+            async with create_db_session(worker_db_url, Base) as session:
+                yield session
+                await cleanup_tables(session, Base)
+        ```
+    """
+    tables = base.metadata.sorted_tables
+    if not tables:
+        return
+
+    table_names = ", ".join(f'"{t.name}"' for t in tables)
+    await session.execute(text(f"TRUNCATE {table_names} RESTART IDENTITY CASCADE"))
+    await session.commit()
