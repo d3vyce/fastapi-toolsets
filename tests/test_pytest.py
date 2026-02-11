@@ -299,40 +299,45 @@ class TestCreateDbSession:
 
 
 class TestGetXdistWorker:
-    """Tests for get_xdist_worker helper."""
+    """Tests for _get_xdist_worker helper."""
 
-    def test_returns_none_without_env_var(self, monkeypatch: pytest.MonkeyPatch):
-        """Returns None when PYTEST_XDIST_WORKER is not set."""
+    def test_returns_default_test_db_without_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Returns default_test_db when PYTEST_XDIST_WORKER is not set."""
         monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
-        assert _get_xdist_worker() is None
+        assert _get_xdist_worker("my_default") == "my_default"
 
     def test_returns_worker_name(self, monkeypatch: pytest.MonkeyPatch):
         """Returns the worker name from the environment variable."""
         monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
-        assert _get_xdist_worker() == "gw0"
+        assert _get_xdist_worker("ignored") == "gw0"
 
 
 class TestWorkerDatabaseUrl:
     """Tests for worker_database_url helper."""
 
-    def test_returns_original_url_without_xdist(self, monkeypatch: pytest.MonkeyPatch):
-        """URL is returned unchanged when not running under xdist."""
+    def test_appends_default_test_db_without_xdist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """default_test_db is appended when not running under xdist."""
         monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
         url = "postgresql+asyncpg://user:pass@localhost:5432/mydb"
-        assert worker_database_url(url) == url
+        result = worker_database_url(url, default_test_db="fallback")
+        assert make_url(result).database == "mydb_fallback"
 
     def test_appends_worker_id_to_database_name(self, monkeypatch: pytest.MonkeyPatch):
         """Worker name is appended to the database name."""
         monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
         url = "postgresql+asyncpg://user:pass@localhost:5432/db"
-        result = worker_database_url(url)
+        result = worker_database_url(url, default_test_db="unused")
         assert make_url(result).database == "db_gw0"
 
     def test_preserves_url_components(self, monkeypatch: pytest.MonkeyPatch):
         """Host, port, username, password, and driver are preserved."""
         monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw2")
         url = "postgresql+asyncpg://myuser:secret@dbhost:6543/testdb"
-        result = make_url(worker_database_url(url))
+        result = make_url(worker_database_url(url, default_test_db="unused"))
 
         assert result.drivername == "postgresql+asyncpg"
         assert result.username == "myuser"
@@ -346,13 +351,40 @@ class TestCreateWorkerDatabase:
     """Tests for create_worker_database context manager."""
 
     @pytest.mark.anyio
-    async def test_yields_original_url_without_xdist(
+    async def test_creates_default_db_without_xdist(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """Without xdist, yields the original URL without database operations."""
+        """Without xdist, creates a database suffixed with default_test_db."""
         monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
-        async with create_worker_database(DATABASE_URL) as url:
-            assert url == DATABASE_URL
+        default_test_db = "no_xdist_default"
+        expected_db = make_url(
+            worker_database_url(DATABASE_URL, default_test_db=default_test_db)
+        ).database
+
+        async with create_worker_database(
+            DATABASE_URL, default_test_db=default_test_db
+        ) as url:
+            assert make_url(url).database == expected_db
+
+            # Verify the database exists while inside the context
+            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                    {"name": expected_db},
+                )
+                assert result.scalar() == 1
+            await engine.dispose()
+
+        # After context exit the database should be dropped
+        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": expected_db},
+            )
+            assert result.scalar() is None
+        await engine.dispose()
 
     @pytest.mark.anyio
     async def test_creates_and_drops_worker_database(
@@ -360,7 +392,9 @@ class TestCreateWorkerDatabase:
     ):
         """Worker database exists inside the context and is dropped after."""
         monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_test_create")
-        expected_db = make_url(worker_database_url(DATABASE_URL)).database
+        expected_db = make_url(
+            worker_database_url(DATABASE_URL, default_test_db="unused")
+        ).database
 
         async with create_worker_database(DATABASE_URL) as url:
             assert make_url(url).database == expected_db
@@ -389,7 +423,9 @@ class TestCreateWorkerDatabase:
     async def test_cleans_up_stale_database(self, monkeypatch: pytest.MonkeyPatch):
         """A pre-existing worker database is dropped and recreated."""
         monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_test_stale")
-        expected_db = make_url(worker_database_url(DATABASE_URL)).database
+        expected_db = make_url(
+            worker_database_url(DATABASE_URL, default_test_db="unused")
+        ).database
 
         # Pre-create the database to simulate a stale leftover
         engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
