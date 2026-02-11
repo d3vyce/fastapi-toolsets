@@ -117,46 +117,57 @@ async def create_db_session(
         await engine.dispose()
 
 
-def _get_xdist_worker() -> str | None:
-    """Return the pytest-xdist worker name, or ``None`` when not running under xdist.
+def _get_xdist_worker(default_test_db: str) -> str:
+    """Return the pytest-xdist worker name, or *default_test_db* when not running under xdist.
 
     Reads the ``PYTEST_XDIST_WORKER`` environment variable that xdist sets
     automatically in each worker process (e.g. ``"gw0"``, ``"gw1"``).
     When xdist is not installed or not active, the variable is absent and
-    ``None`` is returned.
+    *default_test_db* is returned instead.
+
+    Args:
+        default_test_db: Fallback value returned when ``PYTEST_XDIST_WORKER``
+            is not set.
     """
-    return os.environ.get("PYTEST_XDIST_WORKER")
+    return os.environ.get("PYTEST_XDIST_WORKER", default_test_db)
 
 
-def worker_database_url(database_url: str) -> str:
+def worker_database_url(database_url: str, default_test_db: str) -> str:
     """Derive a per-worker database URL for pytest-xdist parallel runs.
 
     Appends ``_{worker_name}`` to the database name so each xdist worker
-    operates on its own database.  When not running under xdist the
-    original URL is returned unchanged.
+    operates on its own database.  When not running under xdist,
+    ``_{default_test_db}`` is appended instead.
 
     The worker name is read from the ``PYTEST_XDIST_WORKER`` environment
     variable (set automatically by xdist in each worker process).
 
     Args:
         database_url: Original database connection URL.
+        default_test_db: Suffix appended to the database name when
+            ``PYTEST_XDIST_WORKER`` is not set.
 
     Returns:
-        A database URL with the worker-specific database name, or the
-        original URL when not running under xdist.
+        A database URL with a worker- or default-specific database name.
 
     Example:
         ```python
         # With PYTEST_XDIST_WORKER="gw0":
         url = worker_database_url(
-            "postgresql+asyncpg://user:pass@localhost/test_db"
+            "postgresql+asyncpg://user:pass@localhost/test_db",
+            default_test_db="test",
         )
         # "postgresql+asyncpg://user:pass@localhost/test_db_gw0"
+
+        # Without PYTEST_XDIST_WORKER:
+        url = worker_database_url(
+            "postgresql+asyncpg://user:pass@localhost/test_db",
+            default_test_db="test",
+        )
+        # "postgresql+asyncpg://user:pass@localhost/test_db_test"
         ```
     """
-    worker = _get_xdist_worker()
-    if worker is None:
-        return database_url
+    worker = _get_xdist_worker(default_test_db=default_test_db)
 
     url = make_url(database_url)
     url = url.set(database=f"{url.database}_{worker}")
@@ -166,6 +177,7 @@ def worker_database_url(database_url: str) -> str:
 @asynccontextmanager
 async def create_worker_database(
     database_url: str,
+    default_test_db: str = "test_db",
 ) -> AsyncGenerator[str, None]:
     """Create and drop a per-worker database for pytest-xdist isolation.
 
@@ -174,11 +186,13 @@ async def create_worker_database(
     creates a dedicated database for the worker, and yields the worker-specific
     URL.  On cleanup the worker database is dropped.
 
-    When not running under xdist (``PYTEST_XDIST_WORKER`` is unset), the
-    original URL is yielded without any database creation or teardown.
+    When running under xdist the database name is suffixed with the worker
+    name (e.g. ``_gw0``).  Otherwise it is suffixed with *default_test_db*.
 
     Args:
         database_url: Original database connection URL.
+        default_test_db: Suffix appended to the database name when
+            ``PYTEST_XDIST_WORKER`` is not set. Defaults to ``"test_db"``.
 
     Yields:
         The worker-specific database URL.
@@ -203,11 +217,9 @@ async def create_worker_database(
                 await cleanup_tables(session, Base)
         ```
     """
-    if _get_xdist_worker() is None:
-        yield database_url
-        return
-
-    worker_url = worker_database_url(database_url)
+    worker_url = worker_database_url(
+        database_url=database_url, default_test_db=default_test_db
+    )
     worker_db_name = make_url(worker_url).database
 
     engine = create_async_engine(
