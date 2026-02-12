@@ -10,6 +10,12 @@ def find_pyproject(start_path: Path | None = None) -> Path | None:
     """Find pyproject.toml by walking up the directory tree.
 
     Similar to how pytest, black, and ruff discover their config files.
+
+    Args:
+        start_path: Directory to start searching from. Defaults to cwd.
+
+    Returns:
+        Path to pyproject.toml, or None if not found.
     """
     path = (start_path or Path.cwd()).resolve()
 

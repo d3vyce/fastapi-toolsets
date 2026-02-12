@@ -87,6 +87,12 @@ class InsufficientRolesError(ForbiddenError):
     )
 
     def __init__(self, required_roles: list[str], user_roles: set[str] | None = None):
+        """Initialize the exception.
+
+        Args:
+            required_roles: Roles needed to access the resource
+            user_roles: Roles the current user has, if known
+        """
         self.required_roles = required_roles
         self.user_roles = user_roles
 
@@ -130,6 +136,11 @@ class NoSearchableFieldsError(ApiException):
     )
 
     def __init__(self, model: type) -> None:
+        """Initialize the exception.
+
+        Args:
+            model: The SQLAlchemy model class that has no searchable fields
+        """
         self.model = model
         detail = (
             f"No searchable fields found for model '{model.__name__}'. "

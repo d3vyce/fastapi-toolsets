@@ -18,10 +18,16 @@ def _ensure_project_in_path():
 
 
 def import_from_string(import_path: str):
-    """Import an object from a string path like 'module.submodule:attribute'.
+    """Import an object from a dotted string path.
+
+    Args:
+        import_path: Import path in ``"module.submodule:attribute"`` format
+
+    Returns:
+        The imported attribute
 
     Raises:
-        typer.BadParameter: If the import path is invalid or import fails.
+        typer.BadParameter: If the import path is invalid or import fails
     """
     if ":" not in import_path:
         raise typer.BadParameter(

@@ -1,3 +1,5 @@
+"""Fixture system for seeding databases with dependency resolution."""
+
 from .enum import LoadStrategy
 from .registry import Context, FixtureRegistry
 from .utils import get_obj_by_attr, load_fixtures, load_fixtures_by_context

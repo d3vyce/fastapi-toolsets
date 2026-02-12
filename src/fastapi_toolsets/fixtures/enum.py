@@ -1,3 +1,5 @@
+"""Enums for fixture loading strategies and contexts."""
+
 from enum import Enum
 
 

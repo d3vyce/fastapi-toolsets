@@ -1,3 +1,5 @@
+"""Standardized API exceptions and error response handlers."""
+
 from .exceptions import (
     ApiError,
     ApiException,

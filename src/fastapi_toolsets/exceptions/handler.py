@@ -12,6 +12,25 @@ from .exceptions import ApiException
 
 
 def init_exceptions_handlers(app: FastAPI) -> FastAPI:
+    """Register exception handlers and custom OpenAPI schema on a FastAPI app.
+
+    Installs handlers for :class:`ApiException`, validation errors, and
+    unhandled exceptions, and replaces the default 422 schema with a
+    consistent error format.
+
+    Args:
+        app: FastAPI application instance
+
+    Returns:
+        The same FastAPI instance (for chaining)
+
+    Example:
+        from fastapi import FastAPI
+        from fastapi_toolsets.exceptions import init_exceptions_handlers
+
+        app = FastAPI()
+        init_exceptions_handlers(app)
+    """
     _register_exception_handlers(app)
     app.openapi = lambda: _custom_openapi(app)  # type: ignore[method-assign]
     return app
