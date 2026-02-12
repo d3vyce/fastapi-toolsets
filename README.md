@@ -26,11 +26,15 @@ uv add fastapi-toolsets
 
 ## Features
 
-- **CRUD**: Generic async CRUD operations with `CrudFactory`
-- **Fixtures**: Fixture system with dependency management, context support and pytest integration
+- **CRUD**: Generic async CRUD operations with `CrudFactory`, built-in search with relationship traversal
+- **Database**: Session management, transaction helpers, table locking, and polling-based row change detection
+- **Dependencies**: FastAPI dependency factories (`PathDependency`, `BodyDependency`) for automatic DB lookups from path or body parameters
+- **Fixtures**: Fixture system with dependency management, context support, and pytest integration
 - **CLI**: Django-like command-line interface with fixture management and custom commands support
-- **Standardized API Responses**: Consistent response format across your API
+- **Standardized API Responses**: Consistent response format with `Response`, `PaginatedResponse`, and `PydanticBase`
 - **Exception Handling**: Structured error responses with automatic OpenAPI documentation
+- **Logging**: Logging configuration with uvicorn integration via `configure_logging` and `get_logger`
+- **Pytest Helpers**: Async test client, database session management, `pytest-xdist` support, and table cleanup utilities
 
 ## License
 

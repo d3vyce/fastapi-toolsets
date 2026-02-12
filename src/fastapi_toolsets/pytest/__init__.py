@@ -1,3 +1,5 @@
+"""Pytest helpers for FastAPI testing: sessions, clients, and fixtures."""
+
 from .plugin import register_fixtures
 from .utils import (
     cleanup_tables,

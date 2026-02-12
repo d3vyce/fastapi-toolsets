@@ -1,3 +1,5 @@
+"""Fixture loading utilities for database seeding."""
+
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 

@@ -210,6 +210,20 @@ async def wait_for_row_change(
     Raises:
         LookupError: If the row does not exist or is deleted during polling
         TimeoutError: If timeout expires before a change is detected
+
+    Example:
+        from fastapi_toolsets.db import wait_for_row_change
+
+        # Wait for any column to change
+        updated = await wait_for_row_change(session, User, user_id)
+
+        # Watch specific columns with a timeout
+        updated = await wait_for_row_change(
+            session, User, user_id,
+            columns=["status", "email"],
+            interval=1.0,
+            timeout=30.0,
+        )
     """
     instance = await session.get(model, pk_value)
     if instance is None:
