@@ -3,7 +3,7 @@
 import uuid
 
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from httpx import AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
@@ -235,6 +235,30 @@ class TestCreateAsyncClient:
             client_ref = client
 
         assert client_ref.is_closed
+
+    @pytest.mark.anyio
+    async def test_dependency_overrides_applied_and_cleaned(self):
+        """Dependency overrides are applied during the context and removed after."""
+        app = FastAPI()
+
+        async def original_dep() -> str:
+            return "original"
+
+        async def override_dep() -> str:
+            return "overridden"
+
+        @app.get("/dep")
+        async def dep_endpoint(value: str = Depends(original_dep)):
+            return {"value": value}
+
+        async with create_async_client(
+            app, dependency_overrides={original_dep: override_dep}
+        ) as client:
+            response = await client.get("/dep")
+            assert response.json() == {"value": "overridden"}
+
+        # Overrides should be cleaned up
+        assert original_dep not in app.dependency_overrides
 
 
 class TestCreateDbSession:
