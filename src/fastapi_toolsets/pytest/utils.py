@@ -60,6 +60,7 @@ async def create_db_session(
     echo: bool = False,
     expire_on_commit: bool = False,
     drop_tables: bool = True,
+    cleanup: bool = False,
 ) -> AsyncGenerator[AsyncSession, None]:
     """Create a database session for testing.
 
@@ -72,6 +73,8 @@ async def create_db_session(
         echo: Enable SQLAlchemy query logging. Defaults to False.
         expire_on_commit: Expire objects after commit. Defaults to False.
         drop_tables: Drop tables after test. Defaults to True.
+        cleanup: Truncate all tables after test using
+            :func:`cleanup_tables`. Defaults to False.
 
     Yields:
         An AsyncSession ready for database operations.
@@ -84,7 +87,9 @@ async def create_db_session(
 
         @pytest.fixture
         async def db_session():
-            async with create_db_session(DATABASE_URL, Base) as session:
+            async with create_db_session(
+                DATABASE_URL, Base, cleanup=True
+            ) as session:
                 yield session
 
         async def test_create_user(db_session: AsyncSession):
@@ -105,6 +110,9 @@ async def create_db_session(
 
         async with get_session() as session:
             yield session
+
+            if cleanup:
+                await cleanup_tables(session, base)
 
         if drop_tables:
             async with engine.begin() as conn:
@@ -193,7 +201,7 @@ async def create_worker_database(
 
     Example:
         from fastapi_toolsets.pytest import (
-            create_worker_database, create_db_session, cleanup_tables
+            create_worker_database, create_db_session,
         )
 
         DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/test_db"
@@ -205,9 +213,10 @@ async def create_worker_database(
 
         @pytest.fixture
         async def db_session(worker_db_url):
-            async with create_db_session(worker_db_url, Base) as session:
+            async with create_db_session(
+                worker_db_url, Base, cleanup=True
+            ) as session:
                 yield session
-                await cleanup_tables(session, Base)
     """
     worker_url = worker_database_url(
         database_url=database_url, default_test_db=default_test_db

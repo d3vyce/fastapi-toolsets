@@ -297,6 +297,22 @@ class TestCreateDbSession:
         async with create_db_session(DATABASE_URL, Base, drop_tables=True) as _:
             pass
 
+    @pytest.mark.anyio
+    async def test_cleanup_truncates_tables(self):
+        """Tables are truncated after session closes when cleanup=True."""
+        role_id = uuid.uuid4()
+        async with create_db_session(
+            DATABASE_URL, Base, cleanup=True, drop_tables=False
+        ) as session:
+            role = Role(id=role_id, name="will_be_cleaned")
+            session.add(role)
+            await session.commit()
+
+        # Data should have been truncated, but tables still exist
+        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
+            result = await session.execute(select(Role))
+            assert result.all() == []
+
 
 class TestGetXdistWorker:
     """Tests for _get_xdist_worker helper."""
