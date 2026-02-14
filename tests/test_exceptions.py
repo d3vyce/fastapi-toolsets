@@ -108,6 +108,24 @@ class TestGenerateErrorResponses:
         assert example["status"] == "FAIL"
         assert example["error_code"] == "RES-404"
         assert example["message"] == "Not Found"
+        assert example["data"] is None
+
+    def test_response_example_with_data(self):
+        """Generated response includes data when set on ApiError."""
+
+        class ErrorWithData(ApiException):
+            api_error = ApiError(
+                code=400,
+                msg="Bad Request",
+                desc="Invalid input.",
+                err_code="BAD-400",
+                data={"details": "some context"},
+            )
+
+        responses = generate_error_responses(ErrorWithData)
+        example = responses[400]["content"]["application/json"]["example"]
+
+        assert example["data"] == {"details": "some context"}
 
 
 class TestInitExceptionsHandlers:
@@ -136,6 +154,59 @@ class TestInitExceptionsHandlers:
         assert data["status"] == "FAIL"
         assert data["error_code"] == "RES-404"
         assert data["message"] == "Not Found"
+
+    def test_handles_api_exception_without_data(self):
+        """ApiException without data returns null data field."""
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/error")
+        async def raise_error():
+            raise NotFoundError()
+
+        client = TestClient(app)
+        response = client.get("/error")
+
+        assert response.status_code == 404
+        assert response.json()["data"] is None
+
+    def test_handles_api_exception_with_data(self):
+        """ApiException with data returns the data payload."""
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        class CustomValidationError(ApiException):
+            api_error = ApiError(
+                code=422,
+                msg="Validation Error",
+                desc="1 validation error(s) detected",
+                err_code="CUSTOM-422",
+                data={
+                    "errors": [
+                        {
+                            "field": "email",
+                            "message": "invalid format",
+                            "type": "value_error",
+                        }
+                    ]
+                },
+            )
+
+        @app.get("/error")
+        async def raise_error():
+            raise CustomValidationError()
+
+        client = TestClient(app)
+        response = client.get("/error")
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["data"] == {
+            "errors": [
+                {"field": "email", "message": "invalid format", "type": "value_error"}
+            ]
+        }
+        assert data["error_code"] == "CUSTOM-422"
 
     def test_handles_validation_error(self):
         """Handles validation errors with structured response."""

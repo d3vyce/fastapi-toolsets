@@ -46,6 +46,31 @@ class TestApiError:
         assert error.desc == "The resource was not found."
         assert error.err_code == "RES-404"
 
+    def test_data_defaults_to_none(self):
+        """ApiError data field defaults to None."""
+        error = ApiError(
+            code=404,
+            msg="Not Found",
+            desc="The resource was not found.",
+            err_code="RES-404",
+        )
+        assert error.data is None
+
+    def test_create_with_data(self):
+        """ApiError can be created with a data payload."""
+        error = ApiError(
+            code=422,
+            msg="Validation Error",
+            desc="2 validation error(s) detected",
+            err_code="VAL-422",
+            data={
+                "errors": [{"field": "name", "message": "required", "type": "missing"}]
+            },
+        )
+        assert error.data == {
+            "errors": [{"field": "name", "message": "required", "type": "missing"}]
+        }
+
     def test_requires_all_fields(self):
         """ApiError requires all fields."""
         with pytest.raises(ValidationError):

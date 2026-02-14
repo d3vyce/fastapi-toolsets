@@ -7,7 +7,7 @@ from fastapi.exceptions import RequestValidationError, ResponseValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
-from ..schemas import ResponseStatus
+from ..schemas import ErrorResponse, ResponseStatus
 from .exceptions import ApiException
 
 
@@ -54,16 +54,16 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def api_exception_handler(request: Request, exc: ApiException) -> Response:
         """Handle custom API exceptions with structured response."""
         api_error = exc.api_error
+        error_response = ErrorResponse(
+            data=api_error.data,
+            message=api_error.msg,
+            description=api_error.desc,
+            error_code=api_error.err_code,
+        )
 
         return JSONResponse(
             status_code=api_error.code,
-            content={
-                "data": None,
-                "status": ResponseStatus.FAIL.value,
-                "message": api_error.msg,
-                "description": api_error.desc,
-                "error_code": api_error.err_code,
-            },
+            content=error_response.model_dump(),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -83,15 +83,15 @@ def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def generic_exception_handler(request: Request, exc: Exception) -> Response:
         """Handle all unhandled exceptions with a generic 500 response."""
+        error_response = ErrorResponse(
+            message="Internal Server Error",
+            description="An unexpected error occurred. Please try again later.",
+            error_code="SERVER-500",
+        )
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "data": None,
-                "status": ResponseStatus.FAIL.value,
-                "message": "Internal Server Error",
-                "description": "An unexpected error occurred. Please try again later.",
-                "error_code": "SERVER-500",
-            },
+            content=error_response.model_dump(),
         )
 
 
@@ -116,15 +116,16 @@ def _format_validation_error(
             }
         )
 
+    error_response = ErrorResponse(
+        data={"errors": formatted_errors},
+        message="Validation Error",
+        description=f"{len(formatted_errors)} validation error(s) detected",
+        error_code="VAL-422",
+    )
+
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "data": {"errors": formatted_errors},
-            "status": ResponseStatus.FAIL.value,
-            "message": "Validation Error",
-            "description": f"{len(formatted_errors)} validation error(s) detected",
-            "error_code": "VAL-422",
-        },
+        content=error_response.model_dump(),
     )
 
 
