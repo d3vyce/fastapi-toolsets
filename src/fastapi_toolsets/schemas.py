@@ -1,7 +1,7 @@
 """Base Pydantic schemas for API responses."""
 
 from enum import Enum
-from typing import ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -50,6 +50,7 @@ class ApiError(PydanticBase):
     msg: str
     desc: str
     err_code: str
+    data: Any | None = None
 
 
 class BaseResponse(PydanticBase):
@@ -84,7 +85,7 @@ class ErrorResponse(BaseResponse):
 
     status: ResponseStatus = ResponseStatus.FAIL
     description: str | None = None
-    data: None = None
+    data: Any | None = None
 
 
 class Pagination(PydanticBase):

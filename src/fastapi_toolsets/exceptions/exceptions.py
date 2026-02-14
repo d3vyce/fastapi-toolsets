@@ -183,7 +183,7 @@ def generate_error_responses(
             "content": {
                 "application/json": {
                     "example": {
-                        "data": None,
+                        "data": api_error.data,
                         "status": ResponseStatus.FAIL.value,
                         "message": api_error.msg,
                         "description": api_error.desc,
