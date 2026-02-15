@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import ForeignKey, String, Uuid
+from sqlalchemy import Column, ForeignKey, String, Table, Uuid
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -56,6 +56,25 @@ class User(Base):
     role: Mapped[Role | None] = relationship(back_populates="users")
 
 
+class Tag(Base):
+    """Test tag model."""
+
+    __tablename__ = "tags"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(50), unique=True)
+
+
+post_tags = Table(
+    "post_tags",
+    Base.metadata,
+    Column(
+        "post_id", Uuid, ForeignKey("posts.id", ondelete="CASCADE"), primary_key=True
+    ),
+    Column("tag_id", Uuid, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
 class Post(Base):
     """Test post model."""
 
@@ -66,6 +85,8 @@ class Post(Base):
     content: Mapped[str] = mapped_column(String(1000), default="")
     is_published: Mapped[bool] = mapped_column(default=False)
     author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+
+    tags: Mapped[list[Tag]] = relationship(secondary=post_tags)
 
 
 # =============================================================================
@@ -105,6 +126,13 @@ class UserUpdate(BaseModel):
     role_id: uuid.UUID | None = None
 
 
+class TagCreate(BaseModel):
+    """Schema for creating a tag."""
+
+    id: uuid.UUID | None = None
+    name: str
+
+
 class PostCreate(BaseModel):
     """Schema for creating a post."""
 
@@ -123,6 +151,26 @@ class PostUpdate(BaseModel):
     is_published: bool | None = None
 
 
+class PostM2MCreate(BaseModel):
+    """Schema for creating a post with M2M tag IDs."""
+
+    id: uuid.UUID | None = None
+    title: str
+    content: str = ""
+    is_published: bool = False
+    author_id: uuid.UUID
+    tag_ids: list[uuid.UUID] = []
+
+
+class PostM2MUpdate(BaseModel):
+    """Schema for updating a post with M2M tag IDs."""
+
+    title: str | None = None
+    content: str | None = None
+    is_published: bool | None = None
+    tag_ids: list[uuid.UUID] | None = None
+
+
 # =============================================================================
 # CRUD Classes
 # =============================================================================
@@ -130,6 +178,8 @@ class PostUpdate(BaseModel):
 RoleCrud = CrudFactory(Role)
 UserCrud = CrudFactory(User)
 PostCrud = CrudFactory(Post)
+TagCrud = CrudFactory(Tag)
+PostM2MCrud = CrudFactory(Post, m2m_fields={"tag_ids": Post.tags})
 
 
 # =============================================================================
