@@ -46,6 +46,9 @@ Repository = "https://github.com/d3vyce/fastapi-toolsets"
 Issues = "https://github.com/d3vyce/fastapi-toolsets/issues"
 
 [project.optional-dependencies]
+metrics = [
+    "prometheus_client>=0.20.0",
+]
 test = [
     "pytest>=8.0.0",
     "pytest-anyio>=0.0.0",
@@ -54,7 +57,7 @@ test = [
     "pytest-cov>=4.0.0",
 ]
 dev = [
-    "fastapi-toolsets[test]",
+    "fastapi-toolsets[metrics,test]",
     "ruff>=0.1.0",
     "ty>=0.0.1a0",
 ]
