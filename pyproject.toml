@@ -58,20 +58,30 @@ pytest = [
 all = [
     "fastapi-toolsets[cli,metrics,pytest]",
 ]
-test = [
-    "coverage>=7.0.0",
-    "fastapi-toolsets[pytest]",
-    "pytest-anyio>=0.0.0",
-    "pytest-cov>=4.0.0",
-]
-dev = [
-    "fastapi-toolsets[all,test]",
-    "ruff>=0.1.0",
-    "ty>=0.0.1a0",
-]
 
 [project.scripts]
 manager = "fastapi_toolsets.cli.app:cli"
+
+[dependency-groups]
+dev = [
+    {include-group = "tests"},
+    {include-group = "docs"},
+    "fastapi-toolsets[all]",
+    "ruff>=0.1.0",
+    "ty>=0.0.1a0",
+]
+tests = [
+    "coverage>=7.0.0",
+    "httpx>=0.25.0",
+    "pytest-anyio>=0.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-xdist>=3.0.0",
+    "pytest>=8.0.0",
+]
+docs = [
+    "mkdocstrings-python>=2.0.2",
+    "zensical>=0.0.23",
+]
 
 [build-system]
 requires = ["uv_build>=0.10,<0.11.0"]
