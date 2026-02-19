@@ -245,17 +245,30 @@ name = "fastapi-toolsets"
 version = "0.10.0"
 source = { editable = "." }
 dependencies = [
-    { name = "asyncpg" },
     { name = "fastapi" },
-    { name = "httpx" },
     { name = "pydantic" },
     { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "typer" },
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "asyncpg" },
+    { name = "httpx" },
+    { name = "prometheus-client" },
+    { name = "pytest" },
+    { name = "pytest-xdist" },
+    { name = "typer" },
+]
+asyncpg = [
+    { name = "asyncpg" },
+]
+cli = [
+    { name = "typer" },
+]
 dev = [
+    { name = "asyncpg" },
     { name = "coverage" },
+    { name = "httpx" },
     { name = "prometheus-client" },
     { name = "pytest" },
     { name = "pytest-anyio" },
@@ -263,12 +276,19 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "ty" },
+    { name = "typer" },
 ]
 metrics = [
     { name = "prometheus-client" },
 ]
+pytest = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-xdist" },
+]
 test = [
     { name = "coverage" },
+    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-anyio" },
     { name = "pytest-cov" },
@@ -277,23 +297,25 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncpg", specifier = ">=0.29.0" },
+    { name = "asyncpg", marker = "extra == 'asyncpg'", specifier = ">=0.29.0" },
     { name = "coverage", marker = "extra == 'test'", specifier = ">=7.0.0" },
     { name = "fastapi", specifier = ">=0.100.0" },
-    { name = "fastapi-toolsets", extras = ["metrics", "test"], marker = "extra == 'dev'" },
-    { name = "httpx", specifier = ">=0.25.0" },
+    { name = "fastapi-toolsets", extras = ["all", "test"], marker = "extra == 'dev'" },
+    { name = "fastapi-toolsets", extras = ["asyncpg", "cli", "metrics", "pytest"], marker = "extra == 'all'" },
+    { name = "fastapi-toolsets", extras = ["pytest"], marker = "extra == 'test'" },
+    { name = "httpx", marker = "extra == 'pytest'", specifier = ">=0.25.0" },
     { name = "prometheus-client", marker = "extra == 'metrics'", specifier = ">=0.20.0" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
+    { name = "pytest", marker = "extra == 'pytest'", specifier = ">=8.0.0" },
     { name = "pytest-anyio", marker = "extra == 'test'", specifier = ">=0.0.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.0.0" },
-    { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.0.0" },
+    { name = "pytest-xdist", marker = "extra == 'pytest'", specifier = ">=3.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a0" },
-    { name = "typer", specifier = ">=0.9.0" },
+    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9.0" },
 ]
-provides-extras = ["metrics", "test", "dev"]
+provides-extras = ["asyncpg", "cli", "metrics", "pytest", "all", "test", "dev"]
 
 [[package]]
 name = "greenlet"
