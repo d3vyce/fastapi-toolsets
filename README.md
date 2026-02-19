@@ -20,20 +20,42 @@ FastAPI Toolsets provides production-ready utilities for FastAPI applications bu
 
 ## Installation
 
+The base package includes the core modules (CRUD, database, schemas, exceptions, fixtures, dependencies, logging):
+
 ```bash
 uv add fastapi-toolsets
 ```
 
+Install only the extras you need:
+
+```bash
+uv add "fastapi-toolsets[cli]"      # CLI (typer)
+uv add "fastapi-toolsets[metrics]"  # Prometheus metrics (prometheus_client)
+uv add "fastapi-toolsets[pytest]"   # Pytest helpers (httpx, pytest-xdist)
+```
+
+Or install everything:
+
+```bash
+uv add "fastapi-toolsets[all]"
+```
+
 ## Features
+
+### Core
 
 - **CRUD**: Generic async CRUD operations with `CrudFactory`, built-in search with relationship traversal
 - **Database**: Session management, transaction helpers, table locking, and polling-based row change detection
 - **Dependencies**: FastAPI dependency factories (`PathDependency`, `BodyDependency`) for automatic DB lookups from path or body parameters
 - **Fixtures**: Fixture system with dependency management, context support, and pytest integration
-- **CLI**: Django-like command-line interface with fixture management and custom commands support
 - **Standardized API Responses**: Consistent response format with `Response`, `PaginatedResponse`, and `PydanticBase`
 - **Exception Handling**: Structured error responses with automatic OpenAPI documentation
 - **Logging**: Logging configuration with uvicorn integration via `configure_logging` and `get_logger`
+
+### Optional
+
+- **CLI**: Django-like command-line interface with fixture management and custom commands support
+- **Metrics**: Prometheus metrics endpoint with provider/collector registry
 - **Pytest Helpers**: Async test client, database session management, `pytest-xdist` support, and table cleanup utilities
 
 ## License

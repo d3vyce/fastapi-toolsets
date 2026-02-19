@@ -1,6 +1,11 @@
 """Main CLI application."""
 
-import typer
+try:
+    import typer
+except ImportError:
+    from .._imports import require_extra
+
+    require_extra(package="typer", extra="cli")
 
 from ..logger import configure_logging
 from .config import get_custom_cli
