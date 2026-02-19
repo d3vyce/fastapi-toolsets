@@ -2,10 +2,14 @@
 
 import importlib
 import sys
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import typer
 
 from .pyproject import find_pyproject, load_pyproject
+
+if TYPE_CHECKING:
+    from ..fixtures import FixtureRegistry
 
 
 def _ensure_project_in_path():
@@ -17,7 +21,7 @@ def _ensure_project_in_path():
             sys.path.insert(0, project_root)
 
 
-def import_from_string(import_path: str):
+def import_from_string(import_path: str) -> Any:
     """Import an object from a dotted string path.
 
     Args:
@@ -51,7 +55,13 @@ def import_from_string(import_path: str):
     return getattr(module, attr_name)
 
 
-def get_config_value(key: str, required: bool = False):
+@overload
+def get_config_value(key: str, required: Literal[True]) -> Any: ...  # pragma: no cover
+@overload
+def get_config_value(
+    key: str, required: bool = False
+) -> Any | None: ...  # pragma: no cover
+def get_config_value(key: str, required: bool = False) -> Any | None:
     """Get a configuration value from pyproject.toml.
 
     Args:
@@ -76,7 +86,7 @@ def get_config_value(key: str, required: bool = False):
     return value
 
 
-def get_fixtures_registry():
+def get_fixtures_registry() -> FixtureRegistry:
     """Import and return the fixtures registry from config."""
     from ..fixtures import FixtureRegistry
 
@@ -91,7 +101,7 @@ def get_fixtures_registry():
     return registry
 
 
-def get_db_context():
+def get_db_context() -> Any:
     """Import and return the db_context function from config."""
     import_path = get_config_value("db_context", required=True)
     return import_from_string(import_path)
