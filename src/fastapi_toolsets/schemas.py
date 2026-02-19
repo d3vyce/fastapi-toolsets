@@ -71,7 +71,9 @@ class Response(BaseResponse, Generic[DataT]):
     """Generic API response with data payload.
 
     Example:
+        ```python
         Response[UserRead](data=user, message="User retrieved")
+        ```
     """
 
     data: DataT | None = None
@@ -108,10 +110,12 @@ class PaginatedResponse(BaseResponse, Generic[DataT]):
     """Paginated API response for list endpoints.
 
     Example:
+        ```python
         PaginatedResponse[UserRead](
             data=users,
             pagination=Pagination(total_count=100, items_per_page=10, page=1, has_more=True)
         )
+        ```
     """
 
     data: list[DataT]

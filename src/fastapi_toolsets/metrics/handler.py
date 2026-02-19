@@ -40,12 +40,14 @@ def init_metrics(
         The same FastAPI instance (for chaining).
 
     Example:
+        ```python
         from fastapi import FastAPI
         from fastapi_toolsets.metrics import MetricsRegistry, init_metrics
 
         metrics = MetricsRegistry()
         app = FastAPI()
         init_metrics(app, registry=metrics)
+        ```
     """
     for provider in registry.get_providers():
         logger.debug("Initialising metric provider '%s'", provider.name)

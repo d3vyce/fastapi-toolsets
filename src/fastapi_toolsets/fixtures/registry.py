@@ -26,6 +26,7 @@ class FixtureRegistry:
     """Registry for managing fixtures with dependencies.
 
     Example:
+        ```python
         from fastapi_toolsets.fixtures import FixtureRegistry, Context
 
         fixtures = FixtureRegistry()
@@ -48,6 +49,7 @@ class FixtureRegistry:
             return [
                 Post(id=1, title="Test", user_id=1),
             ]
+        ```
     """
 
     def __init__(
@@ -80,6 +82,7 @@ class FixtureRegistry:
             contexts: List of contexts this fixture belongs to
 
         Example:
+            ```python
             @fixtures.register
             def roles():
                 return [Role(id=1, name="admin")]
@@ -87,6 +90,7 @@ class FixtureRegistry:
             @fixtures.register(depends_on=["roles"], contexts=[Context.TESTING])
             def test_users():
                 return [User(id=1, username="test", role_id=1)]
+            ```
         """
 
         def decorator(
@@ -124,6 +128,7 @@ class FixtureRegistry:
             ValueError: If a fixture name already exists in the current registry
 
         Example:
+            ```python
             registry = FixtureRegistry()
             dev_registry = FixtureRegistry()
 
@@ -132,6 +137,7 @@ class FixtureRegistry:
                 return [...]
 
             registry.include_registry(registry=dev_registry)
+            ```
         """
         for name, fixture in registry._fixtures.items():
             if name in self._fixtures:

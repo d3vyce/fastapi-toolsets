@@ -35,6 +35,7 @@ def create_db_dependency(
         An async generator function usable with FastAPI's Depends()
 
     Example:
+        ```python
         from fastapi import Depends
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
         from fastapi_toolsets.db import create_db_dependency
@@ -46,6 +47,7 @@ def create_db_dependency(
         @app.get("/users")
         async def list_users(session: AsyncSession = Depends(get_db)):
             ...
+        ```
     """
 
     async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -72,6 +74,7 @@ def create_db_context(
         An async context manager function
 
     Example:
+        ```python
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
         from fastapi_toolsets.db import create_db_context
 
@@ -83,6 +86,7 @@ def create_db_context(
             async with get_db_context() as session:
                 user = await UserCrud.get(session, [User.id == 1])
                 ...
+        ```
     """
     get_db = create_db_dependency(session_maker)
     return asynccontextmanager(get_db)
@@ -104,9 +108,11 @@ async def get_transaction(
         The session within the transaction context
 
     Example:
+        ```python
         async with get_transaction(session):
             session.add(model)
             # Auto-commits on exit, rolls back on exception
+        ```
     """
     if session.in_transaction():
         async with session.begin_nested():
@@ -158,6 +164,7 @@ async def lock_tables(
         SQLAlchemyError: If lock cannot be acquired within timeout
 
     Example:
+        ```python
         from fastapi_toolsets.db import lock_tables, LockMode
 
         async with lock_tables(session, [User, Account]):
@@ -169,6 +176,7 @@ async def lock_tables(
         async with lock_tables(session, [Order], mode=LockMode.EXCLUSIVE):
             # Exclusive lock - no other transactions can access
             await process_order(session, order_id)
+        ```
     """
     table_names = ",".join(table.__tablename__ for table in tables)
 
@@ -212,6 +220,7 @@ async def wait_for_row_change(
         TimeoutError: If timeout expires before a change is detected
 
     Example:
+        ```python
         from fastapi_toolsets.db import wait_for_row_change
 
         # Wait for any column to change
@@ -224,6 +233,7 @@ async def wait_for_row_change(
             interval=1.0,
             timeout=30.0,
         )
+        ```
     """
     instance = await session.get(model, pk_value)
     if instance is None:

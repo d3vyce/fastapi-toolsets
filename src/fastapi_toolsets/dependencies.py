@@ -38,12 +38,14 @@ def PathDependency(
         NotFoundError: If no matching record is found
 
     Example:
+        ```python
         UserDep = PathDependency(User, User.id, session_dep=get_db)
 
         @router.get("/user/{id}")
         async def get(
             user: User = UserDep,
         ): ...
+        ```
     """
     crud = CrudFactory(model)
     name = (
@@ -102,6 +104,7 @@ def BodyDependency(
         NotFoundError: If no matching record is found
 
     Example:
+        ```python
         UserDep = BodyDependency(
             User, User.ctfd_id, session_dep=get_db, body_field="user_id"
         )
@@ -110,6 +113,7 @@ def BodyDependency(
         async def assign(
             user: User = UserDep,
         ): ...
+        ```
     """
     crud = CrudFactory(model)
     python_type = field.type.python_type

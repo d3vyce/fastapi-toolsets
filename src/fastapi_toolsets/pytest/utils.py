@@ -37,6 +37,7 @@ async def create_async_client(
         An AsyncClient configured for the app.
 
     Example:
+        ```python
         from fastapi import FastAPI
         from fastapi_toolsets.pytest import create_async_client
 
@@ -50,8 +51,10 @@ async def create_async_client(
         async def test_endpoint(client: AsyncClient):
             response = await client.get("/health")
             assert response.status_code == 200
+        ```
 
     Example with dependency overrides:
+        ```python
         from fastapi_toolsets.pytest import create_async_client, create_db_session
         from app.db import get_db
 
@@ -69,6 +72,7 @@ async def create_async_client(
                 app, dependency_overrides={get_db: override}
             ) as c:
                 yield c
+        ```
     """
     if dependency_overrides:
         app.dependency_overrides.update(dependency_overrides)
@@ -111,6 +115,7 @@ async def create_db_session(
         An AsyncSession ready for database operations.
 
     Example:
+        ```python
         from fastapi_toolsets.pytest import create_db_session
         from app.models import Base
 
@@ -127,6 +132,7 @@ async def create_db_session(
             user = User(name="test")
             db_session.add(user)
             await db_session.commit()
+        ```
     """
     engine = create_async_engine(database_url, echo=echo)
 
@@ -186,6 +192,7 @@ def worker_database_url(database_url: str, default_test_db: str) -> str:
         A database URL with a worker- or default-specific database name.
 
     Example:
+        ```python
         # With PYTEST_XDIST_WORKER="gw0":
         url = worker_database_url(
             "postgresql+asyncpg://user:pass@localhost/test_db",
@@ -199,6 +206,7 @@ def worker_database_url(database_url: str, default_test_db: str) -> str:
             default_test_db="test",
         )
         # "postgresql+asyncpg://user:pass@localhost/test_db_test"
+        ```
     """
     worker = _get_xdist_worker(default_test_db=default_test_db)
 
@@ -231,6 +239,7 @@ async def create_worker_database(
         The worker-specific database URL.
 
     Example:
+        ```python
         from fastapi_toolsets.pytest import (
             create_worker_database, create_db_session,
         )
@@ -248,6 +257,7 @@ async def create_worker_database(
                 worker_db_url, Base, cleanup=True
             ) as session:
                 yield session
+        ```
     """
     worker_url = worker_database_url(
         database_url=database_url, default_test_db=default_test_db
@@ -288,11 +298,13 @@ async def cleanup_tables(
         base: SQLAlchemy DeclarativeBase class containing model metadata.
 
     Example:
+        ```python
         @pytest.fixture
         async def db_session(worker_db_url):
             async with create_db_session(worker_db_url, Base) as session:
                 yield session
                 await cleanup_tables(session, Base)
+        ```
     """
     tables = base.metadata.sorted_tables
     if not tables:

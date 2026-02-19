@@ -37,10 +37,12 @@ def configure_logging(
         The configured Logger instance.
 
     Example:
+        ```python
         from fastapi_toolsets.logger import configure_logging
 
         logger = configure_logging("DEBUG")
         logger.info("Application started")
+        ```
     """
     formatter = logging.Formatter(fmt)
 
@@ -83,11 +85,13 @@ def get_logger(name: str | None = _SENTINEL) -> logging.Logger:  # type: ignore[
         A Logger instance.
 
     Example:
+        ```python
         from fastapi_toolsets.logger import get_logger
 
         logger = get_logger()          # uses caller's __name__
         logger = get_logger("myapp")   # explicit name
         logger = get_logger(None)      # root logger
+        ```
     """
     if name is _SENTINEL:
         name = sys._getframe(1).f_globals.get("__name__")

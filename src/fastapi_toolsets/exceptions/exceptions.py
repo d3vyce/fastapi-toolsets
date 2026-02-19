@@ -12,6 +12,7 @@ class ApiException(Exception):
     The exception handler will use api_error to generate the response.
 
     Example:
+        ```python
         class CustomError(ApiException):
             api_error = ApiError(
                 code=400,
@@ -19,6 +20,7 @@ class ApiException(Exception):
                 desc="The request was invalid.",
                 err_code="CUSTOM-400",
             )
+        ```
     """
 
     api_error: ClassVar[ApiError]
@@ -114,6 +116,7 @@ def generate_error_responses(
         Dict suitable for FastAPI's responses parameter
 
     Example:
+        ```python
         from fastapi_toolsets.exceptions import generate_error_responses, UnauthorizedError, ForbiddenError
 
         @app.get(
@@ -122,6 +125,7 @@ def generate_error_responses(
         )
         async def admin_endpoint():
             ...
+        ```
     """
     responses: dict[int | str, dict[str, Any]] = {}
 
