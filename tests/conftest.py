@@ -11,16 +11,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from fastapi_toolsets.crud import CrudFactory
 
-# PostgreSQL connection URL from environment or default for local development
-DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/fastapi_toolsets_test",
+DATABASE_URL = os.getenv(
+    key="DATABASE_URL",
+    default="postgresql+asyncpg://postgres:postgres@localhost:5432/postgres",
 )
-
-
-# =============================================================================
-# Test Models
-# =============================================================================
 
 
 class Base(DeclarativeBase):
@@ -87,11 +81,6 @@ class Post(Base):
     author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
 
     tags: Mapped[list[Tag]] = relationship(secondary=post_tags)
-
-
-# =============================================================================
-# Test Schemas
-# =============================================================================
 
 
 class RoleCreate(BaseModel):
@@ -171,20 +160,11 @@ class PostM2MUpdate(BaseModel):
     tag_ids: list[uuid.UUID] | None = None
 
 
-# =============================================================================
-# CRUD Classes
-# =============================================================================
-
 RoleCrud = CrudFactory(Role)
 UserCrud = CrudFactory(User)
 PostCrud = CrudFactory(Post)
 TagCrud = CrudFactory(Tag)
 PostM2MCrud = CrudFactory(Post, m2m_fields={"tag_ids": Post.tags})
-
-
-# =============================================================================
-# Fixtures
-# =============================================================================
 
 
 @pytest.fixture
