@@ -35,6 +35,7 @@ def register_fixtures(
         List of created fixture names
 
     Example:
+        ```python
         # conftest.py
         from app.fixtures import fixtures
         from fastapi_toolsets.pytest_plugin import register_fixtures
@@ -45,6 +46,7 @@ def register_fixtures(
         # - fixture_roles
         # - fixture_users (depends on fixture_roles if users depends on roles)
         # - fixture_posts (depends on fixture_users if posts depends on users)
+        ```
     """
     created_fixtures: list[str] = []
 

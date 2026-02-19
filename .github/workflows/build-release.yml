@@ -20,7 +20,7 @@ jobs:
         run: uv python install 3.14
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --group dev
 
       - name: Build
         run: uv build

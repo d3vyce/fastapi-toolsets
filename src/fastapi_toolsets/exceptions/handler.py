@@ -25,11 +25,13 @@ def init_exceptions_handlers(app: FastAPI) -> FastAPI:
         The same FastAPI instance (for chaining)
 
     Example:
+        ```python
         from fastapi import FastAPI
         from fastapi_toolsets.exceptions import init_exceptions_handlers
 
         app = FastAPI()
         init_exceptions_handlers(app)
+        ```
     """
     _register_exception_handlers(app)
     app.openapi = lambda: _custom_openapi(app)  # type: ignore[method-assign]

@@ -22,6 +22,7 @@ class MetricsRegistry:
     """Registry for managing Prometheus metric providers and collectors.
 
     Example:
+        ```python
         from prometheus_client import Counter, Gauge
         from fastapi_toolsets.metrics import MetricsRegistry
 
@@ -38,6 +39,7 @@ class MetricsRegistry:
         @metrics.register(collect=True)
         def collect_queue_depth(gauge=Gauge("queue_depth", "Current queue depth")):
             gauge.set(get_current_queue_depth())
+        ```
     """
 
     def __init__(self) -> None:
@@ -61,6 +63,7 @@ class MetricsRegistry:
                 If ``False`` (default), called once at init time.
 
         Example:
+            ```python
             @metrics.register
             def my_counter():
                 return Counter("my_counter", "A counter")
@@ -68,6 +71,7 @@ class MetricsRegistry:
             @metrics.register(collect=True, name="queue")
             def collect_queue_depth():
                 gauge.set(compute_depth())
+            ```
         """
 
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -93,6 +97,7 @@ class MetricsRegistry:
             ValueError: If a metric name already exists in the current registry.
 
         Example:
+            ```python
             main = MetricsRegistry()
             sub = MetricsRegistry()
 
@@ -101,6 +106,7 @@ class MetricsRegistry:
                 return Counter("sub_total", "Sub counter")
 
             main.include_registry(sub)
+            ```
         """
         for metric_name, definition in registry._metrics.items():
             if metric_name in self._metrics:

@@ -682,6 +682,7 @@ def CrudFactory(
         AsyncCrud subclass bound to the model
 
     Example:
+        ```python
         from fastapi_toolsets.crud import CrudFactory
         from myapp.models import User, Post
 
@@ -724,6 +725,7 @@ def CrudFactory(
             joins=[(Post, Post.user_id == User.id)],
             outer_join=True,
         )
+        ```
     """
     cls = type(
         f"Async{model.__name__}Crud",

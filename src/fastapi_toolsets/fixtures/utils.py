@@ -59,9 +59,11 @@ async def load_fixtures(
         Dict mapping fixture names to loaded instances
 
     Example:
+        ```python
         # Loads 'roles' first (dependency), then 'users'
         result = await load_fixtures(session, fixtures, "users")
         print(result["users"])  # [User(...), ...]
+        ```
     """
     ordered = registry.resolve_dependencies(*names)
     return await _load_ordered(session, registry, ordered, strategy)
@@ -85,11 +87,13 @@ async def load_fixtures_by_context(
         Dict mapping fixture names to loaded instances
 
     Example:
+        ```python
         # Load base + testing fixtures
         await load_fixtures_by_context(
             session, fixtures,
             Context.BASE, Context.TESTING
         )
+        ```
     """
     ordered = registry.resolve_context_dependencies(*contexts)
     return await _load_ordered(session, registry, ordered, strategy)
