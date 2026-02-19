@@ -76,55 +76,6 @@ class ConflictError(ApiException):
     )
 
 
-class InsufficientRolesError(ForbiddenError):
-    """User does not have the required roles."""
-
-    api_error = ApiError(
-        code=403,
-        msg="Insufficient Roles",
-        desc="You do not have the required roles to access this resource.",
-        err_code="RBAC-403",
-    )
-
-    def __init__(self, required_roles: list[str], user_roles: set[str] | None = None):
-        """Initialize the exception.
-
-        Args:
-            required_roles: Roles needed to access the resource
-            user_roles: Roles the current user has, if known
-        """
-        self.required_roles = required_roles
-        self.user_roles = user_roles
-
-        desc = f"Required roles: {', '.join(required_roles)}"
-        if user_roles is not None:
-            desc += f". User has: {', '.join(user_roles) if user_roles else 'no roles'}"
-
-        super().__init__(desc)
-
-
-class UserNotFoundError(NotFoundError):
-    """User was not found."""
-
-    api_error = ApiError(
-        code=404,
-        msg="User Not Found",
-        desc="The requested user was not found.",
-        err_code="USER-404",
-    )
-
-
-class RoleNotFoundError(NotFoundError):
-    """Role was not found."""
-
-    api_error = ApiError(
-        code=404,
-        msg="Role Not Found",
-        desc="The requested role was not found.",
-        err_code="ROLE-404",
-    )
-
-
 class NoSearchableFieldsError(ApiException):
     """Raised when search is requested but no searchable fields are available."""
 

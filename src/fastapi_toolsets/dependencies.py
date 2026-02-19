@@ -8,7 +8,9 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
-from ..crud import CrudFactory
+from .crud import CrudFactory
+
+__all__ = ["BodyDependency", "PathDependency"]
 
 ModelType = TypeVar("ModelType", bound=DeclarativeBase)
 SessionDependency = Callable[[], AsyncGenerator[AsyncSession, None]]
