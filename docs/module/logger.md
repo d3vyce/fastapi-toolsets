@@ -34,4 +34,6 @@ When called without arguments, [`get_logger`](../reference/logger.md#fastapi_too
 logger = get_logger()
 ```
 
+---
+
 [:material-api: API Reference](../reference/logger.md)

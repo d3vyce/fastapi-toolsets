@@ -2,9 +2,12 @@
 
 SQLAlchemy async session management with transactions, table locking, and row-change polling.
 
+!!! info
+    This module has been coded and tested to be compatible with PostgreSQL only.
+
 ## Overview
 
-The `db` module provides helpers to create FastAPI dependencies and context managers for `AsyncSession`, along with utilities for nested transactions, PostgreSQL advisory locks, and polling for row changes.
+The `db` module provides helpers to create FastAPI dependencies and context managers for `AsyncSession`, along with utilities for nested transactions, table lock and polling for row changes.
 
 ## Session dependency
 
@@ -14,10 +17,10 @@ Use [`create_db_dependency`](../reference/db.md#fastapi_toolsets.db.create_db_de
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from fastapi_toolsets.db import create_db_dependency
 
-engine = create_async_engine("postgresql+asyncpg://...")
-session_maker = async_sessionmaker(engine)
+engine = create_async_engine(url="postgresql+asyncpg://...", future=True)
+session_maker = async_sessionmaker(bind=engine, expire_on_commit=False)
 
-get_db = create_db_dependency(session_maker)
+get_db = create_db_dependency(session_maker=session_maker)
 
 @router.get("/users")
 async def list_users(session: AsyncSession = Depends(get_db)):
@@ -31,11 +34,11 @@ Use [`create_db_context`](../reference/db.md#fastapi_toolsets.db.create_db_conte
 ```python
 from fastapi_toolsets.db import create_db_context
 
-db_context = create_db_context(session_maker)
+db_context = create_db_context(session_maker=session_maker)
 
 async def seed():
     async with db_context() as session:
-        session.add(User(name="admin"))
+        ...
 ```
 
 ## Nested transactions
@@ -45,11 +48,11 @@ async def seed():
 ```python
 from fastapi_toolsets.db import get_transaction
 
-async def create_user_with_role(session):
-    async with get_transaction(session):
-        session.add(role)
-        async with get_transaction(session):  # uses savepoint
-            session.add(user)
+async def create_user_with_role(session=session):
+    async with get_transaction(session=session):
+        ...
+        async with get_transaction(session=session):  # uses savepoint
+            ...
 ```
 
 ## Table locking
@@ -59,7 +62,7 @@ async def create_user_with_role(session):
 ```python
 from fastapi_toolsets.db import lock_tables
 
-async with lock_tables(session, tables=[User], mode="EXCLUSIVE"):
+async with lock_tables(session=session, tables=[User], mode="EXCLUSIVE"):
     # No other transaction can modify User until this block exits
     ...
 ```
@@ -75,7 +78,7 @@ from fastapi_toolsets.db import wait_for_row_change
 
 # Wait up to 30s for order.status to change
 await wait_for_row_change(
-    session,
+    session=session,
     model=Order,
     pk_value=order_id,
     columns=[Order.status],

@@ -1,12 +1,14 @@
 name: Documentation
+
 on:
-  push:
-    branches:
-      - main
+  release:
+    types: [published]
+
 permissions:
   contents: read
   pages: write
   id-token: write
+
 jobs:
   deploy:
     environment:

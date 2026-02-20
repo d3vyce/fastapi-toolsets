@@ -27,7 +27,7 @@ from fastapi_toolsets.metrics import MetricsRegistry, init_metrics
 app = FastAPI()
 metrics = MetricsRegistry()
 
-init_metrics(app, registry=metrics)
+init_metrics(app=app, registry=metrics)
 ```
 
 This mounts the `/metrics` endpoint that Prometheus can scrape.
@@ -70,8 +70,8 @@ from myapp.metrics.http import http_metrics
 from myapp.metrics.db import db_metrics
 
 metrics = MetricsRegistry()
-metrics.include_registry(http_metrics)
-metrics.include_registry(db_metrics)
+metrics.include_registry(registry=http_metrics)
+metrics.include_registry(registry=db_metrics)
 ```
 
 ## Multi-process mode
@@ -80,10 +80,6 @@ Multi-process support is enabled automatically when the `PROMETHEUS_MULTIPROC_DI
 
 !!! warning "Environment variable name"
     The correct variable is `PROMETHEUS_MULTIPROC_DIR` (not `PROMETHEUS_MULTIPROCESS_DIR`).
-
-```bash
-export PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
-```
 
 ---
 

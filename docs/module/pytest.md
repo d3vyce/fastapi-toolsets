@@ -26,8 +26,15 @@ Use [`create_async_client`](../reference/pytest.md#fastapi_toolsets.pytest.utils
 from fastapi_toolsets.pytest import create_async_client
 
 @pytest.fixture
-async def client(app):
-    async with create_async_client(app=app) as c:
+async def http_client(db_session):
+    async def _override_get_db():
+        yield db_session
+
+    async with create_async_client(
+        app=app,
+        base_url="http://127.0.0.1/api/v1",
+        dependency_overrides={get_db: _override_get_db},
+    ) as c:
         yield c
 ```
 
@@ -36,36 +43,34 @@ async def client(app):
 Use [`create_db_session`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_db_session) to create an isolated `AsyncSession` for a test:
 
 ```python
-from fastapi_toolsets.pytest import create_db_session
+from fastapi_toolsets.pytest import create_db_session, create_worker_database
 
-@pytest.fixture
-async def db_session():
-    async with create_db_session(database_url=DATABASE_URL, base=Base, cleanup=True) as session:
-        yield session
-```
-
-## Parallel testing with pytest-xdist
-
-When running tests in parallel, each worker needs its own database. Use these helpers to create and identify worker databases:
-
-```python
-from fastapi_toolsets.pytest import create_worker_database, create_db_session
-
-# In conftest.py session-scoped fixture
 @pytest.fixture(scope="session")
 async def worker_db_url():
-    async with create_worker_database(database_url=DATABASE_URL) as url:
+    async with create_worker_database(
+        database_url=str(settings.SQLALCHEMY_DATABASE_URI)
+    ) as url:
         yield url
+
 
 @pytest.fixture
 async def db_session(worker_db_url):
-    async with create_db_session(database_url=worker_db_url, base=Base, cleanup=True) as session:
+    async with create_db_session(
+        database_url=worker_db_url, base=Base, cleanup=True
+    ) as session:
         yield session
 ```
 
+!!! info
+    In this example, the database is reset between each test using the argument `cleanup=True`.
+
+## Parallel testing with pytest-xdist
+
+The examples above are already compatible with parallel test execution with `pytest-xdist`.
+
 ## Cleaning up tables
 
-[`cleanup_tables`](../reference/pytest.md#fastapi_toolsets.pytest.utils.cleanup_tables) truncates all tables between tests for fast isolation:
+If you want to manually clean up a database you can use [`cleanup_tables`](../reference/pytest.md#fastapi_toolsets.pytest.utils.cleanup_tables), this will truncates all tables between tests for fast isolation:
 
 ```python
 from fastapi_toolsets.pytest import cleanup_tables

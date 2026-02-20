@@ -4,7 +4,7 @@ Structured API exceptions with consistent error responses and automatic OpenAPI 
 
 ## Overview
 
-The `exceptions` module provides a set of pre-built HTTP exceptions and a FastAPI exception handler that formats all errors — including validation errors — into a uniform [`ErrorResponse`](../reference/schemas.md#fastapi_toolsets.schemas.ErrorResponse) shape.
+The `exceptions` module provides a set of pre-built HTTP exceptions and a FastAPI exception handler that formats all errors — including validation errors — into a uniform [`ErrorResponse`](../reference/schemas.md#fastapi_toolsets.schemas.ErrorResponse).
 
 ## Setup
 
@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi_toolsets.exceptions import init_exceptions_handlers
 
 app = FastAPI()
-init_exceptions_handlers(app)
+init_exceptions_handlers(app=app)
 ```
 
 This registers handlers for:
@@ -36,11 +36,11 @@ This registers handlers for:
 | [`NoSearchableFieldsError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.NoSearchableFieldsError) | 400 | No searchable fields |
 
 ```python
-from fastapi_toolsets.exceptions import NotFoundError, ForbiddenError
+from fastapi_toolsets.exceptions import NotFoundError
 
 @router.get("/users/{id}")
 async def get_user(id: int, session: AsyncSession = Depends(get_db)):
-    user = await UserCrud.first(session, filters=[User.id == id])
+    user = await UserCrud.first(session=session, filters=[User.id == id])
     if not user:
         raise NotFoundError
     return user
@@ -76,6 +76,9 @@ from fastapi_toolsets.exceptions import generate_error_responses, NotFoundError,
 )
 async def get_user(...): ...
 ```
+
+!!! info
+    The pydantic validation error is automatically added by FastAPI.
 
 ---
 

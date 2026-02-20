@@ -13,17 +13,17 @@ The `dependencies` module provides two factory functions that create FastAPI dep
 ```python
 from fastapi_toolsets.dependencies import PathDependency
 
-UserDep = PathDependency(User, User.id, session_dep=get_db)
+UserDep = PathDependency(model=User, field=User.id, session_dep=get_db)
 
 @router.get("/users/{user_id}")
 async def get_user(user: User = UserDep):
     return user
 ```
 
-The parameter name is inferred from the field (`user_id` for `User.id`). You can override it:
+By default the parameter name is inferred from the field (`user_id` for `User.id`). You can override it:
 
 ```python
-UserDep = PathDependency(User, User.id, session_dep=get_db, param_name="id")
+UserDep = PathDependency(model=User, field=User.id, session_dep=get_db, param_name="id")
 
 @router.get("/users/{id}")
 async def get_user(user: User = UserDep):
@@ -37,12 +37,14 @@ async def get_user(user: User = UserDep):
 ```python
 from fastapi_toolsets.dependencies import BodyDependency
 
-RoleDep = BodyDependency(Role, Role.id, session_dep=get_db, body_field="role_id")
+RoleDep = BodyDependency(model=Role, field=Role.id, session_dep=get_db, body_field="role_id")
 
 @router.post("/users")
 async def create_user(body: UserCreateSchema, role: Role = RoleDep):
     user = User(username=body.username, role=role)
     ...
 ```
+
+---
 
 [:material-api: API Reference](../reference/dependencies.md)

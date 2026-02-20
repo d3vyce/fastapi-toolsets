@@ -1,6 +1,6 @@
 # CLI
 
-Typer-based command-line interface for managing your FastAPI application, with built-in fixture loading.
+Typer-based command-line interface for managing your FastAPI application, with built-in fixture commands integration.
 
 ## Installation
 
@@ -16,7 +16,7 @@ Typer-based command-line interface for managing your FastAPI application, with b
 
 ## Overview
 
-The `cli` module provides a `manager` entry point built with [Typer](https://typer.tiangolo.com/). It auto-discovers fixture commands when a [`FixtureRegistry`](../reference/fixtures.md#fastapi_toolsets.fixtures.registry.FixtureRegistry) and a database context are configured.
+The `cli` module provides a `manager` entry point built with [Typer](https://typer.tiangolo.com/). It allow custom commands to be added in addition of the fixture commands when a [`FixtureRegistry`](../reference/fixtures.md#fastapi_toolsets.fixtures.registry.FixtureRegistry) and a database context are configured.
 
 ## Configuration
 
@@ -24,24 +24,48 @@ Configure the CLI in your `pyproject.toml`:
 
 ```toml
 [tool.fastapi-toolsets]
-cli = "myapp.cli:cli"           # optional: your custom Typer app
-fixtures = "myapp.fixtures:registry"  # FixtureRegistry instance
-db_context = "myapp.db:db_context"    # async context manager for sessions
+cli = "myapp.cli:cli"                   # Custom Typer app
+fixtures = "myapp.fixtures:registry"    # FixtureRegistry instance
+db_context = "myapp.db:db_context"      # Async context manager for sessions
 ```
 
-All fields are optional. Without configuration, the `manager` command still works but only includes the built-in commands.
+All fields are optional. Without configuration, the `manager` command still works but no command are available.
 
 ## Usage
 
 ```bash
-# List available commands
+# Manager commands
 manager --help
 
-# Load fixtures for a specific context
-manager fixtures load --context testing
+ Usage: manager [OPTIONS] COMMAND [ARGS]...
 
-# Load all fixtures (no context filter)
-manager fixtures load
+ FastAPI utilities CLI.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────╮
+│ --install-completion          Install completion for the current shell.          │
+│ --show-completion             Show completion for the current shell, to copy it  │
+│                               or customize the installation.                     │
+│ --help                        Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────╮
+│ check-db                                                                         │
+│ fixtures  Manage database fixtures.                                              │
+╰──────────────────────────────────────────────────────────────────────────────────╯
+
+# Fixtures commands
+manager fixtures --help
+
+ Usage: manager fixtures [OPTIONS] COMMAND [ARGS]...
+
+ Manage database fixtures.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                      │
+╰──────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────╮
+│ list  List all registered fixtures.                                              │
+│ load  Load fixtures into the database.                                           │
+╰──────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ## Custom CLI
@@ -62,14 +86,6 @@ def hello():
 ```toml
 [tool.fastapi-toolsets]
 cli = "myapp.cli:cli"
-```
-
-## Entry point
-
-The `manager` script is registered automatically when the package is installed:
-
-```bash
-manager --help
 ```
 
 ---
