@@ -32,22 +32,22 @@ Dependencies declared via `depends_on` are resolved topologically — `roles` wi
 
 ## Loading fixtures
 
-### By context
+By context with [`load_fixtures_by_context`](../reference/fixtures.md#fastapi_toolsets.fixtures.utils.load_fixtures_by_context):
 
 ```python
 from fastapi_toolsets.fixtures import load_fixtures_by_context
 
 async with db_context() as session:
-    await load_fixtures_by_context(session, registry=fixtures, context=Context.TESTING)
+    await load_fixtures_by_context(session=session, registry=fixtures, context=Context.TESTING)
 ```
 
-### Directly
+Directly with [`load_fixtures`](../reference/fixtures.md#fastapi_toolsets.fixtures.utils.load_fixtures):
 
 ```python
 from fastapi_toolsets.fixtures import load_fixtures
 
 async with db_context() as session:
-    await load_fixtures(session, registry=fixtures)
+    await load_fixtures(session=session, registry=fixtures)
 ```
 
 ## Contexts
@@ -60,7 +60,7 @@ async with db_context() as session:
 | `Context.TESTING` | Data only loaded during tests |
 | `Context.PRODUCTION` | Data only loaded in production |
 
-A fixture with no `contexts` argument is loaded in all contexts.
+A fixture with no `contexts` defined takes `Context.BASE` by default.
 
 ## Load strategies
 
@@ -72,9 +72,21 @@ A fixture with no `contexts` argument is loaded in all contexts.
 | `LoadStrategy.UPSERT` | Insert or update on conflict |
 | `LoadStrategy.SKIP` | Skip rows that already exist |
 
+## Merging registries
+
+Split fixtures definitions across modules and merge them:
+
+```python
+from myapp.fixtures.dev import dev_fixtures
+from myapp.fixtures.prod import prod_fixtures
+
+fixtures = fixturesRegistry()
+fixtures.include_registry(registry=dev_fixtures)
+fixtures.include_registry(registry=prod_fixtures)
+
 ## Pytest integration
 
-Use [`register_fixtures`](../reference/pytest.md#fastapi_toolsets.pytest.plugin.register_fixtures) to expose each fixture in your registry as an injectable pytest fixture named `fixture_{name}`:
+Use [`register_fixtures`](../reference/pytest.md#fastapi_toolsets.pytest.plugin.register_fixtures) to expose each fixture in your registry as an injectable pytest fixture named `fixture_{name}` by default:
 
 ```python
 # conftest.py
@@ -95,10 +107,8 @@ register_fixtures(registry=registry, namespace=globals())
 
 ```python
 # test_users.py
-async def test_user_can_login(fixture_users, fixture_roles, client):
-    # fixture_roles is loaded first (dependency), then fixture_users
-    response = await client.post("/auth/login", json={"username": "alice"})
-    assert response.status_code == 200
+async def test_user_can_login(fixture_users: list[User], fixture_roles: list[Role]):
+    ...
 ```
 
 

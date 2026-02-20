@@ -8,7 +8,7 @@ The `schemas` module provides generic response wrappers that enforce a uniform r
 
 ## Response models
 
-### `Response[T]`
+### [`Response[T]`](../reference/schemas.md#fastapi_toolsets.schemas.Response)
 
 The most common wrapper for a single resource response.
 
@@ -20,7 +20,7 @@ async def get_user(user: User = UserDep) -> Response[UserSchema]:
     return Response(data=user, message="User retrieved")
 ```
 
-### `PaginatedResponse[T]`
+### [`PaginatedResponse[T]`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse)
 
 Wraps a list of items with pagination metadata.
 
@@ -40,15 +40,10 @@ async def list_users() -> PaginatedResponse[UserSchema]:
     )
 ```
 
-### `ErrorResponse`
+### [`ErrorResponse`](../reference/schemas.md#fastapi_toolsets.schemas.ErrorResponse)
 
-Returned automatically by the exceptions handler. Can also be used as a response model for OpenAPI docs.
+Returned automatically by the exceptions handler.
 
-```python
-from fastapi_toolsets.schemas import ErrorResponse
-
-@router.delete("/users/{id}", responses={404: {"model": ErrorResponse}})
-async def delete_user(...): ...
-```
+---
 
 [:material-api: API Reference](../reference/schemas.md)
