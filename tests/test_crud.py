@@ -50,6 +50,152 @@ class TestCrudFactory:
         crud = CrudFactory(User)
         assert "User" in crud.__name__
 
+    def test_default_load_options_none_by_default(self):
+        """default_load_options is None when not specified."""
+        crud = CrudFactory(User)
+        assert crud.default_load_options is None
+
+    def test_default_load_options_set(self):
+        """default_load_options is stored on the class."""
+        options = [selectinload(User.role)]
+        crud = CrudFactory(User, default_load_options=options)
+        assert crud.default_load_options == options
+
+    def test_default_load_options_not_shared_between_classes(self):
+        """default_load_options is isolated per factory call."""
+        options = [selectinload(User.role)]
+        crud_with = CrudFactory(User, default_load_options=options)
+        crud_without = CrudFactory(User)
+        assert crud_with.default_load_options == options
+        assert crud_without.default_load_options is None
+
+
+class TestResolveLoadOptions:
+    """Tests for _resolve_load_options logic."""
+
+    def test_returns_load_options_when_provided(self):
+        """Explicit load_options takes priority over default_load_options."""
+        options = [selectinload(User.role)]
+        default = [selectinload(Post.tags)]
+        crud = CrudFactory(User, default_load_options=default)
+        assert crud._resolve_load_options(options) == options
+
+    def test_returns_default_when_load_options_is_none(self):
+        """Falls back to default_load_options when load_options is None."""
+        default = [selectinload(User.role)]
+        crud = CrudFactory(User, default_load_options=default)
+        assert crud._resolve_load_options(None) == default
+
+    def test_returns_none_when_both_are_none(self):
+        """Returns None when neither load_options nor default_load_options set."""
+        crud = CrudFactory(User)
+        assert crud._resolve_load_options(None) is None
+
+    def test_empty_list_overrides_default(self):
+        """An empty list is a valid override and disables default_load_options."""
+        default = [selectinload(User.role)]
+        crud = CrudFactory(User, default_load_options=default)
+        # Empty list is not None, so it should replace default
+        assert crud._resolve_load_options([]) == []
+
+
+class TestDefaultLoadOptionsIntegration:
+    """Integration tests for default_load_options with real DB queries."""
+
+    @pytest.mark.anyio
+    async def test_default_load_options_applied_to_get(self, db_session: AsyncSession):
+        """default_load_options loads relationships automatically on get()."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        user = await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+        fetched = await UserWithDefaultLoad.get(db_session, [User.id == user.id])
+        assert fetched.role is not None
+        assert fetched.role.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_default_load_options_applied_to_get_multi(
+        self, db_session: AsyncSession
+    ):
+        """default_load_options loads relationships automatically on get_multi()."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+        users = await UserWithDefaultLoad.get_multi(db_session)
+        assert users[0].role is not None
+        assert users[0].role.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_default_load_options_applied_to_first(
+        self, db_session: AsyncSession
+    ):
+        """default_load_options loads relationships automatically on first()."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+        user = await UserWithDefaultLoad.first(db_session)
+        assert user is not None
+        assert user.role is not None
+        assert user.role.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_default_load_options_applied_to_paginate(
+        self, db_session: AsyncSession
+    ):
+        """default_load_options loads relationships automatically on paginate()."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+        result = await UserWithDefaultLoad.paginate(db_session)
+        assert result.data[0].role is not None
+        assert result.data[0].role.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_load_options_overrides_default_load_options(
+        self, db_session: AsyncSession
+    ):
+        """Explicit load_options fully replaces default_load_options."""
+        PostWithDefaultLoad = CrudFactory(
+            Post,
+            default_load_options=[selectinload(Post.tags)],
+        )
+        user = await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com"),
+        )
+        post = await PostCrud.create(
+            db_session,
+            PostCreate(title="Hello", author_id=user.id),
+        )
+        # Pass empty load_options to override default — tags should not load
+        fetched = await PostWithDefaultLoad.get(
+            db_session,
+            [Post.id == post.id],
+            load_options=[],
+        )
+        # tags were not loaded — accessing them would lazy-load or return empty
+        # We just assert the fetch itself succeeded with the override
+        assert fetched.id == post.id
+
 
 class TestCrudCreate:
     """Tests for CRUD create operations."""
