@@ -103,6 +103,41 @@ async def get_users(
     )
 ```
 
+## Relationship loading
+
+!!! info "Added in v1.1"
+
+By default, SQLAlchemy relationships are not loaded unless explicitly requested. Instead of using `lazy="selectin"` on model definitions (which is implicit and applies globally), define a `default_load_options` on the CRUD class to control loading strategy explicitly.
+
+!!! warning
+    Avoid using `lazy="selectin"` on model relationships. It fires silently on every query, cannot be disabled per-call, and can cause unexpected cascading loads through deep relationship chains. Use `default_load_options` instead.
+
+```python
+from sqlalchemy.orm import selectinload
+
+ArticleCrud = CrudFactory(
+    model=Article,
+    default_load_options=[
+        selectinload(Article.category),
+        selectinload(Article.tags),
+    ],
+)
+```
+
+`default_load_options` applies automatically to all read operations (`get`, `first`, `get_multi`, `paginate`). When `load_options` is passed at call-site, it **fully replaces** `default_load_options` for that query — giving you precise per-call control:
+
+```python
+# Only loads category, tags are not loaded
+article = await ArticleCrud.get(
+    session=session,
+    filters=[Article.id == article_id],
+    load_options=[selectinload(Article.category)],
+)
+
+# Loads nothing — useful for write-then-refresh flows or lightweight checks
+articles = await ArticleCrud.get_multi(session=session, load_options=[])
+```
+
 ## Many-to-many relationships
 
 Use `m2m_fields` to map schema fields containing lists of IDs to SQLAlchemy relationships. The CRUD class resolves and validates all IDs before persisting:
