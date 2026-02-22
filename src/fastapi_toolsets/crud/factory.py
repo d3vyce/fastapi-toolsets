@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
@@ -21,6 +22,7 @@ from ..schemas import PaginatedResponse, Pagination, Response
 from .search import SearchConfig, SearchFieldType, build_search_filters
 
 ModelType = TypeVar("ModelType", bound=DeclarativeBase)
+SchemaType = TypeVar("SchemaType", bound=BaseModel)
 JoinType = list[tuple[type[DeclarativeBase], Any]]
 M2MFieldType = Mapping[str, QueryableAttribute[Any]]
 
@@ -108,7 +110,20 @@ class AsyncCrud(Generic[ModelType]):
         session: AsyncSession,
         obj: BaseModel,
         *,
+        schema: type[SchemaType],
+        as_response: bool = ...,
+    ) -> Response[SchemaType]: ...
+
+    # Backward-compatible - will be removed in v2.0
+    @overload
+    @classmethod
+    async def create(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        obj: BaseModel,
+        *,
         as_response: Literal[True],
+        schema: None = ...,
     ) -> Response[ModelType]: ...
 
     @overload
@@ -119,6 +134,7 @@ class AsyncCrud(Generic[ModelType]):
         obj: BaseModel,
         *,
         as_response: Literal[False] = ...,
+        schema: None = ...,
     ) -> ModelType: ...
 
     @classmethod
@@ -128,17 +144,28 @@ class AsyncCrud(Generic[ModelType]):
         obj: BaseModel,
         *,
         as_response: bool = False,
-    ) -> ModelType | Response[ModelType]:
+        schema: type[BaseModel] | None = None,
+    ) -> ModelType | Response[ModelType] | Response[Any]:
         """Create a new record in the database.
 
         Args:
             session: DB async session
             obj: Pydantic model with data to create
-            as_response: If True, wrap result in Response object
+            as_response: Deprecated. Use ``schema`` instead. Will be removed in v2.0.
+            schema: Pydantic schema to serialize the result into. When provided,
+                the result is automatically wrapped in a ``Response[schema]``.
 
         Returns:
-            Created model instance or Response wrapping it
+            Created model instance, or ``Response[schema]`` when ``schema`` is given,
+            or ``Response[ModelType]`` when ``as_response=True`` (deprecated).
         """
+        if as_response and schema is None:
+            warnings.warn(
+                "as_response is deprecated and will be removed in v2.0. "
+                "Use schema=YourSchema instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         async with get_transaction(session):
             m2m_exclude = cls._m2m_schema_fields()
             data = (
@@ -154,8 +181,9 @@ class AsyncCrud(Generic[ModelType]):
             session.add(db_model)
         await session.refresh(db_model)
         result = cast(ModelType, db_model)
-        if as_response:
-            return Response(data=result)
+        if as_response or schema:
+            data_out = schema.model_validate(result) if schema else result
+            return Response(data=data_out)
         return result
 
     @overload
@@ -169,7 +197,24 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         with_for_update: bool = False,
         load_options: list[ExecutableOption] | None = None,
+        schema: type[SchemaType],
+        as_response: bool = ...,
+    ) -> Response[SchemaType]: ...
+
+    # Backward-compatible - will be removed in v2.0
+    @overload
+    @classmethod
+    async def get(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        filters: list[Any],
+        *,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        with_for_update: bool = False,
+        load_options: list[ExecutableOption] | None = None,
         as_response: Literal[True],
+        schema: None = ...,
     ) -> Response[ModelType]: ...
 
     @overload
@@ -184,6 +229,7 @@ class AsyncCrud(Generic[ModelType]):
         with_for_update: bool = False,
         load_options: list[ExecutableOption] | None = None,
         as_response: Literal[False] = ...,
+        schema: None = ...,
     ) -> ModelType: ...
 
     @classmethod
@@ -197,7 +243,8 @@ class AsyncCrud(Generic[ModelType]):
         with_for_update: bool = False,
         load_options: list[ExecutableOption] | None = None,
         as_response: bool = False,
-    ) -> ModelType | Response[ModelType]:
+        schema: type[BaseModel] | None = None,
+    ) -> ModelType | Response[ModelType] | Response[Any]:
         """Get exactly one record. Raises NotFoundError if not found.
 
         Args:
@@ -207,15 +254,25 @@ class AsyncCrud(Generic[ModelType]):
             outer_join: Use LEFT OUTER JOIN instead of INNER JOIN
             with_for_update: Lock the row for update
             load_options: SQLAlchemy loader options (e.g., selectinload)
-            as_response: If True, wrap result in Response object
+            as_response: Deprecated. Use ``schema`` instead. Will be removed in v2.0.
+            schema: Pydantic schema to serialize the result into. When provided,
+                the result is automatically wrapped in a ``Response[schema]``.
 
         Returns:
-            Model instance or Response wrapping it
+            Model instance, or ``Response[schema]`` when ``schema`` is given,
+            or ``Response[ModelType]`` when ``as_response=True`` (deprecated).
 
         Raises:
             NotFoundError: If no record found
             MultipleResultsFound: If more than one record found
         """
+        if as_response and schema is None:
+            warnings.warn(
+                "as_response is deprecated and will be removed in v2.0. "
+                "Use schema=YourSchema instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         q = select(cls.model)
         if joins:
             for model, condition in joins:
@@ -234,8 +291,9 @@ class AsyncCrud(Generic[ModelType]):
         if not item:
             raise NotFoundError()
         result = cast(ModelType, item)
-        if as_response:
-            return Response(data=result)
+        if as_response or schema:
+            data_out = schema.model_validate(result) if schema else result
+            return Response(data=data_out)
         return result
 
     @classmethod
@@ -334,7 +392,23 @@ class AsyncCrud(Generic[ModelType]):
         *,
         exclude_unset: bool = True,
         exclude_none: bool = False,
+        schema: type[SchemaType],
+        as_response: bool = ...,
+    ) -> Response[SchemaType]: ...
+
+    # Backward-compatible - will be removed in v2.0
+    @overload
+    @classmethod
+    async def update(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        obj: BaseModel,
+        filters: list[Any],
+        *,
+        exclude_unset: bool = True,
+        exclude_none: bool = False,
         as_response: Literal[True],
+        schema: None = ...,
     ) -> Response[ModelType]: ...
 
     @overload
@@ -348,6 +422,7 @@ class AsyncCrud(Generic[ModelType]):
         exclude_unset: bool = True,
         exclude_none: bool = False,
         as_response: Literal[False] = ...,
+        schema: None = ...,
     ) -> ModelType: ...
 
     @classmethod
@@ -360,7 +435,8 @@ class AsyncCrud(Generic[ModelType]):
         exclude_unset: bool = True,
         exclude_none: bool = False,
         as_response: bool = False,
-    ) -> ModelType | Response[ModelType]:
+        schema: type[BaseModel] | None = None,
+    ) -> ModelType | Response[ModelType] | Response[Any]:
         """Update a record in the database.
 
         Args:
@@ -369,14 +445,24 @@ class AsyncCrud(Generic[ModelType]):
             filters: List of SQLAlchemy filter conditions
             exclude_unset: Exclude fields not explicitly set in the schema
             exclude_none: Exclude fields with None value
-            as_response: If True, wrap result in Response object
+            as_response: Deprecated. Use ``schema`` instead. Will be removed in v2.0.
+            schema: Pydantic schema to serialize the result into. When provided,
+                the result is automatically wrapped in a ``Response[schema]``.
 
         Returns:
-            Updated model instance or Response wrapping it
+            Updated model instance, or ``Response[schema]`` when ``schema`` is given,
+            or ``Response[ModelType]`` when ``as_response=True`` (deprecated).
 
         Raises:
             NotFoundError: If no record found
         """
+        if as_response and schema is None:
+            warnings.warn(
+                "as_response is deprecated and will be removed in v2.0. "
+                "Use schema=YourSchema instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         async with get_transaction(session):
             m2m_exclude = cls._m2m_schema_fields()
 
@@ -406,8 +492,9 @@ class AsyncCrud(Generic[ModelType]):
                 for rel_attr, related_instances in m2m_resolved.items():
                     setattr(db_model, rel_attr, related_instances)
         await session.refresh(db_model)
-        if as_response:
-            return Response(data=db_model)
+        if as_response or schema:
+            data_out = schema.model_validate(db_model) if schema else db_model
+            return Response(data=data_out)
         return db_model
 
     @classmethod
@@ -489,11 +576,20 @@ class AsyncCrud(Generic[ModelType]):
         Args:
             session: DB async session
             filters: List of SQLAlchemy filter conditions
-            as_response: If True, wrap result in Response object
+            as_response: Deprecated. Will be removed in v2.0. When ``True``,
+                returns ``Response[None]`` instead of ``bool``.
 
         Returns:
-            True if deletion was executed, or Response wrapping it
+            ``True`` if deletion was executed, or ``Response[None]`` when
+            ``as_response=True`` (deprecated).
         """
+        if as_response:
+            warnings.warn(
+                "as_response is deprecated and will be removed in v2.0. "
+                "Use schema=YourSchema instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         async with get_transaction(session):
             q = sql_delete(cls.model).where(and_(*filters))
             await session.execute(q)
@@ -566,6 +662,43 @@ class AsyncCrud(Generic[ModelType]):
         result = await session.execute(q)
         return bool(result.scalar())
 
+    @overload
+    @classmethod
+    async def paginate(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        *,
+        filters: list[Any] | None = None,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        load_options: list[ExecutableOption] | None = None,
+        order_by: Any | None = None,
+        page: int = 1,
+        items_per_page: int = 20,
+        search: str | SearchConfig | None = None,
+        search_fields: Sequence[SearchFieldType] | None = None,
+        schema: type[SchemaType],
+    ) -> PaginatedResponse[SchemaType]: ...
+
+    # Backward-compatible - will be removed in v2.0
+    @overload
+    @classmethod
+    async def paginate(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        *,
+        filters: list[Any] | None = None,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        load_options: list[ExecutableOption] | None = None,
+        order_by: Any | None = None,
+        page: int = 1,
+        items_per_page: int = 20,
+        search: str | SearchConfig | None = None,
+        search_fields: Sequence[SearchFieldType] | None = None,
+        schema: None = ...,
+    ) -> PaginatedResponse[ModelType]: ...
+
     @classmethod
     async def paginate(
         cls: type[Self],
@@ -580,7 +713,8 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
-    ) -> PaginatedResponse[ModelType]:
+        schema: type[BaseModel] | None = None,
+    ) -> PaginatedResponse[ModelType] | PaginatedResponse[Any]:
         """Get paginated results with metadata.
 
         Args:
@@ -594,6 +728,7 @@ class AsyncCrud(Generic[ModelType]):
             items_per_page: Number of items per page
             search: Search query string or SearchConfig object
             search_fields: Fields to search in (overrides class default)
+            schema: Optional Pydantic schema to serialize each item into.
 
         Returns:
             Dict with 'data' and 'pagination' keys
@@ -637,7 +772,10 @@ class AsyncCrud(Generic[ModelType]):
 
         q = q.offset(offset).limit(items_per_page)
         result = await session.execute(q)
-        items = cast(list[ModelType], result.unique().scalars().all())
+        raw_items = cast(list[ModelType], result.unique().scalars().all())
+        items: list[Any] = (
+            [schema.model_validate(item) for item in raw_items] if schema else raw_items
+        )
 
         # Count query (with same joins and filters)
         pk_col = cls.model.__mapper__.primary_key[0]

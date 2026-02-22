@@ -20,12 +20,14 @@ from .conftest import (
     Role,
     RoleCreate,
     RoleCrud,
+    RoleRead,
     RoleUpdate,
     TagCreate,
     TagCrud,
     User,
     UserCreate,
     UserCrud,
+    UserRead,
     UserUpdate,
 )
 
@@ -907,15 +909,16 @@ class TestCrudJoins:
 
 
 class TestAsResponse:
-    """Tests for as_response parameter."""
+    """Tests for as_response parameter (deprecated, kept for backward compat)."""
 
     @pytest.mark.anyio
     async def test_create_as_response(self, db_session: AsyncSession):
-        """Create with as_response=True returns Response."""
+        """Create with as_response=True returns Response and emits DeprecationWarning."""
         from fastapi_toolsets.schemas import Response
 
         data = RoleCreate(name="response_role")
-        result = await RoleCrud.create(db_session, data, as_response=True)
+        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
+            result = await RoleCrud.create(db_session, data, as_response=True)
 
         assert isinstance(result, Response)
         assert result.data is not None
@@ -923,13 +926,14 @@ class TestAsResponse:
 
     @pytest.mark.anyio
     async def test_get_as_response(self, db_session: AsyncSession):
-        """Get with as_response=True returns Response."""
+        """Get with as_response=True returns Response and emits DeprecationWarning."""
         from fastapi_toolsets.schemas import Response
 
         created = await RoleCrud.create(db_session, RoleCreate(name="get_response"))
-        result = await RoleCrud.get(
-            db_session, [Role.id == created.id], as_response=True
-        )
+        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
+            result = await RoleCrud.get(
+                db_session, [Role.id == created.id], as_response=True
+            )
 
         assert isinstance(result, Response)
         assert result.data is not None
@@ -937,16 +941,17 @@ class TestAsResponse:
 
     @pytest.mark.anyio
     async def test_update_as_response(self, db_session: AsyncSession):
-        """Update with as_response=True returns Response."""
+        """Update with as_response=True returns Response and emits DeprecationWarning."""
         from fastapi_toolsets.schemas import Response
 
         created = await RoleCrud.create(db_session, RoleCreate(name="old_name"))
-        result = await RoleCrud.update(
-            db_session,
-            RoleUpdate(name="new_name"),
-            [Role.id == created.id],
-            as_response=True,
-        )
+        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
+            result = await RoleCrud.update(
+                db_session,
+                RoleUpdate(name="new_name"),
+                [Role.id == created.id],
+                as_response=True,
+            )
 
         assert isinstance(result, Response)
         assert result.data is not None
@@ -954,13 +959,14 @@ class TestAsResponse:
 
     @pytest.mark.anyio
     async def test_delete_as_response(self, db_session: AsyncSession):
-        """Delete with as_response=True returns Response."""
+        """Delete with as_response=True returns Response and emits DeprecationWarning."""
         from fastapi_toolsets.schemas import Response
 
         created = await RoleCrud.create(db_session, RoleCreate(name="to_delete"))
-        result = await RoleCrud.delete(
-            db_session, [Role.id == created.id], as_response=True
-        )
+        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
+            result = await RoleCrud.delete(
+                db_session, [Role.id == created.id], as_response=True
+            )
 
         assert isinstance(result, Response)
         assert result.data is None
@@ -1344,3 +1350,165 @@ class TestM2MWithNonM2MCrud:
             [Post.id == post.id],
         )
         assert updated.title == "Updated Plain"
+
+
+class TestSchemaResponse:
+    """Tests for the schema parameter on as_response methods."""
+
+    @pytest.mark.anyio
+    async def test_create_with_schema(self, db_session: AsyncSession):
+        """create with schema returns Response[SchemaType]."""
+        from fastapi_toolsets.schemas import Response
+
+        result = await RoleCrud.create(
+            db_session, RoleCreate(name="schema_role"), schema=RoleRead
+        )
+
+        assert isinstance(result, Response)
+        assert isinstance(result.data, RoleRead)
+        assert result.data.name == "schema_role"
+
+    @pytest.mark.anyio
+    async def test_create_schema_implies_as_response(self, db_session: AsyncSession):
+        """create with schema alone wraps in Response without as_response=True."""
+        from fastapi_toolsets.schemas import Response
+
+        result = await RoleCrud.create(
+            db_session, RoleCreate(name="implicit"), schema=RoleRead
+        )
+
+        assert isinstance(result, Response)
+
+    @pytest.mark.anyio
+    async def test_create_schema_filters_fields(self, db_session: AsyncSession):
+        """create with schema only exposes schema fields, not all model fields."""
+        result = await UserCrud.create(
+            db_session,
+            UserCreate(username="filtered", email="filtered@test.com"),
+            schema=UserRead,
+        )
+
+        assert isinstance(result.data, UserRead)
+        assert result.data.username == "filtered"
+        assert not hasattr(result.data, "email")
+
+    @pytest.mark.anyio
+    async def test_get_with_schema(self, db_session: AsyncSession):
+        """get with schema returns Response[SchemaType]."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="get_schema"))
+        result = await RoleCrud.get(
+            db_session, [Role.id == created.id], schema=RoleRead
+        )
+
+        assert isinstance(result, Response)
+        assert isinstance(result.data, RoleRead)
+        assert result.data.id == created.id
+        assert result.data.name == "get_schema"
+
+    @pytest.mark.anyio
+    async def test_get_schema_implies_as_response(self, db_session: AsyncSession):
+        """get with schema alone wraps in Response without as_response=True."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="implicit_get"))
+        result = await RoleCrud.get(
+            db_session, [Role.id == created.id], schema=RoleRead
+        )
+
+        assert isinstance(result, Response)
+
+    @pytest.mark.anyio
+    async def test_update_with_schema(self, db_session: AsyncSession):
+        """update with schema returns Response[SchemaType]."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="before"))
+        result = await RoleCrud.update(
+            db_session,
+            RoleUpdate(name="after"),
+            [Role.id == created.id],
+            schema=RoleRead,
+        )
+
+        assert isinstance(result, Response)
+        assert isinstance(result.data, RoleRead)
+        assert result.data.name == "after"
+
+    @pytest.mark.anyio
+    async def test_update_schema_implies_as_response(self, db_session: AsyncSession):
+        """update with schema alone wraps in Response without as_response=True."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="before2"))
+        result = await RoleCrud.update(
+            db_session,
+            RoleUpdate(name="after2"),
+            [Role.id == created.id],
+            schema=RoleRead,
+        )
+
+        assert isinstance(result, Response)
+
+    @pytest.mark.anyio
+    async def test_paginate_with_schema(self, db_session: AsyncSession):
+        """paginate with schema returns PaginatedResponse[SchemaType]."""
+        from fastapi_toolsets.schemas import PaginatedResponse
+
+        await RoleCrud.create(db_session, RoleCreate(name="p_role1"))
+        await RoleCrud.create(db_session, RoleCreate(name="p_role2"))
+
+        result = await RoleCrud.paginate(db_session, schema=RoleRead)
+
+        assert isinstance(result, PaginatedResponse)
+        assert len(result.data) == 2
+        assert all(isinstance(item, RoleRead) for item in result.data)
+
+    @pytest.mark.anyio
+    async def test_paginate_schema_filters_fields(self, db_session: AsyncSession):
+        """paginate with schema only exposes schema fields per item."""
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="pg_user", email="pg@test.com"),
+        )
+
+        result = await UserCrud.paginate(db_session, schema=UserRead)
+
+        assert isinstance(result.data[0], UserRead)
+        assert result.data[0].username == "pg_user"
+        assert not hasattr(result.data[0], "email")
+
+    @pytest.mark.anyio
+    async def test_as_response_true_without_schema_unchanged(
+        self, db_session: AsyncSession
+    ):
+        """as_response=True without schema still returns Response[ModelType] with a warning."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="compat"))
+        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
+            result = await RoleCrud.get(
+                db_session, [Role.id == created.id], as_response=True
+            )
+
+        assert isinstance(result, Response)
+        assert isinstance(result.data, Role)
+
+    @pytest.mark.anyio
+    async def test_schema_with_explicit_as_response_true(
+        self, db_session: AsyncSession
+    ):
+        """schema combined with explicit as_response=True works correctly."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="combined"))
+        result = await RoleCrud.get(
+            db_session,
+            [Role.id == created.id],
+            as_response=True,
+            schema=RoleRead,
+        )
+
+        assert isinstance(result, Response)
+        assert isinstance(result.data, RoleRead)
