@@ -5,13 +5,12 @@ import uuid
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import Column, ForeignKey, String, Table, Uuid
-
-from fastapi_toolsets.schemas import PydanticBase
+from sqlalchemy import Column, ForeignKey, Integer, String, Table, Uuid
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from fastapi_toolsets.crud import CrudFactory
+from fastapi_toolsets.schemas import PydanticBase
 
 DATABASE_URL = os.getenv(
     key="DATABASE_URL",
@@ -71,6 +70,15 @@ post_tags = Table(
 )
 
 
+class IntRole(Base):
+    """Test role model with auto-increment integer PK."""
+
+    __tablename__ = "int_roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True)
+
+
 class Post(Base):
     """Test post model."""
 
@@ -116,7 +124,7 @@ class UserCreate(BaseModel):
 
 
 class UserRead(PydanticBase):
-    """Schema for reading a user (subset of fields)."""
+    """Schema for reading a user (subset of fields — no email)."""
 
     id: uuid.UUID
     username: str
@@ -176,8 +184,17 @@ class PostM2MUpdate(BaseModel):
     tag_ids: list[uuid.UUID] | None = None
 
 
+class IntRoleCreate(BaseModel):
+    """Schema for creating an IntRole."""
+
+    name: str
+
+
 RoleCrud = CrudFactory(Role)
+RoleCursorCrud = CrudFactory(Role, cursor_column=Role.id)
+IntRoleCursorCrud = CrudFactory(IntRole, cursor_column=IntRole.id)
 UserCrud = CrudFactory(User)
+UserCursorCrud = CrudFactory(User, cursor_column=User.id)
 PostCrud = CrudFactory(Post)
 TagCrud = CrudFactory(Tag)
 PostM2MCrud = CrudFactory(Post, m2m_fields={"tag_ids": Post.tags})

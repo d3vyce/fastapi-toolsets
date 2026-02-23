@@ -7,7 +7,9 @@ from pydantic import BaseModel, ConfigDict
 
 __all__ = [
     "ApiError",
+    "CursorPagination",
     "ErrorResponse",
+    "OffsetPagination",
     "Pagination",
     "PaginatedResponse",
     "PydanticBase",
@@ -90,8 +92,8 @@ class ErrorResponse(BaseResponse):
     data: Any | None = None
 
 
-class Pagination(PydanticBase):
-    """Pagination metadata for list responses.
+class OffsetPagination(PydanticBase):
+    """Pagination metadata for offset-based list responses.
 
     Attributes:
         total_count: Total number of items across all pages
@@ -106,17 +108,28 @@ class Pagination(PydanticBase):
     has_more: bool
 
 
-class PaginatedResponse(BaseResponse, Generic[DataT]):
-    """Paginated API response for list endpoints.
+# Backward-compatible - will be removed in v2.0
+Pagination = OffsetPagination
 
-    Example:
-        ```python
-        PaginatedResponse[UserRead](
-            data=users,
-            pagination=Pagination(total_count=100, items_per_page=10, page=1, has_more=True)
-        )
-        ```
+
+class CursorPagination(PydanticBase):
+    """Pagination metadata for cursor-based list responses.
+
+    Attributes:
+        next_cursor: Encoded cursor for the next page, or None on the last page.
+        prev_cursor: Encoded cursor for the previous page, or None on the first page.
+        items_per_page: Number of items requested per page.
+        has_more: Whether there is at least one more page after this one.
     """
 
+    next_cursor: str | None
+    prev_cursor: str | None = None
+    items_per_page: int
+    has_more: bool
+
+
+class PaginatedResponse(BaseResponse, Generic[DataT]):
+    """Paginated API response for list endpoints."""
+
     data: list[DataT]
-    pagination: Pagination
+    pagination: OffsetPagination | CursorPagination
