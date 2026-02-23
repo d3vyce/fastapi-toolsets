@@ -5,7 +5,20 @@ import uuid
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import Column, ForeignKey, Integer, String, Table, Uuid
+import datetime
+import decimal
+
+from sqlalchemy import (
+    Column,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Table,
+    Uuid,
+)
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -77,6 +90,27 @@ class IntRole(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(50), unique=True)
+
+
+class Event(Base):
+    """Test model with DateTime and Date cursor columns."""
+
+    __tablename__ = "events"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100))
+    occurred_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    scheduled_date: Mapped[datetime.date] = mapped_column(Date)
+
+
+class Product(Base):
+    """Test model with Numeric cursor column."""
+
+    __tablename__ = "products"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100))
+    price: Mapped[decimal.Decimal] = mapped_column(Numeric(10, 2))
 
 
 class Post(Base):
@@ -190,6 +224,21 @@ class IntRoleCreate(BaseModel):
     name: str
 
 
+class EventCreate(BaseModel):
+    """Schema for creating an Event."""
+
+    name: str
+    occurred_at: datetime.datetime
+    scheduled_date: datetime.date
+
+
+class ProductCreate(BaseModel):
+    """Schema for creating a Product."""
+
+    name: str
+    price: decimal.Decimal
+
+
 RoleCrud = CrudFactory(Role)
 RoleCursorCrud = CrudFactory(Role, cursor_column=Role.id)
 IntRoleCursorCrud = CrudFactory(IntRole, cursor_column=IntRole.id)
@@ -198,6 +247,11 @@ UserCursorCrud = CrudFactory(User, cursor_column=User.id)
 PostCrud = CrudFactory(Post)
 TagCrud = CrudFactory(Tag)
 PostM2MCrud = CrudFactory(Post, m2m_fields={"tag_ids": Post.tags})
+EventCrud = CrudFactory(Event)
+EventDateTimeCursorCrud = CrudFactory(Event, cursor_column=Event.occurred_at)
+EventDateCursorCrud = CrudFactory(Event, cursor_column=Event.scheduled_date)
+ProductCrud = CrudFactory(Product)
+ProductNumericCursorCrud = CrudFactory(Product, cursor_column=Product.price)
 
 
 @pytest.fixture
