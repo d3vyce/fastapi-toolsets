@@ -11,6 +11,10 @@ from fastapi_toolsets.crud.factory import AsyncCrud
 from fastapi_toolsets.exceptions import NotFoundError
 
 from .conftest import (
+    EventCreate,
+    EventCrud,
+    EventDateCursorCrud,
+    EventDateTimeCursorCrud,
     IntRoleCreate,
     IntRoleCursorCrud,
     Post,
@@ -19,6 +23,9 @@ from .conftest import (
     PostM2MCreate,
     PostM2MCrud,
     PostM2MUpdate,
+    ProductCreate,
+    ProductCrud,
+    ProductNumericCursorCrud,
     Role,
     RoleCreate,
     RoleCrud,
@@ -1935,31 +1942,30 @@ class TestCursorPaginateExtraOptions:
         assert page2.pagination.has_more is False
 
     @pytest.mark.anyio
-    async def test_string_cursor_column(self, db_session: AsyncSession):
-        """cursor_paginate decodes non-UUID/non-Integer cursor values (string branch)."""
+    async def test_unsupported_cursor_column_type_raises(
+        self, db_session: AsyncSession
+    ):
+        """cursor_paginate raises ValueError when cursor column type is not supported."""
         from fastapi_toolsets.crud import CrudFactory
         from fastapi_toolsets.schemas import CursorPagination
 
         RoleNameCursorCrud = CrudFactory(Role, cursor_column=Role.name)
 
-        for i in range(5):
-            await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
+        await RoleCrud.create(db_session, RoleCreate(name="role00"))
+        await RoleCrud.create(db_session, RoleCreate(name="role01"))
 
-        page1 = await RoleNameCursorCrud.cursor_paginate(db_session, items_per_page=3)
-
-        assert isinstance(page1.pagination, CursorPagination)
-        assert len(page1.data) == 3
+        # First page succeeds (no cursor to decode)
+        page1 = await RoleNameCursorCrud.cursor_paginate(db_session, items_per_page=1)
         assert page1.pagination.has_more is True
+        assert isinstance(page1.pagination, CursorPagination)
 
-        page2 = await RoleNameCursorCrud.cursor_paginate(
-            db_session,
-            cursor=page1.pagination.next_cursor,
-            items_per_page=3,
-        )
-
-        assert isinstance(page2.pagination, CursorPagination)
-        assert len(page2.data) == 2
-        assert page2.pagination.has_more is False
+        # Second page fails because String type is unsupported
+        with pytest.raises(ValueError, match="Unsupported cursor column type"):
+            await RoleNameCursorCrud.cursor_paginate(
+                db_session,
+                cursor=page1.pagination.next_cursor,
+                items_per_page=1,
+            )
 
 
 class TestCursorPaginateSearchJoins:
@@ -2019,3 +2025,120 @@ class TestGetWithForUpdate:
 
         assert result.id == role.id
         assert result.name == "locked"
+
+
+class TestCursorPaginateColumnTypes:
+    """Tests for cursor_paginate() covering DateTime, Date and Numeric column types."""
+
+    @pytest.mark.anyio
+    async def test_datetime_cursor_column(self, db_session: AsyncSession):
+        """cursor_paginate decodes DateTime cursor values to datetime objects."""
+        import datetime
+
+        from fastapi_toolsets.schemas import CursorPagination
+
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        for i in range(5):
+            await EventCrud.create(
+                db_session,
+                EventCreate(
+                    name=f"event{i}",
+                    occurred_at=base + datetime.timedelta(hours=i),
+                    scheduled_date=datetime.date(2024, 1, i + 1),
+                ),
+            )
+
+        page1 = await EventDateTimeCursorCrud.cursor_paginate(
+            db_session, items_per_page=3
+        )
+
+        assert isinstance(page1.pagination, CursorPagination)
+        assert len(page1.data) == 3
+        assert page1.pagination.has_more is True
+
+        page2 = await EventDateTimeCursorCrud.cursor_paginate(
+            db_session,
+            cursor=page1.pagination.next_cursor,
+            items_per_page=3,
+        )
+
+        assert isinstance(page2.pagination, CursorPagination)
+        assert len(page2.data) == 2
+        assert page2.pagination.has_more is False
+        # No overlap between pages
+        page1_ids = {e.id for e in page1.data}
+        page2_ids = {e.id for e in page2.data}
+        assert page1_ids.isdisjoint(page2_ids)
+
+    @pytest.mark.anyio
+    async def test_date_cursor_column(self, db_session: AsyncSession):
+        """cursor_paginate decodes Date cursor values to date objects."""
+        import datetime
+
+        from fastapi_toolsets.schemas import CursorPagination
+
+        for i in range(5):
+            await EventCrud.create(
+                db_session,
+                EventCreate(
+                    name=f"event{i}",
+                    occurred_at=datetime.datetime(2024, 1, 1),
+                    scheduled_date=datetime.date(2024, 1, i + 1),
+                ),
+            )
+
+        page1 = await EventDateCursorCrud.cursor_paginate(db_session, items_per_page=3)
+
+        assert isinstance(page1.pagination, CursorPagination)
+        assert len(page1.data) == 3
+        assert page1.pagination.has_more is True
+
+        page2 = await EventDateCursorCrud.cursor_paginate(
+            db_session,
+            cursor=page1.pagination.next_cursor,
+            items_per_page=3,
+        )
+
+        assert isinstance(page2.pagination, CursorPagination)
+        assert len(page2.data) == 2
+        assert page2.pagination.has_more is False
+        page1_ids = {e.id for e in page1.data}
+        page2_ids = {e.id for e in page2.data}
+        assert page1_ids.isdisjoint(page2_ids)
+
+    @pytest.mark.anyio
+    async def test_numeric_cursor_column(self, db_session: AsyncSession):
+        """cursor_paginate decodes Numeric cursor values to Decimal objects."""
+        import decimal
+
+        from fastapi_toolsets.schemas import CursorPagination
+
+        for i in range(5):
+            await ProductCrud.create(
+                db_session,
+                ProductCreate(
+                    name=f"product{i}",
+                    price=decimal.Decimal(f"{i + 1}.99"),
+                ),
+            )
+
+        page1 = await ProductNumericCursorCrud.cursor_paginate(
+            db_session, items_per_page=3
+        )
+
+        assert isinstance(page1.pagination, CursorPagination)
+        assert len(page1.data) == 3
+        assert page1.pagination.has_more is True
+
+        page2 = await ProductNumericCursorCrud.cursor_paginate(
+            db_session,
+            cursor=page1.pagination.next_cursor,
+            items_per_page=3,
+        )
+
+        assert isinstance(page2.pagination, CursorPagination)
+        assert len(page2.data) == 2
+        assert page2.pagination.has_more is False
+        page1_ids = {p.id for p in page1.data}
+        page2_ids = {p.id for p in page2.data}
+        assert page1_ids.isdisjoint(page2_ids)

@@ -7,10 +7,12 @@ import json
 import uuid as uuid_module
 import warnings
 from collections.abc import Mapping, Sequence
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
 from pydantic import BaseModel
-from sqlalchemy import Integer, Uuid, and_, func, select
+from sqlalchemy import Date, DateTime, Float, Integer, Numeric, Uuid, and_, func, select
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import NoResultFound
@@ -920,8 +922,18 @@ class AsyncCrud(Generic[ModelType]):
                 cursor_val: Any = int(raw_val)
             elif isinstance(col_type, Uuid):
                 cursor_val = uuid_module.UUID(raw_val)
+            elif isinstance(col_type, DateTime):
+                cursor_val = datetime.fromisoformat(raw_val)
+            elif isinstance(col_type, Date):
+                cursor_val = date.fromisoformat(raw_val)
+            elif isinstance(col_type, (Float, Numeric)):
+                cursor_val = Decimal(raw_val)
             else:
-                cursor_val = raw_val
+                raise ValueError(
+                    f"Unsupported cursor column type: {type(col_type).__name__!r}. "
+                    "Supported types: Integer, BigInteger, SmallInteger, Uuid, "
+                    "DateTime, Date, Float, Numeric."
+                )
             filters.append(cursor_column > cursor_val)
 
         # Build search filters
@@ -1016,8 +1028,9 @@ def CrudFactory(
             instead of ``lazy="selectin"`` on the model so that loading
             strategy is explicit and per-CRUD. Overridden entirely (not
             merged) when ``load_options`` is provided at call-site.
-        cursor_column: Required to call ``cursor_paginate``
+        cursor_column: Required to call ``cursor_paginate``.
             Must be monotonically ordered (e.g. integer PK, UUID v7, timestamp).
+            See the cursor pagination docs for supported column types.
 
     Returns:
         AsyncCrud subclass bound to the model

@@ -148,6 +148,16 @@ The cursor column is set once on [`CrudFactory`](../reference/crud.md#fastapi_to
 !!! note
     `cursor_column` is required. Calling [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate) on a CRUD class that has no `cursor_column` configured raises a `ValueError`.
 
+The cursor value is base64-encoded when returned to the client and decoded back to the correct Python type on the next request. The following SQLAlchemy column types are supported:
+
+| SQLAlchemy type | Python type |
+|---|---|
+| `Integer`, `BigInteger`, `SmallInteger` | `int` |
+| `Uuid` | `uuid.UUID` |
+| `DateTime` | `datetime.datetime` |
+| `Date` | `datetime.date` |
+| `Float`, `Numeric` | `decimal.Decimal` |
+
 ```python
 # Paginate by the primary key
 PostCrud = CrudFactory(model=Post, cursor_column=Post.id)
