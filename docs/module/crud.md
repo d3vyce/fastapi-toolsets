@@ -1,6 +1,6 @@
 # CRUD
 
-Generic async CRUD operations for SQLAlchemy models with search, pagination, and many-to-many support. This module has features that are only compatible with Postgres. 
+Generic async CRUD operations for SQLAlchemy models with search, pagination, and many-to-many support.
 
 !!! info
     This module has been coded and tested to be compatible with PostgreSQL only.
@@ -48,6 +48,21 @@ exists = await UserCrud.exists(session=session, filters=[User.email == email])
 
 ## Pagination
 
+!!! info "Added in `v1.1` (only offset_pagination via `paginate` if `<v1.1`)"
+
+Two pagination strategies are available. Both return a [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse) but differ in how they navigate through results.
+
+| | `offset_paginate` | `cursor_paginate` |
+|---|---|---|
+| Total count | Yes | No |
+| Jump to arbitrary page | Yes | No |
+| Performance on deep pages | Degrades | Constant |
+| Stable under concurrent inserts | No | Yes |
+| Search compatible | Yes | Yes |
+| Use case | Admin panels, numbered pagination | Feeds, APIs, infinite scroll |
+
+### Offset pagination
+
 ```python
 @router.get(
     "",
@@ -58,14 +73,88 @@ async def get_users(
     items_per_page: int = 50,
     page: int = 1,
 ):
-    return await crud.UserCrud.paginate(
+    return await crud.UserCrud.offset_paginate(
         session=session,
         items_per_page=items_per_page,
         page=page,
     )
 ```
 
-The [`paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.paginate) function will return a [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse).
+The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) method returns a [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse) whose `pagination` field is an [`OffsetPagination`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPagination) object:
+
+```json
+{
+  "status": "SUCCESS",
+  "data": ["..."],
+  "pagination": {
+    "total_count": 100,
+    "page": 1,
+    "items_per_page": 20,
+    "has_more": true
+  }
+}
+```
+
+!!! warning "Deprecated: `paginate`"
+    The `paginate` function is a backward-compatible alias for `offset_paginate`. This function is **deprecated** and will be removed in **v2.0**.
+
+### Cursor pagination
+
+```python
+@router.get(
+    "",
+    response_model=PaginatedResponse[UserRead],
+)
+async def list_users(
+    session: SessionDep,
+    cursor: str | None = None,
+    items_per_page: int = 20,
+):
+    return await UserCrud.cursor_paginate(
+        session=session,
+        cursor=cursor,
+        items_per_page=items_per_page,
+    )
+```
+
+The [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate) method returns a [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse) whose `pagination` field is a [`CursorPagination`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPagination) object:
+
+```json
+{
+  "status": "SUCCESS",
+  "data": ["..."],
+  "pagination": {
+    "next_cursor": "eyJ2YWx1ZSI6ICIzZjQ3YWM2OS0uLi4ifQ==",
+    "prev_cursor": null,
+    "items_per_page": 20,
+    "has_more": true
+  }
+}
+```
+
+Pass `next_cursor` as the `cursor` query parameter on the next request to advance to the next page. `prev_cursor` is set on pages 2+ and points back to the first item of the current page. Both are `null` when there is no adjacent page.
+
+#### Choosing a cursor column
+
+The cursor column is set once on [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory) via the `cursor_column` parameter. It must be monotonically ordered for stable results:
+
+- Auto-increment integer PKs
+- UUID v7 PKs
+- Timestamps
+
+!!! warning
+    Random UUID v4 PKs are **not** suitable as cursor columns because their ordering is non-deterministic.
+
+!!! note
+    `cursor_column` is required. Calling [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate) on a CRUD class that has no `cursor_column` configured raises a `ValueError`.
+
+```python
+# Paginate by the primary key
+PostCrud = CrudFactory(model=Post, cursor_column=Post.id)
+
+# Paginate by a timestamp column instead
+PostCrud = CrudFactory(model=Post, cursor_column=Post.created_at)
+```
 
 ## Search
 
@@ -82,7 +171,7 @@ PostCrud = CrudFactory(
 )
 ```
 
-This allow to do a search with the [`paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.paginate) function:
+This allows searching with both [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) and [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate):
 
 ```python
 @router.get(
@@ -95,7 +184,7 @@ async def get_users(
     page: int = 1,
     search: str | None = None,
 ):
-    return await crud.UserCrud.paginate(
+    return await crud.UserCrud.offset_paginate(
         session=session,
         items_per_page=items_per_page,
         page=page,
@@ -103,9 +192,28 @@ async def get_users(
     )
 ```
 
+```python
+@router.get(
+    "",
+    response_model=PaginatedResponse[User],
+)
+async def get_users(
+    session: SessionDep,
+    cursor: str | None = None,
+    items_per_page: int = 50,
+    search: str | None = None,
+):
+    return await crud.UserCrud.cursor_paginate(
+        session=session,
+        items_per_page=items_per_page,
+        cursor=cursor,
+        search=search,
+    )
+```
+
 ## Relationship loading
 
-!!! info "Added in v1.1"
+!!! info "Added in `v1.1`"
 
 By default, SQLAlchemy relationships are not loaded unless explicitly requested. Instead of using `lazy="selectin"` on model definitions (which is implicit and applies globally), define a `default_load_options` on the CRUD class to control loading strategy explicitly.
 
@@ -124,7 +232,7 @@ ArticleCrud = CrudFactory(
 )
 ```
 
-`default_load_options` applies automatically to all read operations (`get`, `first`, `get_multi`, `paginate`). When `load_options` is passed at call-site, it **fully replaces** `default_load_options` for that query — giving you precise per-call control:
+`default_load_options` applies automatically to all read operations (`get`, `first`, `get_multi`, `offset_paginate`, `cursor_paginate`). When `load_options` is passed at call-site, it **fully replaces** `default_load_options` for that query — giving you precise per-call control:
 
 ```python
 # Only loads category, tags are not loaded
@@ -168,7 +276,7 @@ await UserCrud.upsert(
 
 !!! info "Added in `v1.1`"
 
-Pass a Pydantic schema class to `create`, `get`, `update`, or `paginate` to serialize the result directly into that schema and wrap it in a [`Response[schema]`](../reference/schemas.md#fastapi_toolsets.schemas.Response) or [`PaginatedResponse[schema]`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse):
+Pass a Pydantic schema class to `create`, `get`, `update`, or `offset_paginate` to serialize the result directly into that schema and wrap it in a [`Response[schema]`](../reference/schemas.md#fastapi_toolsets.schemas.Response) or [`PaginatedResponse[schema]`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse):
 
 ```python
 class UserRead(PydanticBase):
@@ -188,7 +296,7 @@ async def get_user(session: SessionDep, uuid: UUID) -> Response[UserRead]:
 
 @router.get("")
 async def list_users(session: SessionDep, page: int = 1) -> PaginatedResponse[UserRead]:
-    return await crud.UserCrud.paginate(
+    return await crud.UserCrud.offset_paginate(
         session=session,
         page=page,
         schema=UserRead,

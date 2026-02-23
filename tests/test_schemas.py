@@ -5,7 +5,9 @@ from pydantic import ValidationError
 
 from fastapi_toolsets.schemas import (
     ApiError,
+    CursorPagination,
     ErrorResponse,
+    OffsetPagination,
     PaginatedResponse,
     Pagination,
     Response,
@@ -154,12 +156,12 @@ class TestErrorResponse:
         assert data["description"] == "Details"
 
 
-class TestPagination:
-    """Tests for Pagination schema."""
+class TestOffsetPagination:
+    """Tests for OffsetPagination schema (canonical name for offset-based pagination)."""
 
     def test_create_pagination(self):
-        """Create Pagination with all fields."""
-        pagination = Pagination(
+        """Create OffsetPagination with all fields."""
+        pagination = OffsetPagination(
             total_count=100,
             items_per_page=10,
             page=1,
@@ -173,7 +175,7 @@ class TestPagination:
 
     def test_last_page_has_more_false(self):
         """Last page has has_more=False."""
-        pagination = Pagination(
+        pagination = OffsetPagination(
             total_count=25,
             items_per_page=10,
             page=3,
@@ -183,8 +185,8 @@ class TestPagination:
         assert pagination.has_more is False
 
     def test_serialization(self):
-        """Pagination serializes correctly."""
-        pagination = Pagination(
+        """OffsetPagination serializes correctly."""
+        pagination = OffsetPagination(
             total_count=50,
             items_per_page=20,
             page=2,
@@ -195,6 +197,77 @@ class TestPagination:
         assert data["total_count"] == 50
         assert data["items_per_page"] == 20
         assert data["page"] == 2
+        assert data["has_more"] is True
+
+    def test_pagination_alias_is_offset_pagination(self):
+        """Pagination is a backward-compatible alias for OffsetPagination."""
+        assert Pagination is OffsetPagination
+
+    def test_pagination_alias_constructs_offset_pagination(self):
+        """Code using Pagination(...) still works unchanged."""
+        pagination = Pagination(
+            total_count=10,
+            items_per_page=5,
+            page=2,
+            has_more=False,
+        )
+        assert isinstance(pagination, OffsetPagination)
+
+
+class TestCursorPagination:
+    """Tests for CursorPagination schema."""
+
+    def test_create_with_next_cursor(self):
+        """CursorPagination with a next cursor indicates more pages."""
+        pagination = CursorPagination(
+            next_cursor="eyJ2YWx1ZSI6ICIxMjMifQ==",
+            items_per_page=20,
+            has_more=True,
+        )
+        assert pagination.next_cursor == "eyJ2YWx1ZSI6ICIxMjMifQ=="
+        assert pagination.prev_cursor is None
+        assert pagination.items_per_page == 20
+        assert pagination.has_more is True
+
+    def test_create_last_page(self):
+        """CursorPagination for the last page has next_cursor=None and has_more=False."""
+        pagination = CursorPagination(
+            next_cursor=None,
+            items_per_page=20,
+            has_more=False,
+        )
+        assert pagination.next_cursor is None
+        assert pagination.has_more is False
+
+    def test_prev_cursor_defaults_to_none(self):
+        """prev_cursor defaults to None."""
+        pagination = CursorPagination(
+            next_cursor=None, items_per_page=10, has_more=False
+        )
+        assert pagination.prev_cursor is None
+
+    def test_prev_cursor_can_be_set(self):
+        """prev_cursor can be explicitly set."""
+        pagination = CursorPagination(
+            next_cursor="next123",
+            prev_cursor="prev456",
+            items_per_page=10,
+            has_more=True,
+        )
+        assert pagination.prev_cursor == "prev456"
+
+    def test_serialization(self):
+        """CursorPagination serializes correctly."""
+        pagination = CursorPagination(
+            next_cursor="abc123",
+            prev_cursor="xyz789",
+            items_per_page=20,
+            has_more=True,
+        )
+        data = pagination.model_dump()
+        assert data["next_cursor"] == "abc123"
+        assert data["prev_cursor"] == "xyz789"
+        assert data["items_per_page"] == 20
         assert data["has_more"] is True
 
 
@@ -214,6 +287,7 @@ class TestPaginatedResponse:
             pagination=pagination,
         )
 
+        assert isinstance(response.pagination, OffsetPagination)
         assert len(response.data) == 2
         assert response.pagination.total_count == 30
         assert response.status == ResponseStatus.SUCCESS
@@ -247,6 +321,7 @@ class TestPaginatedResponse:
             pagination=pagination,
         )
 
+        assert isinstance(response.pagination, OffsetPagination)
         assert response.data == []
         assert response.pagination.total_count == 0
 
@@ -289,6 +364,36 @@ class TestPaginatedResponse:
         assert data["message"] == "Page 5"
         assert data["data"] == ["item1", "item2"]
         assert data["pagination"]["page"] == 5
+
+    def test_pagination_field_accepts_offset_pagination(self):
+        """PaginatedResponse.pagination accepts OffsetPagination."""
+        response = PaginatedResponse(
+            data=[1, 2],
+            pagination=OffsetPagination(
+                total_count=2, items_per_page=10, page=1, has_more=False
+            ),
+        )
+        assert isinstance(response.pagination, OffsetPagination)
+
+    def test_pagination_field_accepts_cursor_pagination(self):
+        """PaginatedResponse.pagination accepts CursorPagination."""
+        response = PaginatedResponse(
+            data=[1, 2],
+            pagination=CursorPagination(
+                next_cursor=None, items_per_page=10, has_more=False
+            ),
+        )
+        assert isinstance(response.pagination, CursorPagination)
+
+    def test_pagination_alias_accepted(self):
+        """Constructing PaginatedResponse with Pagination (alias) still works."""
+        response = PaginatedResponse(
+            data=[],
+            pagination=Pagination(
+                total_count=0, items_per_page=10, page=1, has_more=False
+            ),
+        )
+        assert isinstance(response.pagination, OffsetPagination)
 
 
 class TestFromAttributes:

@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_toolsets.crud import SearchConfig, get_searchable_fields
+from fastapi_toolsets.schemas import OffsetPagination
 
 from .conftest import (
     Role,
@@ -39,6 +40,7 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
@@ -57,6 +59,7 @@ class TestPaginateSearch:
             search_fields=[User.username, User.email],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
@@ -84,6 +87,7 @@ class TestPaginateSearch:
             search_fields=[(User.role, Role.name)],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
@@ -102,6 +106,7 @@ class TestPaginateSearch:
             search_fields=[User.username, (User.role, Role.name)],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
 
     @pytest.mark.anyio
@@ -117,6 +122,7 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
 
     @pytest.mark.anyio
@@ -132,6 +138,7 @@ class TestPaginateSearch:
             search=SearchConfig(query="johndoe", case_sensitive=True),
             search_fields=[User.username],
         )
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 0
 
         # Should find (case match)
@@ -140,6 +147,7 @@ class TestPaginateSearch:
             search=SearchConfig(query="JohnDoe", case_sensitive=True),
             search_fields=[User.username],
         )
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
 
     @pytest.mark.anyio
@@ -153,9 +161,11 @@ class TestPaginateSearch:
         )
 
         result = await UserCrud.paginate(db_session, search="")
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
         result = await UserCrud.paginate(db_session, search=None)
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
@@ -177,6 +187,7 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
         assert result.data[0].username == "active_john"
 
@@ -189,6 +200,7 @@ class TestPaginateSearch:
 
         result = await UserCrud.paginate(db_session, search="findme")
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
 
     @pytest.mark.anyio
@@ -204,6 +216,7 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 0
         assert result.data == []
 
@@ -224,6 +237,7 @@ class TestPaginateSearch:
             items_per_page=5,
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 15
         assert len(result.data) == 5
         assert result.pagination.has_more is True
@@ -248,6 +262,7 @@ class TestPaginateSearch:
             search_fields=[User.username],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
     @pytest.mark.anyio
@@ -270,6 +285,7 @@ class TestPaginateSearch:
             order_by=User.username,
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 3
         usernames = [u.username for u in result.data]
         assert usernames == ["alice", "bob", "charlie"]
@@ -292,6 +308,7 @@ class TestPaginateSearch:
             search_fields=[User.id, User.username],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
         assert result.data[0].id == user_id
 
@@ -318,6 +335,7 @@ class TestSearchConfig:
             search_fields=[User.username, User.email],
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
         assert result.data[0].username == "john_test"
 
@@ -333,6 +351,7 @@ class TestSearchConfig:
             search=SearchConfig(query="findme", fields=[User.email]),
         )
 
+        assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
 
 
