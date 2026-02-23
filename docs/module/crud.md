@@ -164,23 +164,41 @@ await UserCrud.upsert(
 )
 ```
 
-## `as_response`
+## `schema` — typed response serialization
 
-Pass `as_response=True` to any write operation to get a [`Response[ModelType]`](../reference/schemas.md#fastapi_toolsets.schemas.Response) back directly for API usage:
+!!! info "Added in `v1.1`"
+
+Pass a Pydantic schema class to `create`, `get`, `update`, or `paginate` to serialize the result directly into that schema and wrap it in a [`Response[schema]`](../reference/schemas.md#fastapi_toolsets.schemas.Response) or [`PaginatedResponse[schema]`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse):
 
 ```python
+class UserRead(PydanticBase):
+    id: UUID
+    username: str
+
 @router.get(
     "/{uuid}",
-    response_model=Response[User],
     responses=generate_error_responses(NotFoundError),
 )
-async def get_user(session: SessionDep, uuid: UUID):
+async def get_user(session: SessionDep, uuid: UUID) -> Response[UserRead]:
     return await crud.UserCrud.get(
         session=session,
         filters=[User.id == uuid],
-        as_response=True,
+        schema=UserRead,
+    )
+
+@router.get("")
+async def list_users(session: SessionDep, page: int = 1) -> PaginatedResponse[UserRead]:
+    return await crud.UserCrud.paginate(
+        session=session,
+        page=page,
+        schema=UserRead,
     )
 ```
+
+The schema must have `from_attributes=True` (or inherit from [`PydanticBase`](../reference/schemas.md#fastapi_toolsets.schemas.PydanticBase)) so it can be built from SQLAlchemy model instances.
+
+!!! warning "Deprecated: `as_response`"
+    The `as_response=True` parameter is **deprecated** and will be removed in **v2.0**. Replace it with `schema=YourSchema`.
 
 ---
 

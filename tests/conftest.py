@@ -6,6 +6,8 @@ import uuid
 import pytest
 from pydantic import BaseModel
 from sqlalchemy import Column, ForeignKey, String, Table, Uuid
+
+from fastapi_toolsets.schemas import PydanticBase
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -90,6 +92,13 @@ class RoleCreate(BaseModel):
     name: str
 
 
+class RoleRead(PydanticBase):
+    """Schema for reading a role."""
+
+    id: uuid.UUID
+    name: str
+
+
 class RoleUpdate(BaseModel):
     """Schema for updating a role."""
 
@@ -104,6 +113,13 @@ class UserCreate(BaseModel):
     email: str
     is_active: bool = True
     role_id: uuid.UUID | None = None
+
+
+class UserRead(PydanticBase):
+    """Schema for reading a user (subset of fields)."""
+
+    id: uuid.UUID
+    username: str
 
 
 class UserUpdate(BaseModel):
