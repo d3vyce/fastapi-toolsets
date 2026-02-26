@@ -316,3 +316,17 @@ docstring_style = "google"
 inherited_members = true
 show_source = false
 show_root_heading = true
+
+# ----------------------------------------------------------------------------
+# Markdown extensions — replicates Zensical defaults and adds pymdownx.snippets
+# so that docs can include source files with --8<-- "path/to/file.py"
+# ----------------------------------------------------------------------------
+[project.markdown_extensions]
+
+
+[project.markdown_extensions."pymdownx.superfences"]
+custom_fences = [{name = "mermaid", class = "mermaid"}]
+
+[project.markdown_extensions."pymdownx.snippets"]
+base_path = ["."]
+check_paths = true
