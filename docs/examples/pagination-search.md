@@ -14,7 +14,7 @@ This example builds an articles listing endpoint that supports **offset paginati
 --8<-- "docs_src/examples/pagination_search/schemas.py"
 ```
 
-## CRUD
+## Crud
 
 Declare `facet_fields` and `searchable_fields` once on [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory). All endpoints built from this class share the same defaults and can override them per call.
 
@@ -24,8 +24,8 @@ Declare `facet_fields` and `searchable_fields` once on [`CrudFactory`](../refere
 
 ## Session dependency
 
-```python title="app.py"
---8<-- "docs_src/examples/pagination_search/app.py"
+```python title="db.py"
+--8<-- "docs_src/examples/pagination_search/db.py"
 ```
 
 !!! info "Deploy a Postgres DB with docker"
@@ -34,12 +34,20 @@ Declare `facet_fields` and `searchable_fields` once on [`CrudFactory`](../refere
     ```
 
 
-## Offset pagination
+## App
+
+```python title="app.py"
+--8<-- "docs_src/examples/pagination_search/app.py"
+```
+
+
+## Routes
+### Offset pagination
 
 Best for admin panels or any UI that needs a total item count and numbered pages.
 
-```python title="routes.py:12:27"
---8<-- "docs_src/examples/pagination_search/routes.py:12:27"
+```python title="routes.py:1:27"
+--8<-- "docs_src/examples/pagination_search/routes.py:1:27"
 ```
 
 **Example request**
@@ -71,7 +79,7 @@ GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published
 
 `filter_attributes` always reflects the values visible **after** applying the active filters. Use it to populate filter dropdowns on the client.
 
-## Cursor pagination
+### Cursor pagination
 
 Best for feeds, infinite scroll, or any high-throughput API where offset performance degrades.
 
@@ -111,12 +119,6 @@ Pass `next_cursor` as the `cursor` query parameter on the next request to advanc
 ## Search behaviour
 
 Both endpoints inherit the same `searchable_fields` declared on `ArticleCrud`:
-
-| Field | What it searches |
-|---|---|
-| `Article.title` | Article title |
-| `Article.body` | Article body text |
-| `(Article.category, Category.name)` | Name of the related category |
 
 Search is **case-insensitive** and uses a `LIKE %query%` pattern. Pass a [`SearchConfig`](../reference/crud.md#fastapi_toolsets.crud.search.SearchConfig) instead of a plain string to control case sensitivity or switch to `match_mode="all"` (AND across all fields instead of OR).
 

@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from docs_src.examples.pagination_search.app import get_session
+from docs_src.examples.pagination_search.db import get_db
 from docs_src.examples.pagination_search.models import Article, Base, Category
 from docs_src.examples.pagination_search.routes import router
 
@@ -22,10 +22,10 @@ from .conftest import DATABASE_URL
 def build_app(session: AsyncSession) -> FastAPI:
     app = FastAPI()
 
-    async def override_get_session():
+    async def override_get_db():
         yield session
 
-    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_db] = override_get_db
     app.include_router(router)
     return app
 
@@ -99,19 +99,14 @@ async def seed(session: AsyncSession):
 
 class TestAppSessionDep:
     @pytest.mark.anyio
-    async def test_get_session_yields_async_session(self, monkeypatch):
-        """get_session yields a real AsyncSession when called directly."""
-        import docs_src.examples.pagination_search.app as app_module
+    async def test_get_db_yields_async_session(self):
+        """get_db yields a real AsyncSession when called directly."""
+        from docs_src.examples.pagination_search.db import get_db
 
-        engine = create_async_engine(DATABASE_URL, echo=False)
-        factory = async_sessionmaker(engine, expire_on_commit=False)
-        monkeypatch.setattr(app_module, "session_factory", factory)
-
-        gen = app_module.get_session()
+        gen = get_db()
         session = await gen.__anext__()
         assert isinstance(session, AsyncSession)
         await session.close()
-        await engine.dispose()
 
 
 class TestOffsetPagination:

@@ -4,7 +4,7 @@ from .models import Article, Category
 
 ArticleCrud = CrudFactory(
     model=Article,
-    cursor_column=Article.created_at,  # monotonic timestamp — required for cursor_paginate
+    cursor_column=Article.created_at,
     searchable_fields=[  # default fields for full-text search
         Article.title,
         Article.body,

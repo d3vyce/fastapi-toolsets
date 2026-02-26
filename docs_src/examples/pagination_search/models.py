@@ -27,9 +27,7 @@ class Article(Base):
     )
     title: Mapped[str] = mapped_column(String(256))
     body: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(
-        String(32)
-    )  # "draft" | "published" | "archived"
+    status: Mapped[str] = mapped_column(String(32))
     published: Mapped[bool] = mapped_column(Boolean, default=False)
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("categories.id"), nullable=True

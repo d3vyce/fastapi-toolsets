@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, Query
 
 from fastapi_toolsets.schemas import PaginatedResponse
 
-from .app import SessionDep
 from .crud import ArticleCrud
+from .db import SessionDep
 from .schemas import ArticleRead
 
 router = APIRouter(prefix="/articles")
