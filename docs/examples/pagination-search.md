@@ -79,7 +79,7 @@ Best for feeds, infinite scroll, or any high-throughput API where offset perform
 --8<-- "docs_src/examples/pagination_search/routes.py:30:45"
 ```
 
-**Example request** (first page)
+**Example request**
 
 ```
 GET /articles/cursor?items_per_page=10&status=published
