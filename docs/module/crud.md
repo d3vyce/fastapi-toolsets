@@ -283,23 +283,29 @@ The distinct values are returned in the `filter_attributes` field of [`Paginated
 }
 ```
 
-Use `filter_by` to pass the client's chosen filter values directly — no need to build SQLAlchemy conditions by hand. Keys must match the `column.key` of a declared `facet_field`; any unknown key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) (HTTP 400). The keys in `filter_by` are the same keys the client received in `filter_attributes` — the roundtrip is exact.
+Use `filter_by` to pass the client's chosen filter values directly — no need to build SQLAlchemy conditions by hand. Any unknown key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) (HTTP 400). The keys in `filter_by` are the same keys the client received in `filter_attributes` — the roundtrip is exact.
+
+Keys are normally the terminal `column.key` (e.g. `"name"` for `Role.name`). When two facet fields share the same column key (e.g. `(Build.project, Project.name)` and `(Build.os, Os.name)`), the relationship name is prepended automatically: `"project__name"` and `"os__name"`.
 
 `filter_by` and `filters=` can be combined — both are applied with AND logic.
 
 FastAPI doesn't support `dict` query parameters natively. Use [`filter_params_schema()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.filter_params_schema) to generate a Pydantic model from the declared `facet_fields` and pass it as `Depends()`:
 
 ```python
+from fastapi import Depends
+
 UserCrud = CrudFactory(
     model=User,
     facet_fields=[User.status, User.country, (User.role, Role.name)],
 )
 
+UserFilterParams = 
+
 @router.get("", response_model_exclude_none=True)
 async def list_users(
     session: SessionDep,
     page: int = 1,
-    f: UserCrud.filter_params_schema() = Depends(),
+    f: dict[str, list[str]] = Depends(UserCrud.filter_params_schema()),
 ) -> PaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(
         session=session,
@@ -316,10 +322,10 @@ GET /users?status=active&country=FR   → filter_by={"status": ["active"], "coun
 GET /users?role=admin&role=editor     → filter_by={"role": ["admin", "editor"]}  (IN clause)
 ```
 
-You can override the fields for a specific endpoint:
+You can override the fields for a specific endpoint by passing `facet_fields=` to `filter_params_schema()`:
 
 ```python
-f: UserCrud.filter_params_schema(facet_fields=[User.status]) = Depends()
+UserStatusFilter = UserCrud.filter_params_schema(facet_fields=[User.status])
 ```
 
 On the first load (no active filter), `filter_attributes` lists every available value. Once the client picks `status=active`, the response returns only active users and `filter_attributes` narrows accordingly — so `country` only shows countries that appear among active users:

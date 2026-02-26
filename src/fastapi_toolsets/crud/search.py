@@ -152,6 +152,38 @@ def build_search_filters(
         return filters, joins
 
 
+def facet_keys(facet_fields: Sequence[FacetFieldType]) -> list[str]:
+    """Return a key for each facet field, disambiguating duplicate column keys.
+
+    Args:
+        facet_fields: Sequence of facet fields — either direct columns or
+            relationship tuples ``(rel, ..., column)``.
+
+    Returns:
+        A list of string keys, one per facet field, in the same order.
+    """
+    raw: list[tuple[str, str | None]] = []  # (column_key, rel_key_or_None)
+    for field in facet_fields:
+        if isinstance(field, tuple):
+            rel = field[-2]  # immediate parent relationship
+            column = field[-1]
+            raw.append((column.key, rel.key))
+        else:
+            raw.append((field.key, None))
+
+    # Find which column keys appear more than once
+    from collections import Counter
+
+    counts = Counter(col_key for col_key, _ in raw)
+    keys: list[str] = []
+    for col_key, rel_key in raw:
+        if counts[col_key] > 1 and rel_key is not None:
+            keys.append(f"{rel_key}__{col_key}")
+        else:
+            keys.append(col_key)
+    return keys
+
+
 async def build_facets(
     session: "AsyncSession",
     model: type[DeclarativeBase],
@@ -174,7 +206,9 @@ async def build_facets(
     """
     existing_join_keys: set[str] = {str(j) for j in (base_joins or [])}
 
-    async def _query_facet(field: FacetFieldType) -> tuple[str, list[Any]]:
+    keys = facet_keys(facet_fields)
+
+    async def _query_facet(field: FacetFieldType, key: str) -> tuple[str, list[Any]]:
         if isinstance(field, tuple):
             # Relationship chain: (User.role, Role.name) — last element is the column
             rels = field[:-1]
@@ -202,9 +236,11 @@ async def build_facets(
         q = q.order_by(column)
         result = await session.execute(q)
         values = [row[0] for row in result.all() if row[0] is not None]
-        return column.key, values
+        return key, values
 
-    pairs = await asyncio.gather(*[_query_facet(f) for f in facet_fields])
+    pairs = await asyncio.gather(
+        *[_query_facet(f, k) for f, k in zip(facet_fields, keys)]
+    )
     return dict(pairs)
 
 
@@ -227,14 +263,14 @@ def build_filter_by(
     index: dict[
         str, tuple[InstrumentedAttribute[Any], list[InstrumentedAttribute[Any]]]
     ] = {}
-    for field in facet_fields:
+    for key, field in zip(facet_keys(facet_fields), facet_fields):
         if isinstance(field, tuple):
             rels = list(field[:-1])
             column = field[-1]
         else:
             rels = []
             column = field
-        index[column.key] = (column, rels)
+        index[key] = (column, rels)
 
     valid_keys = set(index)
     filters: list[ColumnElement[bool]] = []

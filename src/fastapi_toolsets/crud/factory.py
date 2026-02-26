@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import uuid as uuid_module
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel
 from sqlalchemy import Date, DateTime, Float, Integer, Numeric, Uuid, and_, func, select
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.dialects.postgresql import insert
@@ -31,6 +32,7 @@ from .search import (
     build_facets,
     build_filter_by,
     build_search_filters,
+    facet_keys,
 )
 
 ModelType = TypeVar("ModelType", bound=DeclarativeBase)
@@ -132,19 +134,20 @@ class AsyncCrud(Generic[ModelType]):
         cls: type[Self],
         *,
         facet_fields: Sequence[FacetFieldType] | None = None,
-    ) -> type[BaseModel]:
-        """Return a Pydantic model class with one ``list[str] | None`` field per facet field.
-
+    ) -> Callable[..., Awaitable[dict[str, list[str]]]]:
+        """Return a FastAPI dependency that collects facet filter values from query parameters.
         Args:
-            facet_fields: Override the facet fields for this schema. Falls back to the
+            facet_fields: Override the facet fields for this dependency. Falls back to the
                 class-level ``facet_fields`` if not provided.
 
         Returns:
-            A dynamically created Pydantic model class named ``{Model}FilterParams``.
+            An async dependency function named ``{Model}FilterParams`` that resolves to a
+            ``dict[str, list[str]]`` containing only the keys that were supplied in the
+            request (absent/``None`` parameters are excluded).
 
         Raises:
-            ValueError: If no facet fields are configured on this CRUD class or provided
-                via the ``facet_fields`` parameter.
+            ValueError: If no facet fields are configured on this CRUD class and none are
+                provided via ``facet_fields``.
         """
         fields = facet_fields if facet_fields is not None else cls.facet_fields
         if not fields:
@@ -153,12 +156,31 @@ class AsyncCrud(Generic[ModelType]):
                 "Pass facet_fields= or set them on CrudFactory."
             )
 
-        field_definitions: dict[str, Any] = {}
-        for field in fields:
-            column = field[-1] if isinstance(field, tuple) else field
-            field_definitions[column.key] = (list[str] | None, None)
+        keys = facet_keys(fields)
 
-        return create_model(f"{cls.model.__name__}FilterParams", **field_definitions)
+        # Build an async dependency function with a synthetic __signature__.
+        # Same pattern as PathDependency / BodyDependency in dependencies.py:
+        # the function body accepts **kwargs; FastAPI reads __signature__ to
+        # discover query parameters and generate the OpenAPI schema.
+        from fastapi import Query as _Query  # noqa: PLC0415
+
+        async def dependency(**kwargs: Any) -> dict[str, list[str]]:
+            return {k: v for k, v in kwargs.items() if v is not None}
+
+        dependency.__name__ = f"{cls.model.__name__}FilterParams"
+        dependency.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+            parameters=[
+                inspect.Parameter(
+                    k,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    annotation=list[str] | None,
+                    default=_Query(default=None),
+                )
+                for k in keys
+            ]
+        )
+
+        return dependency
 
     @overload
     @classmethod

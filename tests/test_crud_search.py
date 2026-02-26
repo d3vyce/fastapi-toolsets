@@ -807,23 +807,24 @@ class TestFilterParamsSchema:
     """Tests for AsyncCrud.filter_params_schema()."""
 
     def test_generates_fields_from_facet_fields(self):
-        """Generated model has one list[str] | None field per facet field."""
-        UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        schema = UserFacetCrud.filter_params_schema()
+        """Returned dependency has one keyword param per facet field."""
+        import inspect
 
-        fields = schema.model_fields
-        assert set(fields) == {"username", "email"}
-        # Default is None
-        instance = schema()
-        assert getattr(instance, "username") is None
-        assert getattr(instance, "email") is None
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
+        dep = UserFacetCrud.filter_params_schema()
+
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"username", "email"}
 
     def test_relationship_facet_uses_column_key(self):
         """Relationship tuple uses the terminal column's key."""
-        UserRoleCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
-        schema = UserRoleCrud.filter_params_schema()
+        import inspect
 
-        assert set(schema.model_fields) == {"name"}
+        UserRoleCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
+        dep = UserRoleCrud.filter_params_schema()
+
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"name"}
 
     def test_raises_when_no_facet_fields(self):
         """ValueError raised when no facet_fields are configured or provided."""
@@ -832,38 +833,68 @@ class TestFilterParamsSchema:
 
     def test_facet_fields_override(self):
         """facet_fields= parameter overrides the class-level default."""
+        import inspect
+
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        schema = UserFacetCrud.filter_params_schema(facet_fields=[User.email])
+        dep = UserFacetCrud.filter_params_schema(facet_fields=[User.email])
 
-        assert set(schema.model_fields) == {"email"}
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"email"}
 
-    def test_model_dump_matches_filter_by_format(self):
-        """model_dump(exclude_none=True) produces the dict filter_by expects."""
+    @pytest.mark.anyio
+    async def test_awaiting_dep_returns_dict_with_values(self):
+        """Awaiting the dependency returns a dict with only the supplied keys."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        schema = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params_schema()
 
-        instance = schema(username=["alice"])
-        assert instance.model_dump(exclude_none=True) == {"username": ["alice"]}
+        result = await dep(username=["alice"])
+        assert result == {"username": ["alice"]}
 
-    def test_multi_value_list_field(self):
+    @pytest.mark.anyio
+    async def test_multi_value_list_field(self):
         """Multiple values are accepted as a list."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
-        schema = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params_schema()
 
-        instance = schema(username=["alice", "bob"])
-        assert getattr(instance, "username") == ["alice", "bob"]
-        assert instance.model_dump(exclude_none=True) == {"username": ["alice", "bob"]}
+        result = await dep(username=["alice", "bob"])
+        assert result == {"username": ["alice", "bob"]}
 
-    def test_model_name_includes_model_name(self):
-        """Generated class is named {Model}FilterParams."""
+    def test_disambiguates_duplicate_column_keys(self):
+        """Two relationship tuples sharing a terminal column key get prefixed names."""
+        from unittest.mock import MagicMock
+
+        from fastapi_toolsets.crud.search import facet_keys
+
+        col_a = MagicMock()
+        col_a.key = "name"
+        rel_a = MagicMock()
+        rel_a.key = "project"
+
+        col_b = MagicMock()
+        col_b.key = "name"
+        rel_b = MagicMock()
+        rel_b.key = "os"
+
+        keys = facet_keys([(rel_a, col_a), (rel_b, col_b)])
+        assert keys == ["project__name", "os__name"]
+
+    def test_unique_column_keys_kept_plain(self):
+        """Fields with unique column keys are not prefixed."""
+        from fastapi_toolsets.crud.search import facet_keys
+
+        keys = facet_keys([User.username, User.email])
+        assert keys == ["username", "email"]
+
+    def test_dependency_name_includes_model_name(self):
+        """Returned dependency is named {Model}FilterParams."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
-        schema = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params_schema()
 
-        assert schema.__name__ == "UserFilterParams"
+        assert dep.__name__ == "UserFilterParams"  # type: ignore[union-attr]
 
     @pytest.mark.anyio
     async def test_integration_with_offset_paginate(self, db_session: AsyncSession):
-        """Generated schema instance can be passed directly to offset_paginate."""
+        """Dependency result can be passed directly to offset_paginate via filter_by."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
         await UserCrud.create(
             db_session, UserCreate(username="alice", email="a@test.com")
@@ -872,7 +903,8 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        f = UserFacetCrud.filter_params_schema()(username=["alice"])
+        dep = UserFacetCrud.filter_params_schema()
+        f = await dep(username=["alice"])
         result = await UserFacetCrud.offset_paginate(db_session, filter_by=f)
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -880,10 +912,8 @@ class TestFilterParamsSchema:
         assert result.data[0].username == "alice"
 
     @pytest.mark.anyio
-    async def test_schema_instance_passed_to_cursor_paginate(
-        self, db_session: AsyncSession
-    ):
-        """Generated schema instance can be passed directly to cursor_paginate."""
+    async def test_dep_result_passed_to_cursor_paginate(self, db_session: AsyncSession):
+        """Dependency result can be passed directly to cursor_paginate via filter_by."""
         UserFacetCursorCrud = CrudFactory(
             User, cursor_column=User.id, facet_fields=[User.username]
         )
@@ -894,17 +924,16 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        f = UserFacetCursorCrud.filter_params_schema()(username=["alice"])
+        dep = UserFacetCursorCrud.filter_params_schema()
+        f = await dep(username=["alice"])
         result = await UserFacetCursorCrud.cursor_paginate(db_session, filter_by=f)
 
         assert len(result.data) == 1
         assert result.data[0].username == "alice"
 
     @pytest.mark.anyio
-    async def test_empty_schema_instance_passes_no_filter(
-        self, db_session: AsyncSession
-    ):
-        """An all-None schema instance results in no filter (returns all rows)."""
+    async def test_all_none_dep_result_passes_no_filter(self, db_session: AsyncSession):
+        """All-None dependency result results in no filter (returns all rows)."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
         await UserCrud.create(
             db_session, UserCreate(username="alice", email="a@test.com")
@@ -913,7 +942,8 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        f = UserFacetCrud.filter_params_schema()()  # all fields None
+        dep = UserFacetCrud.filter_params_schema()
+        f = await dep()  # all fields None
         result = await UserFacetCrud.offset_paginate(db_session, filter_by=f)
 
         assert isinstance(result.pagination, OffsetPagination)
