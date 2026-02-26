@@ -176,6 +176,8 @@ Two search strategies are available, both compatible with [`offset_paginate`](..
 | Relationship support | Yes | Yes |
 | Use case | Search bars | Filter dropdowns |
 
+!!! info "You can use both search strategies in the same endpoint!"
+
 ### Full-text search
 
 Declare `searchable_fields` on the CRUD class. Relationship traversal is supported via tuples:
@@ -283,13 +285,14 @@ The distinct values are returned in the `filter_attributes` field of [`Paginated
 }
 ```
 
-Use `filter_by` to pass the client's chosen filter values directly — no need to build SQLAlchemy conditions by hand. Any unknown key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) (HTTP 400). The keys in `filter_by` are the same keys the client received in `filter_attributes` — the roundtrip is exact.
+Use `filter_by` to pass the client's chosen filter values directly — no need to build SQLAlchemy conditions by hand. Any unknown key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError).
 
-Keys are normally the terminal `column.key` (e.g. `"name"` for `Role.name`). When two facet fields share the same column key (e.g. `(Build.project, Project.name)` and `(Build.os, Os.name)`), the relationship name is prepended automatically: `"project__name"` and `"os__name"`.
+!!! info "The keys in `filter_by` are the same keys the client received in `filter_attributes`."
+    Keys are normally the terminal `column.key` (e.g. `"name"` for `Role.name`). When two facet fields share the same column key (e.g. `(Build.project, Project.name)` and `(Build.os, Os.name)`), the relationship name is prepended automatically: `"project__name"` and `"os__name"`.
 
-`filter_by` and `filters=` can be combined — both are applied with AND logic.
+`filter_by` and `filters` can be combined — both are applied with AND logic.
 
-FastAPI doesn't support `dict` query parameters natively. Use [`filter_params_schema()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.filter_params_schema) to generate a Pydantic model from the declared `facet_fields` and pass it as `Depends()`:
+Use [`filter_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.filter_params) to generate a dict with the facet filter values from the query parameters:
 
 ```python
 from fastapi import Depends
@@ -299,49 +302,26 @@ UserCrud = CrudFactory(
     facet_fields=[User.status, User.country, (User.role, Role.name)],
 )
 
-UserFilterParams = 
-
 @router.get("", response_model_exclude_none=True)
 async def list_users(
     session: SessionDep,
     page: int = 1,
-    f: dict[str, list[str]] = Depends(UserCrud.filter_params_schema()),
+    filter_by: dict[str, list[str]] = Depends(UserCrud.filter_params()),
 ) -> PaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(
         session=session,
         page=page,
-        filter_by=f,
+        filter_by=filter_by,
     )
 ```
 
-Every generated field is `list[str] | None = None`, so both single-value and multi-value query parameters work out of the box:
+Both single-value and multi-value query parameters work:
 
 ```
 GET /users?status=active              → filter_by={"status": ["active"]}
 GET /users?status=active&country=FR   → filter_by={"status": ["active"], "country": ["FR"]}
 GET /users?role=admin&role=editor     → filter_by={"role": ["admin", "editor"]}  (IN clause)
 ```
-
-You can override the fields for a specific endpoint by passing `facet_fields=` to `filter_params_schema()`:
-
-```python
-UserStatusFilter = UserCrud.filter_params_schema(facet_fields=[User.status])
-```
-
-On the first load (no active filter), `filter_attributes` lists every available value. Once the client picks `status=active`, the response returns only active users and `filter_attributes` narrows accordingly — so `country` only shows countries that appear among active users:
-
-```
-GET /users
-→ filter_attributes: {"status": ["active", "inactive"], "country": ["DE", "FR", "US"]}
-
-GET /users?status=active
-→ data: [active users only]
-→ filter_attributes: {"status": ["active"], "country": ["DE", "US"]}
-```
-
-Facets **respect the active filters** — only values present among the filtered rows are returned. `None` values (e.g. from optional relationships) are always excluded.
-
-When no `facet_fields` are configured, `filter_attributes` is `None` and absent from the response when using `response_model_exclude_none=True`.
 
 ## Relationship loading
 

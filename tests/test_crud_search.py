@@ -870,14 +870,14 @@ class TestFilterBy:
 
 
 class TestFilterParamsSchema:
-    """Tests for AsyncCrud.filter_params_schema()."""
+    """Tests for AsyncCrud.filter_params()."""
 
     def test_generates_fields_from_facet_fields(self):
         """Returned dependency has one keyword param per facet field."""
         import inspect
 
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        dep = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params()
 
         param_names = set(inspect.signature(dep).parameters)
         assert param_names == {"username", "email"}
@@ -887,7 +887,7 @@ class TestFilterParamsSchema:
         import inspect
 
         UserRoleCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
-        dep = UserRoleCrud.filter_params_schema()
+        dep = UserRoleCrud.filter_params()
 
         param_names = set(inspect.signature(dep).parameters)
         assert param_names == {"name"}
@@ -895,14 +895,14 @@ class TestFilterParamsSchema:
     def test_raises_when_no_facet_fields(self):
         """ValueError raised when no facet_fields are configured or provided."""
         with pytest.raises(ValueError, match="no facet_fields"):
-            UserCrud.filter_params_schema()
+            UserCrud.filter_params()
 
     def test_facet_fields_override(self):
         """facet_fields= parameter overrides the class-level default."""
         import inspect
 
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        dep = UserFacetCrud.filter_params_schema(facet_fields=[User.email])
+        dep = UserFacetCrud.filter_params(facet_fields=[User.email])
 
         param_names = set(inspect.signature(dep).parameters)
         assert param_names == {"email"}
@@ -911,7 +911,7 @@ class TestFilterParamsSchema:
     async def test_awaiting_dep_returns_dict_with_values(self):
         """Awaiting the dependency returns a dict with only the supplied keys."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        dep = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params()
 
         result = await dep(username=["alice"])
         assert result == {"username": ["alice"]}
@@ -920,7 +920,7 @@ class TestFilterParamsSchema:
     async def test_multi_value_list_field(self):
         """Multiple values are accepted as a list."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
-        dep = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params()
 
         result = await dep(username=["alice", "bob"])
         assert result == {"username": ["alice", "bob"]}
@@ -954,7 +954,7 @@ class TestFilterParamsSchema:
     def test_dependency_name_includes_model_name(self):
         """Returned dependency is named {Model}FilterParams."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
-        dep = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params()
 
         assert dep.__name__ == "UserFilterParams"  # type: ignore[union-attr]
 
@@ -969,7 +969,7 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        dep = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params()
         f = await dep(username=["alice"])
         result = await UserFacetCrud.offset_paginate(db_session, filter_by=f)
 
@@ -990,7 +990,7 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        dep = UserFacetCursorCrud.filter_params_schema()
+        dep = UserFacetCursorCrud.filter_params()
         f = await dep(username=["alice"])
         result = await UserFacetCursorCrud.cursor_paginate(db_session, filter_by=f)
 
@@ -1008,7 +1008,7 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        dep = UserFacetCrud.filter_params_schema()
+        dep = UserFacetCrud.filter_params()
         f = await dep()  # all fields None
         result = await UserFacetCrud.offset_paginate(db_session, filter_by=f)
 

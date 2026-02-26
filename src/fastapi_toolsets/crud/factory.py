@@ -12,6 +12,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
+from fastapi import Query
 from pydantic import BaseModel
 from sqlalchemy import Date, DateTime, Float, Integer, Numeric, Uuid, and_, func, select
 from sqlalchemy import delete as sql_delete
@@ -130,7 +131,7 @@ class AsyncCrud(Generic[ModelType]):
         return set(cls.m2m_fields.keys())
 
     @classmethod
-    def filter_params_schema(
+    def filter_params(
         cls: type[Self],
         *,
         facet_fields: Sequence[FacetFieldType] | None = None,
@@ -155,14 +156,7 @@ class AsyncCrud(Generic[ModelType]):
                 f"{cls.__name__} has no facet_fields configured. "
                 "Pass facet_fields= or set them on CrudFactory."
             )
-
         keys = facet_keys(fields)
-
-        # Build an async dependency function with a synthetic __signature__.
-        # Same pattern as PathDependency / BodyDependency in dependencies.py:
-        # the function body accepts **kwargs; FastAPI reads __signature__ to
-        # discover query parameters and generate the OpenAPI schema.
-        from fastapi import Query as _Query  # noqa: PLC0415
 
         async def dependency(**kwargs: Any) -> dict[str, list[str]]:
             return {k: v for k, v in kwargs.items() if v is not None}
@@ -174,7 +168,7 @@ class AsyncCrud(Generic[ModelType]):
                     k,
                     inspect.Parameter.KEYWORD_ONLY,
                     annotation=list[str] | None,
-                    default=_Query(default=None),
+                    default=Query(default=None),
                 )
                 for k in keys
             ]
