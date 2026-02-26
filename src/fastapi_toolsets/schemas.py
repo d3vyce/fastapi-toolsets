@@ -133,3 +133,4 @@ class PaginatedResponse(BaseResponse, Generic[DataT]):
 
     data: list[DataT]
     pagination: OffsetPagination | CursorPagination
+    filter_attributes: dict[str, list[Any]] | None = None

@@ -102,6 +102,32 @@ class NoSearchableFieldsError(ApiException):
         super().__init__(detail)
 
 
+class InvalidFacetFilterError(ApiException):
+    """Raised when filter_by contains a key not declared in facet_fields."""
+
+    api_error = ApiError(
+        code=400,
+        msg="Invalid Facet Filter",
+        desc="One or more filter_by keys are not declared as facet fields.",
+        err_code="FACET-400",
+    )
+
+    def __init__(self, key: str, valid_keys: set[str]) -> None:
+        """Initialize the exception.
+
+        Args:
+            key: The unknown filter key provided by the caller
+            valid_keys: Set of valid keys derived from the declared facet_fields
+        """
+        self.key = key
+        self.valid_keys = valid_keys
+        detail = (
+            f"'{key}' is not a declared facet field. "
+            f"Valid keys: {sorted(valid_keys) or 'none — set facet_fields on the CRUD class'}."
+        )
+        super().__init__(detail)
+
+
 def generate_error_responses(
     *errors: type[ApiException],
 ) -> dict[int | str, dict[str, Any]]:

@@ -168,7 +168,19 @@ PostCrud = CrudFactory(model=Post, cursor_column=Post.created_at)
 
 ## Search
 
-Declare searchable fields on the CRUD class. Relationship traversal is supported via tuples:
+Two search strategies are available, both compatible with [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) and [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate).
+
+| | Full-text search | Filter attributes |
+|---|---|---|
+| Input | Free-text string | Exact column values |
+| Relationship support | Yes | Yes |
+| Use case | Search bars | Filter dropdowns |
+
+!!! info "You can use both search strategies in the same endpoint!"
+
+### Full-text search
+
+Declare `searchable_fields` on the CRUD class. Relationship traversal is supported via tuples:
 
 ```python
 PostCrud = CrudFactory(
@@ -178,6 +190,15 @@ PostCrud = CrudFactory(
         Post.content,
         (Post.author, User.username),  # search across relationship
     ],
+)
+```
+
+You can override `searchable_fields` per call with `search_fields`:
+
+```python
+result = await UserCrud.offset_paginate(
+    session=session,
+    search_fields=[User.country],
 )
 ```
 
@@ -219,6 +240,87 @@ async def get_users(
         cursor=cursor,
         search=search,
     )
+```
+
+### Filter attributes
+
+!!! info "Added in `v1.2`"
+
+Declare `facet_fields` on the CRUD class to return distinct column values alongside paginated results. This is useful for populating filter dropdowns or building faceted search UIs.
+
+Facet fields use the same syntax as `searchable_fields` — direct columns or relationship tuples:
+
+```python
+UserCrud = CrudFactory(
+    model=User,
+    facet_fields=[
+        User.status,
+        User.country,
+        (User.role, Role.name),  # value from a related model
+    ],
+)
+```
+
+You can override `facet_fields` per call:
+
+```python
+result = await UserCrud.offset_paginate(
+    session=session,
+    facet_fields=[User.country],
+)
+```
+
+The distinct values are returned in the `filter_attributes` field of [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse):
+
+```json
+{
+  "status": "SUCCESS",
+  "data": ["..."],
+  "pagination": { "..." },
+  "filter_attributes": {
+    "status": ["active", "inactive"],
+    "country": ["DE", "FR", "US"],
+    "name": ["admin", "editor", "viewer"]
+  }
+}
+```
+
+Use `filter_by` to pass the client's chosen filter values directly — no need to build SQLAlchemy conditions by hand. Any unknown key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError).
+
+!!! info "The keys in `filter_by` are the same keys the client received in `filter_attributes`."
+    Keys are normally the terminal `column.key` (e.g. `"name"` for `Role.name`). When two facet fields share the same column key (e.g. `(Build.project, Project.name)` and `(Build.os, Os.name)`), the relationship name is prepended automatically: `"project__name"` and `"os__name"`.
+
+`filter_by` and `filters` can be combined — both are applied with AND logic.
+
+Use [`filter_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.filter_params) to generate a dict with the facet filter values from the query parameters:
+
+```python
+from fastapi import Depends
+
+UserCrud = CrudFactory(
+    model=User,
+    facet_fields=[User.status, User.country, (User.role, Role.name)],
+)
+
+@router.get("", response_model_exclude_none=True)
+async def list_users(
+    session: SessionDep,
+    page: int = 1,
+    filter_by: dict[str, list[str]] = Depends(UserCrud.filter_params()),
+) -> PaginatedResponse[UserRead]:
+    return await UserCrud.offset_paginate(
+        session=session,
+        page=page,
+        filter_by=filter_by,
+    )
+```
+
+Both single-value and multi-value query parameters work:
+
+```
+GET /users?status=active              → filter_by={"status": ["active"]}
+GET /users?status=active&country=FR   → filter_by={"status": ["active"], "country": ["FR"]}
+GET /users?role=admin&role=editor     → filter_by={"role": ["admin", "editor"]}  (IN clause)
 ```
 
 ## Relationship loading
