@@ -168,7 +168,17 @@ PostCrud = CrudFactory(model=Post, cursor_column=Post.created_at)
 
 ## Search
 
-Declare searchable fields on the CRUD class. Relationship traversal is supported via tuples:
+Two search strategies are available, both compatible with [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) and [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate).
+
+| | Full-text search | Filter attributes |
+|---|---|---|
+| Input | Free-text string | Exact column values |
+| Relationship support | Yes | Yes |
+| Use case | Search bars | Filter dropdowns |
+
+### Full-text search
+
+Declare `searchable_fields` on the CRUD class. Relationship traversal is supported via tuples:
 
 ```python
 PostCrud = CrudFactory(
@@ -178,6 +188,15 @@ PostCrud = CrudFactory(
         Post.content,
         (Post.author, User.username),  # search across relationship
     ],
+)
+```
+
+You can override `searchable_fields` per call with `search_fields`:
+
+```python
+result = await UserCrud.offset_paginate(
+    session=session,
+    search_fields=[User.country],
 )
 ```
 
@@ -220,6 +239,104 @@ async def get_users(
         search=search,
     )
 ```
+
+### Filter attributes
+
+!!! info "Added in `v1.2`"
+
+Declare `facet_fields` on the CRUD class to return distinct column values alongside paginated results. This is useful for populating filter dropdowns or building faceted search UIs.
+
+Facet fields use the same syntax as `searchable_fields` — direct columns or relationship tuples:
+
+```python
+UserCrud = CrudFactory(
+    model=User,
+    facet_fields=[
+        User.status,
+        User.country,
+        (User.role, Role.name),  # value from a related model
+    ],
+)
+```
+
+You can override `facet_fields` per call:
+
+```python
+result = await UserCrud.offset_paginate(
+    session=session,
+    facet_fields=[User.country],
+)
+```
+
+The distinct values are returned in the `filter_attributes` field of [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse):
+
+```json
+{
+  "status": "SUCCESS",
+  "data": ["..."],
+  "pagination": { "..." },
+  "filter_attributes": {
+    "status": ["active", "inactive"],
+    "country": ["DE", "FR", "US"],
+    "name": ["admin", "editor", "viewer"]
+  }
+}
+```
+
+Use `filter_by` to pass the client's chosen filter values directly — no need to build SQLAlchemy conditions by hand. Keys must match the `column.key` of a declared `facet_field`; any unknown key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) (HTTP 400). The keys in `filter_by` are the same keys the client received in `filter_attributes` — the roundtrip is exact.
+
+`filter_by` and `filters=` can be combined — both are applied with AND logic.
+
+FastAPI doesn't support `dict` query parameters natively. The idiomatic pattern is a Pydantic model used as a `Depends()` — each field maps to one query param, and `model_dump(exclude_none=True)` converts it to the dict `filter_by` expects:
+
+```python
+from fastapi import Depends
+from pydantic import BaseModel
+
+class UserFilterParams(BaseModel):
+    status: str | None = None
+    country: str | None = None
+    # For multi-select (IN clause), use a list:
+    # role: list[str] | None = None
+
+UserCrud = CrudFactory(
+    model=User,
+    facet_fields=[User.status, User.country],
+)
+
+@router.get("", response_model_exclude_none=True)
+async def list_users(
+    session: SessionDep,
+    page: int = 1,
+    f: UserFilterParams = Depends(),
+) -> PaginatedResponse[UserRead]:
+    return await UserCrud.offset_paginate(
+        session=session,
+        page=page,
+        filter_by=f.model_dump(exclude_none=True) or None,
+    )
+```
+
+On the first load (no active filter), `filter_attributes` lists every available value. Once the client picks `status=active`, the response returns only active users and `filter_attributes` narrows accordingly — so `country` only shows countries that appear among active users:
+
+```
+GET /users
+→ filter_attributes: {"status": ["active", "inactive"], "country": ["DE", "FR", "US"]}
+
+GET /users?status=active
+→ data: [active users only]
+→ filter_attributes: {"status": ["active"], "country": ["DE", "US"]}
+
+GET /users?status=active&country=FR
+→ data: [active users in France]
+→ filter_attributes: {"status": ["active"], "country": ["FR"]}
+
+GET /users?role=admin&role=editor   → IN clause (with list[str] field)
+```
+
+Facets **respect the active filters** — only values present among the filtered rows are returned. `None` values (e.g. from optional relationships) are always excluded.
+
+When no `facet_fields` are configured, `filter_attributes` is `None` and absent from the response when using `response_model_exclude_none=True`.
 
 ## Relationship loading
 

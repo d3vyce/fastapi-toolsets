@@ -24,7 +24,14 @@ from sqlalchemy.sql.roles import WhereHavingRole
 from ..db import get_transaction
 from ..exceptions import NotFoundError
 from ..schemas import CursorPagination, OffsetPagination, PaginatedResponse, Response
-from .search import SearchConfig, SearchFieldType, build_search_filters
+from .search import (
+    FacetFieldType,
+    SearchConfig,
+    SearchFieldType,
+    build_facets,
+    build_filter_by,
+    build_search_filters,
+)
 
 ModelType = TypeVar("ModelType", bound=DeclarativeBase)
 SchemaType = TypeVar("SchemaType", bound=BaseModel)
@@ -50,6 +57,7 @@ class AsyncCrud(Generic[ModelType]):
 
     model: ClassVar[type[DeclarativeBase]]
     searchable_fields: ClassVar[Sequence[SearchFieldType] | None] = None
+    facet_fields: ClassVar[Sequence[FacetFieldType] | None] = None
     m2m_fields: ClassVar[M2MFieldType | None] = None
     default_load_options: ClassVar[list[ExecutableOption] | None] = None
     cursor_column: ClassVar[Any | None] = None
@@ -693,6 +701,8 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        filter_by: dict[str, Any] | None = None,
         schema: type[SchemaType],
     ) -> PaginatedResponse[SchemaType]: ...
 
@@ -712,6 +722,8 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        filter_by: dict[str, Any] | None = None,
         schema: None = ...,
     ) -> PaginatedResponse[ModelType]: ...
 
@@ -729,6 +741,8 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        filter_by: dict[str, Any] | None = None,
         schema: type[BaseModel] | None = None,
     ) -> PaginatedResponse[ModelType] | PaginatedResponse[Any]:
         """Get paginated results using offset-based pagination.
@@ -744,6 +758,10 @@ class AsyncCrud(Generic[ModelType]):
             items_per_page: Number of items per page
             search: Search query string or SearchConfig object
             search_fields: Fields to search in (overrides class default)
+            facet_fields: Columns to compute distinct values for (overrides class default)
+            filter_by: Dict of {column_key: value} to filter by declared facet fields.
+                Keys must match the column.key of a facet field. Scalar → equality,
+                list → IN clause. Raises InvalidFacetFilterError for unknown keys.
             schema: Optional Pydantic schema to serialize each item into.
 
         Returns:
@@ -752,6 +770,17 @@ class AsyncCrud(Generic[ModelType]):
         filters = list(filters) if filters else []
         offset = (page - 1) * items_per_page
         search_joins: list[Any] = []
+
+        # Build filter_by conditions from declared facet fields
+        if filter_by:
+            resolved_facets_for_filter = (
+                facet_fields if facet_fields is not None else cls.facet_fields
+            )
+            fb_filters, fb_joins = build_filter_by(
+                filter_by, resolved_facets_for_filter or []
+            )
+            filters.extend(fb_filters)
+            search_joins.extend(fb_joins)
 
         # Build search filters
         if search:
@@ -817,6 +846,20 @@ class AsyncCrud(Generic[ModelType]):
         count_result = await session.execute(count_q)
         total_count = count_result.scalar_one()
 
+        # Build facets
+        resolved_facet_fields = (
+            facet_fields if facet_fields is not None else cls.facet_fields
+        )
+        filter_attributes: dict[str, list[Any]] | None = None
+        if resolved_facet_fields:
+            filter_attributes = await build_facets(
+                session,
+                cls.model,
+                resolved_facet_fields,
+                base_filters=filters or None,
+                base_joins=search_joins or None,
+            )
+
         return PaginatedResponse(
             data=items,
             pagination=OffsetPagination(
@@ -825,6 +868,7 @@ class AsyncCrud(Generic[ModelType]):
                 page=page,
                 has_more=page * items_per_page < total_count,
             ),
+            filter_attributes=filter_attributes,
         )
 
     # Backward-compatible - will be removed in v2.0
@@ -845,6 +889,8 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        filter_by: dict[str, Any] | None = None,
         schema: type[SchemaType],
     ) -> PaginatedResponse[SchemaType]: ...
 
@@ -864,6 +910,8 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        filter_by: dict[str, Any] | None = None,
         schema: None = ...,
     ) -> PaginatedResponse[ModelType]: ...
 
@@ -881,6 +929,8 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        filter_by: dict[str, Any] | None = None,
         schema: type[BaseModel] | None = None,
     ) -> PaginatedResponse[ModelType] | PaginatedResponse[Any]:
         """Get paginated results using cursor-based pagination.
@@ -899,6 +949,10 @@ class AsyncCrud(Generic[ModelType]):
             items_per_page: Number of items per page (default 20).
             search: Search query string or SearchConfig object.
             search_fields: Fields to search in (overrides class default).
+            facet_fields: Columns to compute distinct values for (overrides class default).
+            filter_by: Dict of {column_key: value} to filter by declared facet fields.
+                Keys must match the column.key of a facet field. Scalar → equality,
+                list → IN clause. Raises InvalidFacetFilterError for unknown keys.
             schema: Optional Pydantic schema to serialize each item into.
 
         Returns:
@@ -906,6 +960,17 @@ class AsyncCrud(Generic[ModelType]):
         """
         filters = list(filters) if filters else []
         search_joins: list[Any] = []
+
+        # Build filter_by conditions from declared facet fields
+        if filter_by:
+            resolved_facets_for_filter = (
+                facet_fields if facet_fields is not None else cls.facet_fields
+            )
+            fb_filters, fb_joins = build_filter_by(
+                filter_by, resolved_facets_for_filter or []
+            )
+            filters.extend(fb_filters)
+            search_joins.extend(fb_joins)
 
         if cls.cursor_column is None:
             raise ValueError(
@@ -996,6 +1061,20 @@ class AsyncCrud(Generic[ModelType]):
             else items_page
         )
 
+        # Build facets
+        resolved_facet_fields = (
+            facet_fields if facet_fields is not None else cls.facet_fields
+        )
+        filter_attributes: dict[str, list[Any]] | None = None
+        if resolved_facet_fields:
+            filter_attributes = await build_facets(
+                session,
+                cls.model,
+                resolved_facet_fields,
+                base_filters=filters or None,
+                base_joins=search_joins or None,
+            )
+
         return PaginatedResponse(
             data=items,
             pagination=CursorPagination(
@@ -1004,6 +1083,7 @@ class AsyncCrud(Generic[ModelType]):
                 items_per_page=items_per_page,
                 has_more=has_more,
             ),
+            filter_attributes=filter_attributes,
         )
 
 
@@ -1011,6 +1091,7 @@ def CrudFactory(
     model: type[ModelType],
     *,
     searchable_fields: Sequence[SearchFieldType] | None = None,
+    facet_fields: Sequence[FacetFieldType] | None = None,
     m2m_fields: M2MFieldType | None = None,
     default_load_options: list[ExecutableOption] | None = None,
     cursor_column: Any | None = None,
@@ -1020,6 +1101,9 @@ def CrudFactory(
     Args:
         model: SQLAlchemy model class
         searchable_fields: Optional list of searchable fields
+        facet_fields: Optional list of columns to compute distinct values for in paginated
+            responses. Supports direct columns (``User.status``) and relationship tuples
+            (``(User.role, Role.name)``). Can be overridden per call.
         m2m_fields: Optional mapping for many-to-many relationships.
             Maps schema field names (containing lists of IDs) to
             SQLAlchemy relationship attributes.
@@ -1054,6 +1138,12 @@ def CrudFactory(
         PostCrud = CrudFactory(
             Post,
             m2m_fields={"tag_ids": Post.tags},
+        )
+
+        # With facet fields for filter dropdowns / faceted search:
+        UserCrud = CrudFactory(
+            User,
+            facet_fields=[User.status, User.country, (User.role, Role.name)],
         )
 
         # With a fixed cursor column for cursor_paginate:
@@ -1106,6 +1196,7 @@ def CrudFactory(
         {
             "model": model,
             "searchable_fields": searchable_fields,
+            "facet_fields": facet_fields,
             "m2m_fields": m2m_fields,
             "default_load_options": default_load_options,
             "cursor_column": cursor_column,

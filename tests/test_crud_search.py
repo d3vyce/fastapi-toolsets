@@ -5,7 +5,12 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_toolsets.crud import SearchConfig, get_searchable_fields
+from fastapi_toolsets.crud import (
+    CrudFactory,
+    InvalidFacetFilterError,
+    SearchConfig,
+    get_searchable_fields,
+)
 from fastapi_toolsets.schemas import OffsetPagination
 
 from .conftest import (
@@ -316,6 +321,15 @@ class TestPaginateSearch:
 class TestSearchConfig:
     """Tests for SearchConfig options."""
 
+    def test_search_config_empty_query_returns_empty(self):
+        """SearchConfig with an empty/blank query returns empty filters without hitting the DB."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, joins = build_search_filters(User, SearchConfig(query="   "))
+
+        assert filters == []
+        assert joins == []
+
     @pytest.mark.anyio
     async def test_match_mode_all(self, db_session: AsyncSession):
         """match_mode='all' requires all fields to match (AND)."""
@@ -432,3 +446,358 @@ class TestGetSearchableFields:
         # Role.users is a collection, should not be included
         field_strs = [str(f) for f in fields]
         assert not any("users" in f for f in field_strs)
+
+
+class TestFacetsNotSet:
+    """filter_attributes is None when no facet_fields are configured."""
+
+    @pytest.mark.anyio
+    async def test_offset_paginate_no_facets(self, db_session: AsyncSession):
+        """filter_attributes is None when facet_fields not set on factory or call."""
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserCrud.offset_paginate(db_session)
+
+        assert result.filter_attributes is None
+
+    @pytest.mark.anyio
+    async def test_cursor_paginate_no_facets(self, db_session: AsyncSession):
+        """filter_attributes is None for cursor_paginate when facet_fields not set."""
+        UserCursorCrud = CrudFactory(User, cursor_column=User.id)
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserCursorCrud.cursor_paginate(db_session)
+
+        assert result.filter_attributes is None
+
+
+class TestFacetsDirectColumn:
+    """Facets on direct model columns."""
+
+    @pytest.mark.anyio
+    async def test_offset_paginate_direct_column(self, db_session: AsyncSession):
+        """Returns distinct values for a direct column via factory default."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        result = await UserFacetCrud.offset_paginate(db_session)
+
+        assert result.filter_attributes is not None
+        # Distinct usernames, sorted
+        assert result.filter_attributes["username"] == ["alice", "bob"]
+
+    @pytest.mark.anyio
+    async def test_cursor_paginate_direct_column(self, db_session: AsyncSession):
+        """Returns distinct values for a direct column in cursor_paginate."""
+        UserFacetCursorCrud = CrudFactory(
+            User, cursor_column=User.id, facet_fields=[User.email]
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        result = await UserFacetCursorCrud.cursor_paginate(db_session)
+
+        assert result.filter_attributes is not None
+        assert set(result.filter_attributes["email"]) == {"a@test.com", "b@test.com"}
+
+    @pytest.mark.anyio
+    async def test_multiple_facet_columns(self, db_session: AsyncSession):
+        """Returns distinct values for multiple columns."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        result = await UserFacetCrud.offset_paginate(db_session)
+
+        assert result.filter_attributes is not None
+        assert "username" in result.filter_attributes
+        assert "email" in result.filter_attributes
+        assert set(result.filter_attributes["username"]) == {"alice", "bob"}
+
+    @pytest.mark.anyio
+    async def test_per_call_override(self, db_session: AsyncSession):
+        """Per-call facet_fields overrides the factory default."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        # Override: ask for email instead of username
+        result = await UserFacetCrud.offset_paginate(
+            db_session, facet_fields=[User.email]
+        )
+
+        assert result.filter_attributes is not None
+        assert "email" in result.filter_attributes
+        assert "username" not in result.filter_attributes
+
+
+class TestFacetsRespectFilters:
+    """Facets reflect the active filter conditions."""
+
+    @pytest.mark.anyio
+    async def test_facets_respect_base_filters(self, db_session: AsyncSession):
+        """Facet values are scoped to the applied filters."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com", is_active=False)
+        )
+
+        # Filter to active users only — facets should only see "alice"
+        result = await UserFacetCrud.offset_paginate(
+            db_session,
+            filters=[User.is_active == True],  # noqa: E712
+        )
+
+        assert result.filter_attributes is not None
+        assert result.filter_attributes["username"] == ["alice"]
+
+
+class TestFacetsRelationship:
+    """Facets on relationship columns via tuple syntax."""
+
+    @pytest.mark.anyio
+    async def test_relationship_facet(self, db_session: AsyncSession):
+        """Returns distinct values from a related model column."""
+        UserRelFacetCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
+
+        admin = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        editor = await RoleCrud.create(db_session, RoleCreate(name="editor"))
+
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="a@test.com", role_id=admin.id),
+        )
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="bob", email="b@test.com", role_id=editor.id),
+        )
+        # User without a role — their role.name should be excluded (None filtered out)
+        await UserCrud.create(
+            db_session, UserCreate(username="charlie", email="c@test.com")
+        )
+
+        result = await UserRelFacetCrud.offset_paginate(db_session)
+
+        assert result.filter_attributes is not None
+        assert set(result.filter_attributes["name"]) == {"admin", "editor"}
+
+    @pytest.mark.anyio
+    async def test_relationship_facet_none_excluded(self, db_session: AsyncSession):
+        """None values (e.g. NULL role) are excluded from facet results."""
+        UserRelFacetCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
+
+        # Only user with no role
+        await UserCrud.create(
+            db_session, UserCreate(username="norole", email="n@test.com")
+        )
+
+        result = await UserRelFacetCrud.offset_paginate(db_session)
+
+        assert result.filter_attributes is not None
+        assert result.filter_attributes["name"] == []
+
+    @pytest.mark.anyio
+    async def test_relationship_facet_deduplicates_join_with_search(
+        self, db_session: AsyncSession
+    ):
+        """Facet join is not duplicated when search already added the same relationship join."""
+        # Both search and facet use (User.role, Role.name) — join should not be doubled
+        UserSearchFacetCrud = CrudFactory(
+            User,
+            searchable_fields=[(User.role, Role.name)],
+            facet_fields=[(User.role, Role.name)],
+        )
+
+        admin = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="a@test.com", role_id=admin.id),
+        )
+
+        result = await UserSearchFacetCrud.offset_paginate(
+            db_session, search="admin", search_fields=[(User.role, Role.name)]
+        )
+
+        assert result.filter_attributes is not None
+        assert result.filter_attributes["name"] == ["admin"]
+
+
+class TestFilterBy:
+    """Tests for the filter_by parameter on offset_paginate and cursor_paginate."""
+
+    @pytest.mark.anyio
+    async def test_scalar_filter(self, db_session: AsyncSession):
+        """filter_by with a scalar value produces an equality filter."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        result = await UserFacetCrud.offset_paginate(
+            db_session, filter_by={"username": "alice"}
+        )
+
+        assert len(result.data) == 1
+        assert result.data[0].username == "alice"
+        # facet also scoped to the filter
+        assert result.filter_attributes == {"username": ["alice"]}
+
+    @pytest.mark.anyio
+    async def test_list_filter_produces_in_clause(self, db_session: AsyncSession):
+        """filter_by with a list value produces an IN filter."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="charlie", email="c@test.com")
+        )
+
+        result = await UserFacetCrud.offset_paginate(
+            db_session, filter_by={"username": ["alice", "bob"]}
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+        returned_names = {u.username for u in result.data}
+        assert returned_names == {"alice", "bob"}
+
+    @pytest.mark.anyio
+    async def test_relationship_filter_by(self, db_session: AsyncSession):
+        """filter_by works with relationship tuple facet fields."""
+        UserRelFacetCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
+
+        admin = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        editor = await RoleCrud.create(db_session, RoleCreate(name="editor"))
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="a@test.com", role_id=admin.id),
+        )
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="bob", email="b@test.com", role_id=editor.id),
+        )
+
+        result = await UserRelFacetCrud.offset_paginate(
+            db_session, filter_by={"name": "admin"}
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_filter_by_combined_with_filters(self, db_session: AsyncSession):
+        """filter_by and filters= are combined (AND logic)."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
+        )
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice2", email="a2@test.com", is_active=False),
+        )
+
+        result = await UserFacetCrud.offset_paginate(
+            db_session,
+            filters=[User.is_active == True],  # noqa: E712
+            filter_by={"username": ["alice", "alice2"]},
+        )
+
+        # Only alice passes both: is_active=True AND username IN [alice, alice2]
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_invalid_key_raises(self, db_session: AsyncSession):
+        """filter_by with an undeclared key raises InvalidFacetFilterError."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+
+        with pytest.raises(InvalidFacetFilterError) as exc_info:
+            await UserFacetCrud.offset_paginate(
+                db_session, filter_by={"nonexistent": "value"}
+            )
+
+        assert exc_info.value.key == "nonexistent"
+        assert "username" in exc_info.value.valid_keys
+
+    @pytest.mark.anyio
+    async def test_filter_by_deduplicates_relationship_join(
+        self, db_session: AsyncSession
+    ):
+        """Two filter_by keys through the same relationship do not duplicate the join."""
+        # Both (User.role, Role.name) and (User.role, Role.id) traverse User.role —
+        # the second key must not re-add the join (exercises the dedup branch in build_filter_by).
+        UserRoleFacetCrud = CrudFactory(
+            User,
+            facet_fields=[(User.role, Role.name), (User.role, Role.id)],
+        )
+
+        admin = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        editor = await RoleCrud.create(db_session, RoleCreate(name="editor"))
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="a@test.com", role_id=admin.id),
+        )
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="bob", email="b@test.com", role_id=editor.id),
+        )
+
+        result = await UserRoleFacetCrud.offset_paginate(
+            db_session,
+            filter_by={"name": "admin", "id": str(admin.id)},
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_cursor_paginate_filter_by(self, db_session: AsyncSession):
+        """filter_by works with cursor_paginate."""
+        UserFacetCursorCrud = CrudFactory(
+            User, cursor_column=User.id, facet_fields=[User.username]
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        result = await UserFacetCursorCrud.cursor_paginate(
+            db_session, filter_by={"username": "alice"}
+        )
+
+        assert len(result.data) == 1
+        assert result.data[0].username == "alice"
+        assert result.filter_attributes == {"username": ["alice"]}

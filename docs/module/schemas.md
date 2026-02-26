@@ -22,7 +22,7 @@ async def get_user(user: User = UserDep) -> Response[UserSchema]:
 
 ### [`PaginatedResponse[T]`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse)
 
-Wraps a list of items with pagination metadata.
+Wraps a list of items with pagination metadata and optional facet values.
 
 ```python
 from fastapi_toolsets.schemas import PaginatedResponse, Pagination
@@ -39,6 +39,8 @@ async def list_users() -> PaginatedResponse[UserSchema]:
         ),
     )
 ```
+
+The optional `filter_attributes` field is populated when `facet_fields` are configured on the CRUD class (see [Filter attributes](crud.md#filter-attributes-facets)). It is `None` by default and can be hidden from API responses with `response_model_exclude_none=True`.
 
 ### [`ErrorResponse`](../reference/schemas.md#fastapi_toolsets.schemas.ErrorResponse)
 
