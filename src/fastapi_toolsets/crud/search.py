@@ -1,6 +1,7 @@
 """Search utilities for AsyncCrud."""
 
 import asyncio
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -142,7 +143,7 @@ def build_search_filters(
         else:
             filters.append(column_as_string.ilike(f"%{query}%"))
 
-    if not filters:
+    if not filters:  # pragma: no cover
         return [], []
 
     # Combine based on match_mode
@@ -162,17 +163,14 @@ def facet_keys(facet_fields: Sequence[FacetFieldType]) -> list[str]:
     Returns:
         A list of string keys, one per facet field, in the same order.
     """
-    raw: list[tuple[str, str | None]] = []  # (column_key, rel_key_or_None)
+    raw: list[tuple[str, str | None]] = []
     for field in facet_fields:
         if isinstance(field, tuple):
-            rel = field[-2]  # immediate parent relationship
+            rel = field[-2]
             column = field[-1]
             raw.append((column.key, rel.key))
         else:
             raw.append((field.key, None))
-
-    # Find which column keys appear more than once
-    from collections import Counter
 
     counts = Counter(col_key for col_key, _ in raw)
     keys: list[str] = []

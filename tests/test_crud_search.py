@@ -318,6 +318,23 @@ class TestPaginateSearch:
         assert result.data[0].id == user_id
 
 
+class TestBuildSearchFilters:
+    """Unit tests for build_search_filters."""
+
+    def test_deduplicates_relationship_join(self):
+        """Two tuple fields sharing the same relationship do not add the join twice."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        # Both fields traverse User.role — the second must not re-add the join.
+        filters, joins = build_search_filters(
+            User,
+            "admin",
+            search_fields=[(User.role, Role.name), (User.role, Role.id)],
+        )
+
+        assert len(joins) == 1
+
+
 class TestSearchConfig:
     """Tests for SearchConfig options."""
 
@@ -801,6 +818,55 @@ class TestFilterBy:
         assert len(result.data) == 1
         assert result.data[0].username == "alice"
         assert result.filter_attributes == {"username": ["alice"]}
+
+    @pytest.mark.anyio
+    async def test_basemodel_filter_by_offset_paginate(self, db_session: AsyncSession):
+        """filter_by accepts a BaseModel instance (model_dump path) in offset_paginate."""
+        from pydantic import BaseModel as PydanticBaseModel
+
+        class UserFilter(PydanticBaseModel):
+            username: str | None = None
+
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        result = await UserFacetCrud.offset_paginate(
+            db_session, filter_by=UserFilter(username="alice")
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_basemodel_filter_by_cursor_paginate(self, db_session: AsyncSession):
+        """filter_by accepts a BaseModel instance (model_dump path) in cursor_paginate."""
+        from pydantic import BaseModel as PydanticBaseModel
+
+        class UserFilter(PydanticBaseModel):
+            username: str | None = None
+
+        UserFacetCursorCrud = CrudFactory(
+            User, cursor_column=User.id, facet_fields=[User.username]
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        result = await UserFacetCursorCrud.cursor_paginate(
+            db_session, filter_by=UserFilter(username="alice")
+        )
+
+        assert len(result.data) == 1
+        assert result.data[0].username == "alice"
 
 
 class TestFilterParamsSchema:
