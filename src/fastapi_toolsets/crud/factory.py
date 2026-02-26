@@ -11,7 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 from sqlalchemy import Date, DateTime, Float, Integer, Numeric, Uuid, and_, func, select
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.dialects.postgresql import insert
@@ -126,6 +126,39 @@ class AsyncCrud(Generic[ModelType]):
         if not cls.m2m_fields:
             return set()
         return set(cls.m2m_fields.keys())
+
+    @classmethod
+    def filter_params_schema(
+        cls: type[Self],
+        *,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+    ) -> type[BaseModel]:
+        """Return a Pydantic model class with one ``list[str] | None`` field per facet field.
+
+        Args:
+            facet_fields: Override the facet fields for this schema. Falls back to the
+                class-level ``facet_fields`` if not provided.
+
+        Returns:
+            A dynamically created Pydantic model class named ``{Model}FilterParams``.
+
+        Raises:
+            ValueError: If no facet fields are configured on this CRUD class or provided
+                via the ``facet_fields`` parameter.
+        """
+        fields = facet_fields if facet_fields is not None else cls.facet_fields
+        if not fields:
+            raise ValueError(
+                f"{cls.__name__} has no facet_fields configured. "
+                "Pass facet_fields= or set them on CrudFactory."
+            )
+
+        field_definitions: dict[str, Any] = {}
+        for field in fields:
+            column = field[-1] if isinstance(field, tuple) else field
+            field_definitions[column.key] = (list[str] | None, None)
+
+        return create_model(f"{cls.model.__name__}FilterParams", **field_definitions)
 
     @overload
     @classmethod
@@ -702,7 +735,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | None = None,
+        filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[SchemaType],
     ) -> PaginatedResponse[SchemaType]: ...
 
@@ -723,7 +756,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | None = None,
+        filter_by: dict[str, Any] | BaseModel | None = None,
         schema: None = ...,
     ) -> PaginatedResponse[ModelType]: ...
 
@@ -742,7 +775,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | None = None,
+        filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel] | None = None,
     ) -> PaginatedResponse[ModelType] | PaginatedResponse[Any]:
         """Get paginated results using offset-based pagination.
@@ -770,6 +803,9 @@ class AsyncCrud(Generic[ModelType]):
         filters = list(filters) if filters else []
         offset = (page - 1) * items_per_page
         search_joins: list[Any] = []
+
+        if isinstance(filter_by, BaseModel):
+            filter_by = filter_by.model_dump(exclude_none=True) or None
 
         # Build filter_by conditions from declared facet fields
         if filter_by:
@@ -890,7 +926,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | None = None,
+        filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[SchemaType],
     ) -> PaginatedResponse[SchemaType]: ...
 
@@ -911,7 +947,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | None = None,
+        filter_by: dict[str, Any] | BaseModel | None = None,
         schema: None = ...,
     ) -> PaginatedResponse[ModelType]: ...
 
@@ -930,7 +966,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | None = None,
+        filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel] | None = None,
     ) -> PaginatedResponse[ModelType] | PaginatedResponse[Any]:
         """Get paginated results using cursor-based pagination.
@@ -960,6 +996,9 @@ class AsyncCrud(Generic[ModelType]):
         """
         filters = list(filters) if filters else []
         search_joins: list[Any] = []
+
+        if isinstance(filter_by, BaseModel):
+            filter_by = filter_by.model_dump(exclude_none=True) or None
 
         # Build filter_by conditions from declared facet fields
         if filter_by:

@@ -287,34 +287,39 @@ Use `filter_by` to pass the client's chosen filter values directly — no need t
 
 `filter_by` and `filters=` can be combined — both are applied with AND logic.
 
-FastAPI doesn't support `dict` query parameters natively. The idiomatic pattern is a Pydantic model used as a `Depends()` — each field maps to one query param, and `model_dump(exclude_none=True)` converts it to the dict `filter_by` expects:
+FastAPI doesn't support `dict` query parameters natively. Use [`filter_params_schema()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.filter_params_schema) to generate a Pydantic model from the declared `facet_fields` and pass it as `Depends()`:
 
 ```python
-from fastapi import Depends
-from pydantic import BaseModel
-
-class UserFilterParams(BaseModel):
-    status: str | None = None
-    country: str | None = None
-    # For multi-select (IN clause), use a list:
-    # role: list[str] | None = None
-
 UserCrud = CrudFactory(
     model=User,
-    facet_fields=[User.status, User.country],
+    facet_fields=[User.status, User.country, (User.role, Role.name)],
 )
 
 @router.get("", response_model_exclude_none=True)
 async def list_users(
     session: SessionDep,
     page: int = 1,
-    f: UserFilterParams = Depends(),
+    f: UserCrud.filter_params_schema() = Depends(),
 ) -> PaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(
         session=session,
         page=page,
-        filter_by=f.model_dump(exclude_none=True) or None,
+        filter_by=f,
     )
+```
+
+Every generated field is `list[str] | None = None`, so both single-value and multi-value query parameters work out of the box:
+
+```
+GET /users?status=active              → filter_by={"status": ["active"]}
+GET /users?status=active&country=FR   → filter_by={"status": ["active"], "country": ["FR"]}
+GET /users?role=admin&role=editor     → filter_by={"role": ["admin", "editor"]}  (IN clause)
+```
+
+You can override the fields for a specific endpoint:
+
+```python
+f: UserCrud.filter_params_schema(facet_fields=[User.status]) = Depends()
 ```
 
 On the first load (no active filter), `filter_attributes` lists every available value. Once the client picks `status=active`, the response returns only active users and `filter_attributes` narrows accordingly — so `country` only shows countries that appear among active users:
@@ -326,12 +331,6 @@ GET /users
 GET /users?status=active
 → data: [active users only]
 → filter_attributes: {"status": ["active"], "country": ["DE", "US"]}
-
-GET /users?status=active&country=FR
-→ data: [active users in France]
-→ filter_attributes: {"status": ["active"], "country": ["FR"]}
-
-GET /users?role=admin&role=editor   → IN clause (with list[str] field)
 ```
 
 Facets **respect the active filters** — only values present among the filtered rows are returned. `None` values (e.g. from optional relationships) are always excluded.

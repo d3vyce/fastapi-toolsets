@@ -801,3 +801,120 @@ class TestFilterBy:
         assert len(result.data) == 1
         assert result.data[0].username == "alice"
         assert result.filter_attributes == {"username": ["alice"]}
+
+
+class TestFilterParamsSchema:
+    """Tests for AsyncCrud.filter_params_schema()."""
+
+    def test_generates_fields_from_facet_fields(self):
+        """Generated model has one list[str] | None field per facet field."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
+        schema = UserFacetCrud.filter_params_schema()
+
+        fields = schema.model_fields
+        assert set(fields) == {"username", "email"}
+        # Default is None
+        instance = schema()
+        assert getattr(instance, "username") is None
+        assert getattr(instance, "email") is None
+
+    def test_relationship_facet_uses_column_key(self):
+        """Relationship tuple uses the terminal column's key."""
+        UserRoleCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
+        schema = UserRoleCrud.filter_params_schema()
+
+        assert set(schema.model_fields) == {"name"}
+
+    def test_raises_when_no_facet_fields(self):
+        """ValueError raised when no facet_fields are configured or provided."""
+        with pytest.raises(ValueError, match="no facet_fields"):
+            UserCrud.filter_params_schema()
+
+    def test_facet_fields_override(self):
+        """facet_fields= parameter overrides the class-level default."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
+        schema = UserFacetCrud.filter_params_schema(facet_fields=[User.email])
+
+        assert set(schema.model_fields) == {"email"}
+
+    def test_model_dump_matches_filter_by_format(self):
+        """model_dump(exclude_none=True) produces the dict filter_by expects."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
+        schema = UserFacetCrud.filter_params_schema()
+
+        instance = schema(username=["alice"])
+        assert instance.model_dump(exclude_none=True) == {"username": ["alice"]}
+
+    def test_multi_value_list_field(self):
+        """Multiple values are accepted as a list."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        schema = UserFacetCrud.filter_params_schema()
+
+        instance = schema(username=["alice", "bob"])
+        assert getattr(instance, "username") == ["alice", "bob"]
+        assert instance.model_dump(exclude_none=True) == {"username": ["alice", "bob"]}
+
+    def test_model_name_includes_model_name(self):
+        """Generated class is named {Model}FilterParams."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        schema = UserFacetCrud.filter_params_schema()
+
+        assert schema.__name__ == "UserFilterParams"
+
+    @pytest.mark.anyio
+    async def test_integration_with_offset_paginate(self, db_session: AsyncSession):
+        """Generated schema instance can be passed directly to offset_paginate."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        f = UserFacetCrud.filter_params_schema()(username=["alice"])
+        result = await UserFacetCrud.offset_paginate(db_session, filter_by=f)
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_schema_instance_passed_to_cursor_paginate(
+        self, db_session: AsyncSession
+    ):
+        """Generated schema instance can be passed directly to cursor_paginate."""
+        UserFacetCursorCrud = CrudFactory(
+            User, cursor_column=User.id, facet_fields=[User.username]
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        f = UserFacetCursorCrud.filter_params_schema()(username=["alice"])
+        result = await UserFacetCursorCrud.cursor_paginate(db_session, filter_by=f)
+
+        assert len(result.data) == 1
+        assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_empty_schema_instance_passes_no_filter(
+        self, db_session: AsyncSession
+    ):
+        """An all-None schema instance results in no filter (returns all rows)."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com")
+        )
+
+        f = UserFacetCrud.filter_params_schema()()  # all fields None
+        result = await UserFacetCrud.offset_paginate(db_session, filter_by=f)
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
