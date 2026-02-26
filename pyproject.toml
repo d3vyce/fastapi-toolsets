@@ -1,7 +1,7 @@
 [project]
 name = "fastapi-toolsets"
 version = "1.2.0"
-description = "Reusable tools for FastAPI: async CRUD, fixtures, CLI, and standardized responses for SQLAlchemy + PostgreSQL"
+description = "Production-ready utilities for FastAPI applications"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -11,7 +11,7 @@ authors = [
 ]
 keywords = ["fastapi", "sqlalchemy", "postgresql"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Framework :: AsyncIO",
     "Framework :: FastAPI",
     "Framework :: Pydantic",
