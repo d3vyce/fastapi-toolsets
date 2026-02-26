@@ -92,6 +92,9 @@ def build_search_filters(
 
     Returns:
         Tuple of (filter_conditions, joins_needed)
+
+    Raises:
+        NoSearchableFieldsError: If no searchable field has been configured
     """
     # Normalize input
     if isinstance(search, str):
