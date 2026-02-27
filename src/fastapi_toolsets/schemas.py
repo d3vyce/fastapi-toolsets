@@ -10,7 +10,6 @@ __all__ = [
     "CursorPagination",
     "ErrorResponse",
     "OffsetPagination",
-    "Pagination",
     "PaginatedResponse",
     "PydanticBase",
     "Response",
@@ -106,10 +105,6 @@ class OffsetPagination(PydanticBase):
     items_per_page: int
     page: int
     has_more: bool
-
-
-# Backward-compatible - will be removed in v2.0
-Pagination = OffsetPagination
 
 
 class CursorPagination(PydanticBase):

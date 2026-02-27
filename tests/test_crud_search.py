@@ -23,6 +23,7 @@ from .conftest import (
     User,
     UserCreate,
     UserCrud,
+    UserRead,
 )
 
 
@@ -42,10 +43,11 @@ class TestPaginateSearch:
             db_session, UserCreate(username="bob_smith", email="bob@test.com")
         )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="doe",
             search_fields=[User.username],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -61,10 +63,11 @@ class TestPaginateSearch:
             db_session, UserCreate(username="company_bob", email="bob@other.com")
         )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="company",
             search_fields=[User.username, User.email],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -89,10 +92,11 @@ class TestPaginateSearch:
             UserCreate(username="user1", email="u1@test.com", role_id=user_role.id),
         )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="admin",
             search_fields=[(User.role, Role.name)],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -108,10 +112,11 @@ class TestPaginateSearch:
         )
 
         # Search "admin" in username OR role.name
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="admin",
             search_fields=[User.username, (User.role, Role.name)],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -124,10 +129,11 @@ class TestPaginateSearch:
             db_session, UserCreate(username="JohnDoe", email="j@test.com")
         )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="johndoe",
             search_fields=[User.username],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -141,19 +147,21 @@ class TestPaginateSearch:
         )
 
         # Should not find (case mismatch)
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search=SearchConfig(query="johndoe", case_sensitive=True),
             search_fields=[User.username],
+            schema=UserRead,
         )
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 0
 
         # Should find (case match)
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search=SearchConfig(query="JohnDoe", case_sensitive=True),
             search_fields=[User.username],
+            schema=UserRead,
         )
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
@@ -168,11 +176,13 @@ class TestPaginateSearch:
             db_session, UserCreate(username="user2", email="u2@test.com")
         )
 
-        result = await UserCrud.paginate(db_session, search="")
+        result = await UserCrud.offset_paginate(db_session, search="", schema=UserRead)
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
-        result = await UserCrud.paginate(db_session, search=None)
+        result = await UserCrud.offset_paginate(
+            db_session, search=None, schema=UserRead
+        )
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
@@ -188,11 +198,12 @@ class TestPaginateSearch:
             UserCreate(username="inactive_john", email="ij@test.com", is_active=False),
         )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             filters=[User.is_active == True],  # noqa: E712
             search="john",
             search_fields=[User.username],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -206,7 +217,9 @@ class TestPaginateSearch:
             db_session, UserCreate(username="findme", email="other@test.com")
         )
 
-        result = await UserCrud.paginate(db_session, search="findme")
+        result = await UserCrud.offset_paginate(
+            db_session, search="findme", schema=UserRead
+        )
 
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
@@ -218,10 +231,11 @@ class TestPaginateSearch:
             db_session, UserCreate(username="john", email="j@test.com")
         )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="nonexistent",
             search_fields=[User.username],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -237,12 +251,13 @@ class TestPaginateSearch:
                 UserCreate(username=f"user_{i}", email=f"user{i}@test.com"),
             )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="user_",
             search_fields=[User.username],
             page=1,
             items_per_page=5,
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -264,10 +279,11 @@ class TestPaginateSearch:
         )
 
         # Search in username, not in role
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="role",
             search_fields=[User.username],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -286,11 +302,12 @@ class TestPaginateSearch:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="@test.com",
             search_fields=[User.email],
             order_by=User.username,
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -310,10 +327,11 @@ class TestPaginateSearch:
         )
 
         # Search by UUID (partial match)
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search="12345678",
             search_fields=[User.id, User.username],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -363,10 +381,11 @@ class TestSearchConfig:
         )
 
         # 'john' must be in username AND email
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search=SearchConfig(query="john", match_mode="all"),
             search_fields=[User.username, User.email],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -380,9 +399,10 @@ class TestSearchConfig:
             db_session, UserCreate(username="test", email="findme@test.com")
         )
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             search=SearchConfig(query="findme", fields=[User.email]),
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -478,7 +498,7 @@ class TestFacetsNotSet:
             db_session, UserCreate(username="alice", email="a@test.com")
         )
 
-        result = await UserCrud.offset_paginate(db_session)
+        result = await UserCrud.offset_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is None
 
@@ -490,7 +510,7 @@ class TestFacetsNotSet:
             db_session, UserCreate(username="alice", email="a@test.com")
         )
 
-        result = await UserCursorCrud.cursor_paginate(db_session)
+        result = await UserCursorCrud.cursor_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is None
 
@@ -509,7 +529,7 @@ class TestFacetsDirectColumn:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        result = await UserFacetCrud.offset_paginate(db_session)
+        result = await UserFacetCrud.offset_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is not None
         # Distinct usernames, sorted
@@ -528,7 +548,7 @@ class TestFacetsDirectColumn:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        result = await UserFacetCursorCrud.cursor_paginate(db_session)
+        result = await UserFacetCursorCrud.cursor_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is not None
         assert set(result.filter_attributes["email"]) == {"a@test.com", "b@test.com"}
@@ -544,7 +564,7 @@ class TestFacetsDirectColumn:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        result = await UserFacetCrud.offset_paginate(db_session)
+        result = await UserFacetCrud.offset_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is not None
         assert "username" in result.filter_attributes
@@ -561,7 +581,7 @@ class TestFacetsDirectColumn:
 
         # Override: ask for email instead of username
         result = await UserFacetCrud.offset_paginate(
-            db_session, facet_fields=[User.email]
+            db_session, facet_fields=[User.email], schema=UserRead
         )
 
         assert result.filter_attributes is not None
@@ -587,6 +607,7 @@ class TestFacetsRespectFilters:
         result = await UserFacetCrud.offset_paginate(
             db_session,
             filters=[User.is_active == True],  # noqa: E712
+            schema=UserRead,
         )
 
         assert result.filter_attributes is not None
@@ -617,7 +638,7 @@ class TestFacetsRelationship:
             db_session, UserCreate(username="charlie", email="c@test.com")
         )
 
-        result = await UserRelFacetCrud.offset_paginate(db_session)
+        result = await UserRelFacetCrud.offset_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is not None
         assert set(result.filter_attributes["name"]) == {"admin", "editor"}
@@ -632,7 +653,7 @@ class TestFacetsRelationship:
             db_session, UserCreate(username="norole", email="n@test.com")
         )
 
-        result = await UserRelFacetCrud.offset_paginate(db_session)
+        result = await UserRelFacetCrud.offset_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is not None
         assert result.filter_attributes["name"] == []
@@ -656,7 +677,10 @@ class TestFacetsRelationship:
         )
 
         result = await UserSearchFacetCrud.offset_paginate(
-            db_session, search="admin", search_fields=[(User.role, Role.name)]
+            db_session,
+            search="admin",
+            search_fields=[(User.role, Role.name)],
+            schema=UserRead,
         )
 
         assert result.filter_attributes is not None
@@ -678,7 +702,7 @@ class TestFilterBy:
         )
 
         result = await UserFacetCrud.offset_paginate(
-            db_session, filter_by={"username": "alice"}
+            db_session, filter_by={"username": "alice"}, schema=UserRead
         )
 
         assert len(result.data) == 1
@@ -701,7 +725,7 @@ class TestFilterBy:
         )
 
         result = await UserFacetCrud.offset_paginate(
-            db_session, filter_by={"username": ["alice", "bob"]}
+            db_session, filter_by={"username": ["alice", "bob"]}, schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -726,7 +750,7 @@ class TestFilterBy:
         )
 
         result = await UserRelFacetCrud.offset_paginate(
-            db_session, filter_by={"name": "admin"}
+            db_session, filter_by={"name": "admin"}, schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -749,6 +773,7 @@ class TestFilterBy:
             db_session,
             filters=[User.is_active == True],  # noqa: E712
             filter_by={"username": ["alice", "alice2"]},
+            schema=UserRead,
         )
 
         # Only alice passes both: is_active=True AND username IN [alice, alice2]
@@ -763,7 +788,7 @@ class TestFilterBy:
 
         with pytest.raises(InvalidFacetFilterError) as exc_info:
             await UserFacetCrud.offset_paginate(
-                db_session, filter_by={"nonexistent": "value"}
+                db_session, filter_by={"nonexistent": "value"}, schema=UserRead
             )
 
         assert exc_info.value.key == "nonexistent"
@@ -795,6 +820,7 @@ class TestFilterBy:
         result = await UserRoleFacetCrud.offset_paginate(
             db_session,
             filter_by={"name": "admin", "id": str(admin.id)},
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -815,7 +841,7 @@ class TestFilterBy:
         )
 
         result = await UserFacetCursorCrud.cursor_paginate(
-            db_session, filter_by={"username": "alice"}
+            db_session, filter_by={"username": "alice"}, schema=UserRead
         )
 
         assert len(result.data) == 1
@@ -839,7 +865,7 @@ class TestFilterBy:
         )
 
         result = await UserFacetCrud.offset_paginate(
-            db_session, filter_by=UserFilter(username="alice")
+            db_session, filter_by=UserFilter(username="alice"), schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -865,7 +891,7 @@ class TestFilterBy:
         )
 
         result = await UserFacetCursorCrud.cursor_paginate(
-            db_session, filter_by=UserFilter(username="alice")
+            db_session, filter_by=UserFilter(username="alice"), schema=UserRead
         )
 
         assert len(result.data) == 1
@@ -974,7 +1000,9 @@ class TestFilterParamsSchema:
 
         dep = UserFacetCrud.filter_params()
         f = await dep(username=["alice"])
-        result = await UserFacetCrud.offset_paginate(db_session, filter_by=f)
+        result = await UserFacetCrud.offset_paginate(
+            db_session, filter_by=f, schema=UserRead
+        )
 
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 1
@@ -995,7 +1023,9 @@ class TestFilterParamsSchema:
 
         dep = UserFacetCursorCrud.filter_params()
         f = await dep(username=["alice"])
-        result = await UserFacetCursorCrud.cursor_paginate(db_session, filter_by=f)
+        result = await UserFacetCursorCrud.cursor_paginate(
+            db_session, filter_by=f, schema=UserRead
+        )
 
         assert len(result.data) == 1
         assert result.data[0].username == "alice"
@@ -1013,7 +1043,9 @@ class TestFilterParamsSchema:
 
         dep = UserFacetCrud.filter_params()
         f = await dep()  # all fields None
-        result = await UserFacetCrud.offset_paginate(db_session, filter_by=f)
+        result = await UserFacetCrud.offset_paginate(
+            db_session, filter_by=f, schema=UserRead
+        )
 
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2

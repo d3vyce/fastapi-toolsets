@@ -9,7 +9,6 @@ from fastapi_toolsets.schemas import (
     ErrorResponse,
     OffsetPagination,
     PaginatedResponse,
-    Pagination,
     Response,
     ResponseStatus,
 )
@@ -199,20 +198,6 @@ class TestOffsetPagination:
         assert data["page"] == 2
         assert data["has_more"] is True
 
-    def test_pagination_alias_is_offset_pagination(self):
-        """Pagination is a backward-compatible alias for OffsetPagination."""
-        assert Pagination is OffsetPagination
-
-    def test_pagination_alias_constructs_offset_pagination(self):
-        """Code using Pagination(...) still works unchanged."""
-        pagination = Pagination(
-            total_count=10,
-            items_per_page=5,
-            page=2,
-            has_more=False,
-        )
-        assert isinstance(pagination, OffsetPagination)
-
 
 class TestCursorPagination:
     """Tests for CursorPagination schema."""
@@ -276,7 +261,7 @@ class TestPaginatedResponse:
 
     def test_create_paginated_response(self):
         """Create PaginatedResponse with data and pagination."""
-        pagination = Pagination(
+        pagination = OffsetPagination(
             total_count=30,
             items_per_page=10,
             page=1,
@@ -294,7 +279,7 @@ class TestPaginatedResponse:
 
     def test_with_custom_message(self):
         """PaginatedResponse with custom message."""
-        pagination = Pagination(
+        pagination = OffsetPagination(
             total_count=5,
             items_per_page=10,
             page=1,
@@ -310,7 +295,7 @@ class TestPaginatedResponse:
 
     def test_empty_data(self):
         """PaginatedResponse with empty data."""
-        pagination = Pagination(
+        pagination = OffsetPagination(
             total_count=0,
             items_per_page=10,
             page=1,
@@ -332,7 +317,7 @@ class TestPaginatedResponse:
             id: int
             name: str
 
-        pagination = Pagination(
+        pagination = OffsetPagination(
             total_count=1,
             items_per_page=10,
             page=1,
@@ -347,7 +332,7 @@ class TestPaginatedResponse:
 
     def test_serialization(self):
         """PaginatedResponse serializes correctly."""
-        pagination = Pagination(
+        pagination = OffsetPagination(
             total_count=100,
             items_per_page=10,
             page=5,
@@ -384,16 +369,6 @@ class TestPaginatedResponse:
             ),
         )
         assert isinstance(response.pagination, CursorPagination)
-
-    def test_pagination_alias_accepted(self):
-        """Constructing PaginatedResponse with Pagination (alias) still works."""
-        response = PaginatedResponse(
-            data=[],
-            pagination=Pagination(
-                total_count=0, items_per_page=10, page=1, has_more=False
-            ),
-        )
-        assert isinstance(response.pagination, OffsetPagination)
 
 
 class TestFromAttributes:

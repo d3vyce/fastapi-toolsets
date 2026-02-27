@@ -162,6 +162,7 @@ class UserRead(PydanticBase):
 
     id: uuid.UUID
     username: str
+    is_active: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -218,9 +219,23 @@ class PostM2MUpdate(BaseModel):
     tag_ids: list[uuid.UUID] | None = None
 
 
+class IntRoleRead(PydanticBase):
+    """Schema for reading an IntRole."""
+
+    id: int
+    name: str
+
+
 class IntRoleCreate(BaseModel):
     """Schema for creating an IntRole."""
 
+    name: str
+
+
+class EventRead(PydanticBase):
+    """Schema for reading an Event."""
+
+    id: uuid.UUID
     name: str
 
 
@@ -230,6 +245,13 @@ class EventCreate(BaseModel):
     name: str
     occurred_at: datetime.datetime
     scheduled_date: datetime.date
+
+
+class ProductRead(PydanticBase):
+    """Schema for reading a Product."""
+
+    id: uuid.UUID
+    name: str
 
 
 class ProductCreate(BaseModel):
