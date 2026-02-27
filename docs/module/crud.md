@@ -170,7 +170,7 @@ PostCrud = CrudFactory(model=Post, cursor_column=Post.created_at)
 
 Two search strategies are available, both compatible with [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) and [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate).
 
-| | Full-text search | Filter attributes |
+| | Full-text search | Faceted search |
 |---|---|---|
 | Input | Free-text string | Exact column values |
 | Relationship support | Yes | Yes |
@@ -242,7 +242,7 @@ async def get_users(
     )
 ```
 
-### Filter attributes
+### Faceted search
 
 !!! info "Added in `v1.2`"
 
@@ -384,7 +384,7 @@ await UserCrud.upsert(
 )
 ```
 
-## `schema` — typed response serialization
+## Response serialization
 
 !!! info "Added in `v1.1`"
 
