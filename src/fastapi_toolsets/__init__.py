@@ -21,4 +21,4 @@ Example usage:
         return Response(data={"user": user.username}, message="Success")
 """
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
