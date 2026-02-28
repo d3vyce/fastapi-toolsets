@@ -1,9 +1,11 @@
 """Tests for CRUD search functionality."""
 
+import inspect
 import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement, UnaryExpression
 
 from fastapi_toolsets.crud import (
     CrudFactory,
@@ -11,6 +13,7 @@ from fastapi_toolsets.crud import (
     SearchConfig,
     get_searchable_fields,
 )
+from fastapi_toolsets.exceptions import InvalidSortFieldError
 from fastapi_toolsets.schemas import OffsetPagination
 
 from .conftest import (
@@ -1014,3 +1017,144 @@ class TestFilterParamsSchema:
 
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
+
+
+class TestSortParamsSchema:
+    """Tests for AsyncCrud.sort_params()."""
+
+    def test_generates_sort_by_and_sort_order_params(self):
+        """Returned dependency has sort_by and sort_order query params."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username, User.email])
+        dep = UserSortCrud.sort_params()
+
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"sort_by", "sort_order"}
+
+    def test_dependency_name_includes_model_name(self):
+        """Dependency function is named after the model."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        dep = UserSortCrud.sort_params()
+        assert getattr(dep, "__name__") == "UserSortParams"
+
+    def test_raises_when_no_sort_fields(self):
+        """ValueError raised when no sort_fields are configured or provided."""
+        with pytest.raises(ValueError, match="no sort_fields"):
+            UserCrud.sort_params()
+
+    def test_sort_fields_override(self):
+        """sort_fields= parameter overrides the class-level default."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username, User.email])
+        dep = UserSortCrud.sort_params(sort_fields=[User.email])
+
+        param_names = set(inspect.signature(dep).parameters)
+        assert "sort_by" in param_names
+        # description should only mention email, not username
+        sig = inspect.signature(dep)
+        description = sig.parameters["sort_by"].default.description
+        assert "email" in description
+        assert "username" not in description
+
+    def test_sort_by_description_lists_valid_fields(self):
+        """sort_by query param description mentions each allowed field."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username, User.email])
+        dep = UserSortCrud.sort_params()
+
+        sig = inspect.signature(dep)
+        description = sig.parameters["sort_by"].default.description
+        assert "username" in description
+        assert "email" in description
+
+    def test_default_order_reflected_in_sort_order_default(self):
+        """default_order is used as the default value for sort_order."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        dep_asc = UserSortCrud.sort_params(default_order="asc")
+        dep_desc = UserSortCrud.sort_params(default_order="desc")
+
+        sig_asc = inspect.signature(dep_asc)
+        sig_desc = inspect.signature(dep_desc)
+        assert sig_asc.parameters["sort_order"].default.default == "asc"
+        assert sig_desc.parameters["sort_order"].default.default == "desc"
+
+    @pytest.mark.anyio
+    async def test_no_sort_by_no_default_returns_none(self):
+        """Returns None when sort_by is absent and no default_field is set."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        dep = UserSortCrud.sort_params()
+        result = await dep(sort_by=None, sort_order="asc")
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_no_sort_by_with_default_field_returns_asc_expression(self):
+        """Returns default_field.asc() when sort_by absent and sort_order=asc."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        dep = UserSortCrud.sort_params(default_field=User.username)
+        result = await dep(sort_by=None, sort_order="asc")
+        assert isinstance(result, UnaryExpression)
+        assert "ASC" in str(result)
+
+    @pytest.mark.anyio
+    async def test_no_sort_by_with_default_field_returns_desc_expression(self):
+        """Returns default_field.desc() when sort_by absent and sort_order=desc."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        dep = UserSortCrud.sort_params(default_field=User.username)
+        result = await dep(sort_by=None, sort_order="desc")
+        assert isinstance(result, UnaryExpression)
+        assert "DESC" in str(result)
+
+    @pytest.mark.anyio
+    async def test_valid_sort_by_asc(self):
+        """Returns field.asc() for a valid sort_by with sort_order=asc."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        dep = UserSortCrud.sort_params()
+        result = await dep(sort_by="username", sort_order="asc")
+        assert isinstance(result, UnaryExpression)
+        assert "ASC" in str(result)
+
+    @pytest.mark.anyio
+    async def test_valid_sort_by_desc(self):
+        """Returns field.desc() for a valid sort_by with sort_order=desc."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        dep = UserSortCrud.sort_params()
+        result = await dep(sort_by="username", sort_order="desc")
+        assert isinstance(result, UnaryExpression)
+        assert "DESC" in str(result)
+
+    @pytest.mark.anyio
+    async def test_invalid_sort_by_raises_invalid_sort_field_error(self):
+        """Raises InvalidSortFieldError for an unknown sort_by value."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        dep = UserSortCrud.sort_params()
+        with pytest.raises(InvalidSortFieldError) as exc_info:
+            await dep(sort_by="nonexistent", sort_order="asc")
+        assert exc_info.value.field == "nonexistent"
+        assert "username" in exc_info.value.valid_fields
+
+    @pytest.mark.anyio
+    async def test_multiple_fields_all_resolve(self):
+        """All configured fields resolve correctly via sort_by."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username, User.email])
+        dep = UserSortCrud.sort_params()
+        result_username = await dep(sort_by="username", sort_order="asc")
+        result_email = await dep(sort_by="email", sort_order="desc")
+        assert isinstance(result_username, ColumnElement)
+        assert isinstance(result_email, ColumnElement)
+
+    @pytest.mark.anyio
+    async def test_sort_params_integrates_with_get_multi(
+        self, db_session: AsyncSession
+    ):
+        """sort_params output is accepted by get_multi(order_by=...)."""
+        UserSortCrud = CrudFactory(User, sort_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="charlie", email="c@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        dep = UserSortCrud.sort_params()
+        order_by = await dep(sort_by="username", sort_order="asc")
+        results = await UserSortCrud.get_multi(db_session, order_by=order_by)
+
+        assert results[0].username == "alice"
+        assert results[1].username == "charlie"
