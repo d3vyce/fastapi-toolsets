@@ -14,6 +14,8 @@ ArticleCrud = CrudFactory(
         Article.status,
         (Article.category, Category.name),
     ],
+    order_fields=[  # fields exposed for client-driven ordering
+        Article.title,
+        Article.created_at,
+    ],
 )
-
-ArticleFilters = ArticleCrud.filter_params()

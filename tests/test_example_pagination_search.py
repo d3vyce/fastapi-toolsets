@@ -15,12 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from docs_src.examples.pagination_search.db import get_db
 from docs_src.examples.pagination_search.models import Article, Base, Category
 from docs_src.examples.pagination_search.routes import router
+from fastapi_toolsets.exceptions import init_exceptions_handlers
 
 from .conftest import DATABASE_URL
 
 
 def build_app(session: AsyncSession) -> FastAPI:
     app = FastAPI()
+    init_exceptions_handlers(app)
 
     async def override_get_db():
         yield session
@@ -269,3 +271,125 @@ class TestCursorPagination:
         body = resp.json()
         assert len(body["data"]) == 1
         assert body["data"][0]["title"] == "SQLAlchemy async"
+
+
+class TestOffsetSorting:
+    """Tests for order_by / order query parameters on the offset endpoint."""
+
+    @pytest.mark.anyio
+    async def test_default_order_uses_created_at_asc(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """No order_by → default field (created_at) ASC."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/offset")
+
+        assert resp.status_code == 200
+        titles = [a["title"] for a in resp.json()["data"]]
+        assert titles == ["FastAPI tips", "SQLAlchemy async", "Draft notes"]
+
+    @pytest.mark.anyio
+    async def test_order_by_title_asc(self, client: AsyncClient, ex_db_session):
+        """order_by=title&order=asc returns alphabetical order."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/offset?order_by=title&order=asc")
+
+        assert resp.status_code == 200
+        titles = [a["title"] for a in resp.json()["data"]]
+        assert titles == ["Draft notes", "FastAPI tips", "SQLAlchemy async"]
+
+    @pytest.mark.anyio
+    async def test_order_by_title_desc(self, client: AsyncClient, ex_db_session):
+        """order_by=title&order=desc returns reverse alphabetical order."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/offset?order_by=title&order=desc")
+
+        assert resp.status_code == 200
+        titles = [a["title"] for a in resp.json()["data"]]
+        assert titles == ["SQLAlchemy async", "FastAPI tips", "Draft notes"]
+
+    @pytest.mark.anyio
+    async def test_order_by_created_at_desc(self, client: AsyncClient, ex_db_session):
+        """order_by=created_at&order=desc returns newest-first."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/offset?order_by=created_at&order=desc")
+
+        assert resp.status_code == 200
+        titles = [a["title"] for a in resp.json()["data"]]
+        assert titles == ["Draft notes", "SQLAlchemy async", "FastAPI tips"]
+
+    @pytest.mark.anyio
+    async def test_invalid_order_by_returns_422(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """Unknown order_by field returns 422 with SORT-422 error code."""
+        resp = await client.get("/articles/offset?order_by=nonexistent_field")
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["error_code"] == "SORT-422"
+        assert body["status"] == "FAIL"
+
+
+class TestCursorSorting:
+    """Tests for order_by / order query parameters on the cursor endpoint.
+
+    In cursor_paginate the cursor_column is always the primary sort; order_by
+    acts as a secondary tiebreaker. With the seeded articles (all having unique
+    created_at values) the overall ordering is always created_at ASC regardless
+    of the order_by value — only the valid/invalid field check and the response
+    shape are meaningful here.
+    """
+
+    @pytest.mark.anyio
+    async def test_default_order_uses_created_at_asc(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """No order_by → default field (created_at) ASC."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/cursor")
+
+        assert resp.status_code == 200
+        titles = [a["title"] for a in resp.json()["data"]]
+        assert titles == ["FastAPI tips", "SQLAlchemy async", "Draft notes"]
+
+    @pytest.mark.anyio
+    async def test_order_by_title_asc_accepted(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """order_by=title is a valid field — request succeeds and returns all articles."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/cursor?order_by=title&order=asc")
+
+        assert resp.status_code == 200
+        assert len(resp.json()["data"]) == 3
+
+    @pytest.mark.anyio
+    async def test_order_by_title_desc_accepted(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """order_by=title&order=desc is valid — request succeeds and returns all articles."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/cursor?order_by=title&order=desc")
+
+        assert resp.status_code == 200
+        assert len(resp.json()["data"]) == 3
+
+    @pytest.mark.anyio
+    async def test_invalid_order_by_returns_422(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """Unknown order_by field returns 422 with SORT-422 error code."""
+        resp = await client.get("/articles/cursor?order_by=nonexistent_field")
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["error_code"] == "SORT-422"
+        assert body["status"] == "FAIL"

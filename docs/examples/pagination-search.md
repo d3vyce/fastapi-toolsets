@@ -1,6 +1,6 @@
 # Pagination & search
 
-This example builds an articles listing endpoint that supports **offset pagination**, **cursor pagination**, **full-text search**, and **faceted filtering** — all from a single `CrudFactory` definition.
+This example builds an articles listing endpoint that supports **offset pagination**, **cursor pagination**, **full-text search**, **faceted filtering**, and **sorting** — all from a single `CrudFactory` definition.
 
 ## Models
 
@@ -16,7 +16,7 @@ This example builds an articles listing endpoint that supports **offset paginati
 
 ## Crud
 
-Declare `facet_fields` and `searchable_fields` once on [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory). All endpoints built from this class share the same defaults and can override them per call.
+Declare `searchable_fields`, `facet_fields`, and `order_fields` once on [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory). All endpoints built from this class share the same defaults and can override them per call.
 
 ```python title="crud.py"
 --8<-- "docs_src/examples/pagination_search/crud.py"
@@ -46,14 +46,14 @@ Declare `facet_fields` and `searchable_fields` once on [`CrudFactory`](../refere
 
 Best for admin panels or any UI that needs a total item count and numbered pages.
 
-```python title="routes.py:1:27"
---8<-- "docs_src/examples/pagination_search/routes.py:1:27"
+```python title="routes.py:1:36"
+--8<-- "docs_src/examples/pagination_search/routes.py:1:36"
 ```
 
 **Example request**
 
 ```
-GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published
+GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published&order_by=title&order=asc
 ```
 
 **Example response**
@@ -83,14 +83,14 @@ GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published
 
 Best for feeds, infinite scroll, or any high-throughput API where offset performance degrades.
 
-```python title="routes.py:30:45"
---8<-- "docs_src/examples/pagination_search/routes.py:30:45"
+```python title="routes.py:39:59"
+--8<-- "docs_src/examples/pagination_search/routes.py:39:59"
 ```
 
 **Example request**
 
 ```
-GET /articles/cursor?items_per_page=10&status=published
+GET /articles/cursor?items_per_page=10&status=published&order_by=created_at&order=desc
 ```
 
 **Example response**

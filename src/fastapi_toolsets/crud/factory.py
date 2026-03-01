@@ -21,10 +21,11 @@ from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, QueryableAttribute, selectinload
 from sqlalchemy.sql.base import ExecutableOption
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.roles import WhereHavingRole
 
 from ..db import get_transaction
-from ..exceptions import NotFoundError
+from ..exceptions import InvalidOrderFieldError, NotFoundError
 from ..schemas import CursorPagination, OffsetPagination, PaginatedResponse, Response
 from .search import (
     FacetFieldType,
@@ -40,6 +41,7 @@ ModelType = TypeVar("ModelType", bound=DeclarativeBase)
 SchemaType = TypeVar("SchemaType", bound=BaseModel)
 JoinType = list[tuple[type[DeclarativeBase], Any]]
 M2MFieldType = Mapping[str, QueryableAttribute[Any]]
+OrderByClause = ColumnElement[Any] | QueryableAttribute[Any]
 
 
 def _encode_cursor(value: Any) -> str:
@@ -61,6 +63,7 @@ class AsyncCrud(Generic[ModelType]):
     model: ClassVar[type[DeclarativeBase]]
     searchable_fields: ClassVar[Sequence[SearchFieldType] | None] = None
     facet_fields: ClassVar[Sequence[FacetFieldType] | None] = None
+    order_fields: ClassVar[Sequence[QueryableAttribute[Any]] | None] = None
     m2m_fields: ClassVar[M2MFieldType | None] = None
     default_load_options: ClassVar[list[ExecutableOption] | None] = None
     cursor_column: ClassVar[Any | None] = None
@@ -174,6 +177,63 @@ class AsyncCrud(Generic[ModelType]):
             ]
         )
 
+        return dependency
+
+    @classmethod
+    def order_params(
+        cls: type[Self],
+        *,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        default_field: QueryableAttribute[Any] | None = None,
+        default_order: Literal["asc", "desc"] = "asc",
+    ) -> Callable[..., Awaitable[OrderByClause | None]]:
+        """Return a FastAPI dependency that resolves order query params into an order_by clause.
+
+        Args:
+            order_fields: Override the allowed order fields. Falls back to the class-level
+                ``order_fields`` if not provided.
+            default_field: Field to order by when ``order_by`` query param is absent.
+                If ``None`` and no ``order_by`` is provided, no ordering is applied.
+            default_order: Default order direction when ``order`` is absent
+                (``"asc"`` or ``"desc"``).
+
+        Returns:
+            An async dependency function named ``{Model}OrderParams`` that resolves to an
+            ``OrderByClause`` (or ``None``). Pass it to ``Depends()`` in your route.
+
+        Raises:
+            ValueError: If no order fields are configured on this CRUD class and none are
+                provided via ``order_fields``.
+            InvalidOrderFieldError: When the request provides an unknown ``order_by`` value.
+        """
+        fields = order_fields if order_fields is not None else cls.order_fields
+        if not fields:
+            raise ValueError(
+                f"{cls.__name__} has no order_fields configured. "
+                "Pass order_fields= or set them on CrudFactory."
+            )
+        field_map: dict[str, QueryableAttribute[Any]] = {f.key: f for f in fields}
+        valid_keys = sorted(field_map.keys())
+
+        async def dependency(
+            order_by: str | None = Query(
+                None, description=f"Field to order by. Valid values: {valid_keys}"
+            ),
+            order: Literal["asc", "desc"] = Query(
+                default_order, description="Sort direction"
+            ),
+        ) -> OrderByClause | None:
+            if order_by is None:
+                if default_field is None:
+                    return None
+                field = default_field
+            elif order_by not in field_map:
+                raise InvalidOrderFieldError(order_by, valid_keys)
+            else:
+                field = field_map[order_by]
+            return field.asc() if order == "asc" else field.desc()
+
+        dependency.__name__ = f"{cls.model.__name__}OrderParams"
         return dependency
 
     @overload
@@ -415,7 +475,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        order_by: Any | None = None,
+        order_by: OrderByClause | None = None,
         limit: int | None = None,
         offset: int | None = None,
     ) -> Sequence[ModelType]:
@@ -745,7 +805,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        order_by: Any | None = None,
+        order_by: OrderByClause | None = None,
         page: int = 1,
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
@@ -766,7 +826,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        order_by: Any | None = None,
+        order_by: OrderByClause | None = None,
         page: int = 1,
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
@@ -785,7 +845,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        order_by: Any | None = None,
+        order_by: OrderByClause | None = None,
         page: int = 1,
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
@@ -937,7 +997,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        order_by: Any | None = None,
+        order_by: OrderByClause | None = None,
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
@@ -958,7 +1018,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        order_by: Any | None = None,
+        order_by: OrderByClause | None = None,
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
@@ -977,7 +1037,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        order_by: Any | None = None,
+        order_by: OrderByClause | None = None,
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
@@ -1147,6 +1207,7 @@ def CrudFactory(
     *,
     searchable_fields: Sequence[SearchFieldType] | None = None,
     facet_fields: Sequence[FacetFieldType] | None = None,
+    order_fields: Sequence[QueryableAttribute[Any]] | None = None,
     m2m_fields: M2MFieldType | None = None,
     default_load_options: list[ExecutableOption] | None = None,
     cursor_column: Any | None = None,
@@ -1159,6 +1220,8 @@ def CrudFactory(
         facet_fields: Optional list of columns to compute distinct values for in paginated
             responses. Supports direct columns (``User.status``) and relationship tuples
             (``(User.role, Role.name)``). Can be overridden per call.
+        order_fields: Optional list of model attributes that callers are allowed to order by
+            via ``order_params()``. Can be overridden per call.
         m2m_fields: Optional mapping for many-to-many relationships.
             Maps schema field names (containing lists of IDs) to
             SQLAlchemy relationship attributes.
@@ -1252,6 +1315,7 @@ def CrudFactory(
             "model": model,
             "searchable_fields": searchable_fields,
             "facet_fields": facet_fields,
+            "order_fields": order_fields,
             "m2m_fields": m2m_fields,
             "default_load_options": default_load_options,
             "cursor_column": cursor_column,
