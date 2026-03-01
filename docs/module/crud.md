@@ -329,19 +329,19 @@ GET /users?role=admin&role=editor     → filter_by={"role": ["admin", "editor"]
 
 !!! info "Added in `v1.3`"
 
-Declare `sort_fields` on the CRUD class to expose client-driven column ordering via `sort_by` and `sort_order` query parameters.
+Declare `order_fields` on the CRUD class to expose client-driven column ordering via `order_by` and `order` query parameters.
 
 ```python
 UserCrud = CrudFactory(
     model=User,
-    sort_fields=[
+    order_fields=[
         User.name,
         User.created_at,
     ],
 )
 ```
 
-Call [`sort_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.sort_params) to generate a FastAPI dependency that maps the query parameters to an [`OrderByClause`](../reference/crud.md#fastapi_toolsets.crud.factory.OrderByClause) expression:
+Call [`order_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.order_params) to generate a FastAPI dependency that maps the query parameters to an [`OrderByClause`](../reference/crud.md#fastapi_toolsets.crud.factory.OrderByClause) expression:
 
 ```python
 from typing import Annotated
@@ -352,29 +352,29 @@ from fastapi_toolsets.crud import OrderByClause
 @router.get("")
 async def list_users(
     session: SessionDep,
-    order_by: Annotated[OrderByClause | None, Depends(UserCrud.sort_params())],
+    order_by: Annotated[OrderByClause | None, Depends(UserCrud.order_params())],
 ) -> PaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(session=session, order_by=order_by)
 ```
 
 The dependency adds two query parameters to the endpoint:
 
-| Parameter    | Type               |
-| ------------ | ------------------ |
-| `sort_by`    | `str | null`      |
-| `sort_order` | `asc` or `desc` |
+| Parameter  | Type            |
+| ---------- | --------------- |
+| `order_by` | `str | null`   |
+| `order`    | `asc` or `desc` |
 
 ```
-GET /users?sort_by=name&sort_order=asc   → ORDER BY users.name ASC
-GET /users?sort_by=name&sort_order=desc  → ORDER BY users.name DESC
+GET /users?order_by=name&order=asc   → ORDER BY users.name ASC
+GET /users?order_by=name&order=desc  → ORDER BY users.name DESC
 ```
 
-An unknown `sort_by` value raises [`InvalidSortFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidSortFieldError) (HTTP 422).
+An unknown `order_by` value raises [`InvalidOrderFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError) (HTTP 422).
 
-You can also pass `sort_fields` directly to `sort_params()` to override the class-level defaults without modifying them:
+You can also pass `order_fields` directly to `order_params()` to override the class-level defaults without modifying them:
 
 ```python
-UserSortParams = UserCrud.sort_params(sort_fields=[User.name])
+UserOrderParams = UserCrud.order_params(order_fields=[User.name])
 ```
 
 ## Relationship loading

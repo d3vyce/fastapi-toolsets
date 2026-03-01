@@ -19,7 +19,7 @@ async def list_articles_offset(
     filter_by: Annotated[dict[str, list[str]], Depends(ArticleCrud.filter_params())],
     order_by: Annotated[
         OrderByClause | None,
-        Depends(ArticleCrud.sort_params(default_field=Article.created_at)),
+        Depends(ArticleCrud.order_params(default_field=Article.created_at)),
     ],
     page: int = Query(1, ge=1),
     items_per_page: int = Query(20, ge=1, le=100),
@@ -42,7 +42,7 @@ async def list_articles_cursor(
     filter_by: Annotated[dict[str, list[str]], Depends(ArticleCrud.filter_params())],
     order_by: Annotated[
         OrderByClause | None,
-        Depends(ArticleCrud.sort_params(default_field=Article.created_at)),
+        Depends(ArticleCrud.order_params(default_field=Article.created_at)),
     ],
     cursor: str | None = None,
     items_per_page: int = Query(20, ge=1, le=100),

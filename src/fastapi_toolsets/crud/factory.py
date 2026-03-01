@@ -25,7 +25,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.roles import WhereHavingRole
 
 from ..db import get_transaction
-from ..exceptions import InvalidSortFieldError, NotFoundError
+from ..exceptions import InvalidOrderFieldError, NotFoundError
 from ..schemas import CursorPagination, OffsetPagination, PaginatedResponse, Response
 from .search import (
     FacetFieldType,
@@ -63,7 +63,7 @@ class AsyncCrud(Generic[ModelType]):
     model: ClassVar[type[DeclarativeBase]]
     searchable_fields: ClassVar[Sequence[SearchFieldType] | None] = None
     facet_fields: ClassVar[Sequence[FacetFieldType] | None] = None
-    sort_fields: ClassVar[Sequence[QueryableAttribute[Any]] | None] = None
+    order_fields: ClassVar[Sequence[QueryableAttribute[Any]] | None] = None
     m2m_fields: ClassVar[M2MFieldType | None] = None
     default_load_options: ClassVar[list[ExecutableOption] | None] = None
     cursor_column: ClassVar[Any | None] = None
@@ -180,60 +180,60 @@ class AsyncCrud(Generic[ModelType]):
         return dependency
 
     @classmethod
-    def sort_params(
+    def order_params(
         cls: type[Self],
         *,
-        sort_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
         default_field: QueryableAttribute[Any] | None = None,
         default_order: Literal["asc", "desc"] = "asc",
     ) -> Callable[..., Awaitable[OrderByClause | None]]:
-        """Return a FastAPI dependency that resolves sort query params into an order_by clause.
+        """Return a FastAPI dependency that resolves order query params into an order_by clause.
 
         Args:
-            sort_fields: Override the allowed sort fields. Falls back to the class-level
-                ``sort_fields`` if not provided.
-            default_field: Field to sort by when ``sort_by`` query param is absent.
-                If ``None`` and no ``sort_by`` is provided, no ordering is applied.
-            default_order: Default sort direction when ``sort_order`` is absent
+            order_fields: Override the allowed order fields. Falls back to the class-level
+                ``order_fields`` if not provided.
+            default_field: Field to order by when ``order_by`` query param is absent.
+                If ``None`` and no ``order_by`` is provided, no ordering is applied.
+            default_order: Default order direction when ``order`` is absent
                 (``"asc"`` or ``"desc"``).
 
         Returns:
-            An async dependency function named ``{Model}SortParams`` that resolves to an
+            An async dependency function named ``{Model}OrderParams`` that resolves to an
             ``OrderByClause`` (or ``None``). Pass it to ``Depends()`` in your route.
 
         Raises:
-            ValueError: If no sort fields are configured on this CRUD class and none are
-                provided via ``sort_fields``.
-            InvalidSortFieldError: When the request provides an unknown ``sort_by`` value.
+            ValueError: If no order fields are configured on this CRUD class and none are
+                provided via ``order_fields``.
+            InvalidOrderFieldError: When the request provides an unknown ``order_by`` value.
         """
-        fields = sort_fields if sort_fields is not None else cls.sort_fields
+        fields = order_fields if order_fields is not None else cls.order_fields
         if not fields:
             raise ValueError(
-                f"{cls.__name__} has no sort_fields configured. "
-                "Pass sort_fields= or set them on CrudFactory."
+                f"{cls.__name__} has no order_fields configured. "
+                "Pass order_fields= or set them on CrudFactory."
             )
         field_map: dict[str, QueryableAttribute[Any]] = {f.key: f for f in fields}
         valid_keys = sorted(field_map.keys())
 
         async def dependency(
-            sort_by: str | None = Query(
-                None, description=f"Field to sort by. Valid values: {valid_keys}"
+            order_by: str | None = Query(
+                None, description=f"Field to order by. Valid values: {valid_keys}"
             ),
-            sort_order: Literal["asc", "desc"] = Query(
+            order: Literal["asc", "desc"] = Query(
                 default_order, description="Sort direction"
             ),
         ) -> OrderByClause | None:
-            if sort_by is None:
+            if order_by is None:
                 if default_field is None:
                     return None
                 field = default_field
-            elif sort_by not in field_map:
-                raise InvalidSortFieldError(sort_by, valid_keys)
+            elif order_by not in field_map:
+                raise InvalidOrderFieldError(order_by, valid_keys)
             else:
-                field = field_map[sort_by]
-            return field.asc() if sort_order == "asc" else field.desc()
+                field = field_map[order_by]
+            return field.asc() if order == "asc" else field.desc()
 
-        dependency.__name__ = f"{cls.model.__name__}SortParams"
+        dependency.__name__ = f"{cls.model.__name__}OrderParams"
         return dependency
 
     @overload
@@ -1207,7 +1207,7 @@ def CrudFactory(
     *,
     searchable_fields: Sequence[SearchFieldType] | None = None,
     facet_fields: Sequence[FacetFieldType] | None = None,
-    sort_fields: Sequence[QueryableAttribute[Any]] | None = None,
+    order_fields: Sequence[QueryableAttribute[Any]] | None = None,
     m2m_fields: M2MFieldType | None = None,
     default_load_options: list[ExecutableOption] | None = None,
     cursor_column: Any | None = None,
@@ -1220,8 +1220,8 @@ def CrudFactory(
         facet_fields: Optional list of columns to compute distinct values for in paginated
             responses. Supports direct columns (``User.status``) and relationship tuples
             (``(User.role, Role.name)``). Can be overridden per call.
-        sort_fields: Optional list of model attributes that callers are allowed to sort by
-            via ``sort_params()``. Can be overridden per call.
+        order_fields: Optional list of model attributes that callers are allowed to order by
+            via ``order_params()``. Can be overridden per call.
         m2m_fields: Optional mapping for many-to-many relationships.
             Maps schema field names (containing lists of IDs) to
             SQLAlchemy relationship attributes.
@@ -1315,7 +1315,7 @@ def CrudFactory(
             "model": model,
             "searchable_fields": searchable_fields,
             "facet_fields": facet_fields,
-            "sort_fields": sort_fields,
+            "order_fields": order_fields,
             "m2m_fields": m2m_fields,
             "default_load_options": default_load_options,
             "cursor_column": cursor_column,

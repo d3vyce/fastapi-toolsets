@@ -8,7 +8,7 @@ from fastapi_toolsets.exceptions import (
     ApiException,
     ConflictError,
     ForbiddenError,
-    InvalidSortFieldError,
+    InvalidOrderFieldError,
     NotFoundError,
     UnauthorizedError,
     generate_error_responses,
@@ -337,36 +337,36 @@ class TestExceptionIntegration:
         assert response.json() == {"id": 1}
 
 
-class TestInvalidSortFieldError:
-    """Tests for InvalidSortFieldError exception."""
+class TestInvalidOrderFieldError:
+    """Tests for InvalidOrderFieldError exception."""
 
     def test_api_error_attributes(self):
-        """InvalidSortFieldError has correct api_error metadata."""
-        assert InvalidSortFieldError.api_error.code == 422
-        assert InvalidSortFieldError.api_error.err_code == "SORT-422"
-        assert InvalidSortFieldError.api_error.msg == "Invalid Sort Field"
+        """InvalidOrderFieldError has correct api_error metadata."""
+        assert InvalidOrderFieldError.api_error.code == 422
+        assert InvalidOrderFieldError.api_error.err_code == "SORT-422"
+        assert InvalidOrderFieldError.api_error.msg == "Invalid Order Field"
 
     def test_stores_field_and_valid_fields(self):
-        """InvalidSortFieldError stores field and valid_fields on the instance."""
-        error = InvalidSortFieldError("unknown", ["name", "created_at"])
+        """InvalidOrderFieldError stores field and valid_fields on the instance."""
+        error = InvalidOrderFieldError("unknown", ["name", "created_at"])
         assert error.field == "unknown"
         assert error.valid_fields == ["name", "created_at"]
 
     def test_message_contains_field_and_valid_fields(self):
         """Exception message mentions the bad field and valid options."""
-        error = InvalidSortFieldError("bad_field", ["name", "email"])
+        error = InvalidOrderFieldError("bad_field", ["name", "email"])
         assert "bad_field" in str(error)
         assert "name" in str(error)
         assert "email" in str(error)
 
     def test_handled_as_422_by_exception_handler(self):
-        """init_exceptions_handlers turns InvalidSortFieldError into a 422 response."""
+        """init_exceptions_handlers turns InvalidOrderFieldError into a 422 response."""
         app = FastAPI()
         init_exceptions_handlers(app)
 
         @app.get("/items")
         async def list_items():
-            raise InvalidSortFieldError("bad", ["name"])
+            raise InvalidOrderFieldError("bad", ["name"])
 
         client = TestClient(app)
         response = client.get("/items")

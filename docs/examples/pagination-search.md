@@ -16,7 +16,7 @@ This example builds an articles listing endpoint that supports **offset paginati
 
 ## Crud
 
-Declare `searchable_fields`, `facet_fields`, and `sort_fields` once on [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory). All endpoints built from this class share the same defaults and can override them per call.
+Declare `searchable_fields`, `facet_fields`, and `order_fields` once on [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory). All endpoints built from this class share the same defaults and can override them per call.
 
 ```python title="crud.py"
 --8<-- "docs_src/examples/pagination_search/crud.py"
@@ -53,7 +53,7 @@ Best for admin panels or any UI that needs a total item count and numbered pages
 **Example request**
 
 ```
-GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published&sort_by=title&sort_order=asc
+GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published&order_by=title&order=asc
 ```
 
 **Example response**
@@ -90,7 +90,7 @@ Best for feeds, infinite scroll, or any high-throughput API where offset perform
 **Example request**
 
 ```
-GET /articles/cursor?items_per_page=10&status=published&sort_by=created_at&sort_order=desc
+GET /articles/cursor?items_per_page=10&status=published&order_by=created_at&order=desc
 ```
 
 **Example response**

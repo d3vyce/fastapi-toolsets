@@ -13,7 +13,7 @@ from fastapi_toolsets.exceptions import (
     ConflictError,
     NoSearchableFieldsError,
     InvalidFacetFilterError,
-    InvalidSortFieldError,
+    InvalidOrderFieldError,
     generate_error_responses,
     init_exceptions_handlers,
 )
@@ -33,7 +33,7 @@ from fastapi_toolsets.exceptions import (
 
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError
 
-## ::: fastapi_toolsets.exceptions.exceptions.InvalidSortFieldError
+## ::: fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.generate_error_responses
 

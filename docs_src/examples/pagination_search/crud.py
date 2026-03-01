@@ -14,7 +14,7 @@ ArticleCrud = CrudFactory(
         Article.status,
         (Article.category, Category.name),
     ],
-    sort_fields=[  # fields exposed for client-driven sorting
+    order_fields=[  # fields exposed for client-driven ordering
         Article.title,
         Article.created_at,
     ],

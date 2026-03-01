@@ -128,13 +128,13 @@ class InvalidFacetFilterError(ApiException):
         super().__init__(detail)
 
 
-class InvalidSortFieldError(ApiException):
-    """Raised when sort_by contains a field not in the allowed sort fields."""
+class InvalidOrderFieldError(ApiException):
+    """Raised when order_by contains a field not in the allowed order fields."""
 
     api_error = ApiError(
         code=422,
-        msg="Invalid Sort Field",
-        desc="The requested sort field is not allowed for this resource.",
+        msg="Invalid Order Field",
+        desc="The requested order field is not allowed for this resource.",
         err_code="SORT-422",
     )
 
@@ -142,13 +142,13 @@ class InvalidSortFieldError(ApiException):
         """Initialize the exception.
 
         Args:
-            field: The unknown sort field provided by the caller
+            field: The unknown order field provided by the caller
             valid_fields: List of valid field names
         """
         self.field = field
         self.valid_fields = valid_fields
         detail = (
-            f"'{field}' is not an allowed sort field. Valid fields: {valid_fields}."
+            f"'{field}' is not an allowed order field. Valid fields: {valid_fields}."
         )
         super().__init__(detail)
 
