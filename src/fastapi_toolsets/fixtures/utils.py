@@ -1,24 +1,23 @@
 """Fixture loading utilities for database seeding."""
 
 from collections.abc import Callable, Sequence
-from typing import Any, TypeVar
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
 from ..db import get_transaction
 from ..logger import get_logger
+from ..types import ModelType
 from .enum import LoadStrategy
 from .registry import Context, FixtureRegistry
 
 logger = get_logger()
 
-T = TypeVar("T", bound=DeclarativeBase)
-
 
 def get_obj_by_attr(
-    fixtures: Callable[[], Sequence[T]], attr_name: str, value: Any
-) -> T:
+    fixtures: Callable[[], Sequence[ModelType]], attr_name: str, value: Any
+) -> ModelType:
     """Get a SQLAlchemy model instance by matching an attribute value.
 
     Args:

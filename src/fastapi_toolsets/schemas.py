@@ -1,9 +1,11 @@
 """Base Pydantic schemas for API responses."""
 
 from enum import Enum
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic
 
 from pydantic import BaseModel, ConfigDict
+
+from .types import DataT
 
 __all__ = [
     "ApiError",
@@ -15,8 +17,6 @@ __all__ = [
     "Response",
     "ResponseStatus",
 ]
-
-DataT = TypeVar("DataT")
 
 
 class PydanticBase(BaseModel):
