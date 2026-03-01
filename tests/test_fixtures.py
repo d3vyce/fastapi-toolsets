@@ -14,7 +14,9 @@ from fastapi_toolsets.fixtures import (
     load_fixtures_by_context,
 )
 
-from .conftest import Role, User
+from fastapi_toolsets.fixtures.utils import _get_primary_key
+
+from .conftest import IntRole, Permission, Role, User
 
 
 class TestContext:
@@ -597,6 +599,46 @@ class TestLoadFixtures:
         count = await RoleCrud.count(db_session)
         assert count == 2
 
+    @pytest.mark.anyio
+    async def test_skip_existing_skips_if_record_exists(self, db_session: AsyncSession):
+        """SKIP_EXISTING returns empty loaded list when the record already exists."""
+        registry = FixtureRegistry()
+        role_id = uuid.uuid4()
+
+        @registry.register
+        def roles():
+            return [Role(id=role_id, name="admin")]
+
+        # First load — inserts the record.
+        result1 = await load_fixtures(
+            db_session, registry, "roles", strategy=LoadStrategy.SKIP_EXISTING
+        )
+        assert len(result1["roles"]) == 1
+
+        # Remove from identity map so session.get() queries the DB in the second load.
+        db_session.expunge_all()
+
+        # Second load — record exists in DB, nothing should be added.
+        result2 = await load_fixtures(
+            db_session, registry, "roles", strategy=LoadStrategy.SKIP_EXISTING
+        )
+        assert result2["roles"] == []
+
+    @pytest.mark.anyio
+    async def test_skip_existing_null_pk_inserts(self, db_session: AsyncSession):
+        """SKIP_EXISTING inserts when the instance has no PK set (auto-increment)."""
+        registry = FixtureRegistry()
+
+        @registry.register
+        def int_roles():
+            # No id provided — PK is None before INSERT (autoincrement).
+            return [IntRole(name="member")]
+
+        result = await load_fixtures(
+            db_session, registry, "int_roles", strategy=LoadStrategy.SKIP_EXISTING
+        )
+        assert len(result["int_roles"]) == 1
+
 
 class TestLoadFixturesByContext:
     """Tests for load_fixtures_by_context function."""
@@ -755,3 +797,19 @@ class TestGetObjByAttr:
         """Raises StopIteration when value type doesn't match."""
         with pytest.raises(StopIteration):
             get_obj_by_attr(self.roles, "id", "not-a-uuid")
+
+
+class TestGetPrimaryKey:
+    """Unit tests for the _get_primary_key helper (composite PK paths)."""
+
+    def test_composite_pk_all_set(self):
+        """Returns a tuple when all composite PK values are set."""
+        instance = Permission(subject="post", action="read")
+        pk = _get_primary_key(instance)
+        assert pk == ("post", "read")
+
+    def test_composite_pk_partial_none(self):
+        """Returns None when any composite PK value is None."""
+        instance = Permission(subject="post")  # action is None
+        pk = _get_primary_key(instance)
+        assert pk is None

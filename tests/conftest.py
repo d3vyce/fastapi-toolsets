@@ -92,6 +92,15 @@ class IntRole(Base):
     name: Mapped[str] = mapped_column(String(50), unique=True)
 
 
+class Permission(Base):
+    """Test model with composite primary key."""
+
+    __tablename__ = "permissions"
+
+    subject: Mapped[str] = mapped_column(String(50), primary_key=True)
+    action: Mapped[str] = mapped_column(String(50), primary_key=True)
+
+
 class Event(Base):
     """Test model with DateTime and Date cursor columns."""
 
