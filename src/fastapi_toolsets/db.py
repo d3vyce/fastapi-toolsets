@@ -10,6 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
+from .exceptions import NotFoundError
+
 __all__ = [
     "LockMode",
     "create_db_context",
@@ -216,7 +218,7 @@ async def wait_for_row_change(
         The refreshed model instance with updated values
 
     Raises:
-        LookupError: If the row does not exist or is deleted during polling
+        NotFoundError: If the row does not exist or is deleted during polling
         TimeoutError: If timeout expires before a change is detected
 
     Example:
@@ -237,7 +239,7 @@ async def wait_for_row_change(
     """
     instance = await session.get(model, pk_value)
     if instance is None:
-        raise LookupError(f"{model.__name__} with pk={pk_value!r} not found")
+        raise NotFoundError(f"{model.__name__} with pk={pk_value!r} not found")
 
     if columns is not None:
         watch_cols = columns
@@ -261,7 +263,7 @@ async def wait_for_row_change(
         instance = await session.get(model, pk_value)
 
         if instance is None:
-            raise LookupError(f"{model.__name__} with pk={pk_value!r} was deleted")
+            raise NotFoundError(f"{model.__name__} with pk={pk_value!r} was deleted")
 
         current = {col: getattr(instance, col) for col in watch_cols}
         if current != initial:
