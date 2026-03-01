@@ -149,6 +149,14 @@ class AsyncCrud(Generic[ModelType]):
         return set(cls.m2m_fields.keys())
 
     @classmethod
+    def _resolve_facet_fields(
+        cls: type[Self],
+        facet_fields: Sequence[FacetFieldType] | None,
+    ) -> Sequence[FacetFieldType] | None:
+        """Return facet_fields if given, otherwise fall back to the class-level default."""
+        return facet_fields if facet_fields is not None else cls.facet_fields
+
+    @classmethod
     def _prepare_filter_by(
         cls: type[Self],
         filter_by: dict[str, Any] | BaseModel | None,
@@ -156,10 +164,10 @@ class AsyncCrud(Generic[ModelType]):
     ) -> tuple[list[Any], list[Any]]:
         """Normalize filter_by and return (filters, joins) to apply to the query."""
         if isinstance(filter_by, BaseModel):
-            filter_by = filter_by.model_dump(exclude_none=True) or None
+            filter_by = filter_by.model_dump(exclude_none=True)
         if not filter_by:
             return [], []
-        resolved = facet_fields if facet_fields is not None else cls.facet_fields
+        resolved = cls._resolve_facet_fields(facet_fields)
         return build_filter_by(filter_by, resolved or [])
 
     @classmethod
@@ -171,15 +179,15 @@ class AsyncCrud(Generic[ModelType]):
         search_joins: list[Any],
     ) -> dict[str, list[Any]] | None:
         """Build facet filter_attributes, or return None if no facet fields configured."""
-        resolved = facet_fields if facet_fields is not None else cls.facet_fields
+        resolved = cls._resolve_facet_fields(facet_fields)
         if not resolved:
             return None
         return await build_facets(
             session,
             cls.model,
             resolved,
-            base_filters=filters or None,
-            base_joins=search_joins or None,
+            base_filters=filters,
+            base_joins=search_joins,
         )
 
     @classmethod
@@ -202,7 +210,7 @@ class AsyncCrud(Generic[ModelType]):
             ValueError: If no facet fields are configured on this CRUD class and none are
                 provided via ``facet_fields``.
         """
-        fields = facet_fields if facet_fields is not None else cls.facet_fields
+        fields = cls._resolve_facet_fields(facet_fields)
         if not fields:
             raise ValueError(
                 f"{cls.__name__} has no facet_fields configured. "
