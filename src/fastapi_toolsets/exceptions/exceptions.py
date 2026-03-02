@@ -28,10 +28,7 @@ class ApiException(Exception):
         """Initialize the exception.
 
         Args:
-            detail: Optional human-readable message.  When provided it becomes
-                **both** ``str(exc)`` (for logging) and the ``message`` field in
-                the HTTP response body, keeping the two in sync.  Defaults to
-                the class-level ``api_error.msg``.
+            detail: Optional human-readable message
             desc: Optional per-instance override for the ``description`` field
                 in the HTTP response body.
             data: Optional per-instance override for the ``data`` field in the

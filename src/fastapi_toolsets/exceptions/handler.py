@@ -138,7 +138,6 @@ def _patched_openapi(
     if app.openapi_schema:
         return app.openapi_schema
 
-    # Delegate to the original generator — honours all FastAPI app-level params.
     openapi_schema = original_openapi()
 
     for path_data in openapi_schema.get("paths", {}).values():
