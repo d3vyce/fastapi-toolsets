@@ -410,7 +410,7 @@ class TestNoSearchableFieldsError:
         from fastapi_toolsets.exceptions import NoSearchableFieldsError
 
         error = NoSearchableFieldsError(User)
-        assert "User" in str(error)
+        assert "User" in error.api_error.desc
         assert error.model is User
 
     def test_error_raised_when_no_fields(self):
@@ -434,7 +434,7 @@ class TestNoSearchableFieldsError:
             build_search_filters(NoStringModel, "test")
 
         assert exc_info.value.model is NoStringModel
-        assert "NoStringModel" in str(exc_info.value)
+        assert "NoStringModel" in exc_info.value.api_error.desc
 
 
 class TestGetSearchableFields:
