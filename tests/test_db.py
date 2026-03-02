@@ -14,6 +14,7 @@ from fastapi_toolsets.db import (
     lock_tables,
     wait_for_row_change,
 )
+from fastapi_toolsets.exceptions import NotFoundError
 
 from .conftest import DATABASE_URL, Base, Role, RoleCrud, User
 
@@ -307,9 +308,9 @@ class TestWaitForRowChange:
 
     @pytest.mark.anyio
     async def test_nonexistent_row_raises(self, db_session: AsyncSession):
-        """Raises LookupError when the row does not exist."""
+        """Raises NotFoundError when the row does not exist."""
         fake_id = uuid.uuid4()
-        with pytest.raises(LookupError, match="not found"):
+        with pytest.raises(NotFoundError, match="not found"):
             await wait_for_row_change(db_session, Role, fake_id, interval=0.05)
 
     @pytest.mark.anyio
@@ -326,7 +327,7 @@ class TestWaitForRowChange:
 
     @pytest.mark.anyio
     async def test_deleted_row_raises(self, db_session: AsyncSession, engine):
-        """Raises LookupError when the row is deleted during polling."""
+        """Raises NotFoundError when the row is deleted during polling."""
         role = Role(name="delete_role")
         db_session.add(role)
         await db_session.commit()
@@ -340,6 +341,6 @@ class TestWaitForRowChange:
                 await other.commit()
 
         delete_task = asyncio.create_task(delete_later())
-        with pytest.raises(LookupError):
+        with pytest.raises(NotFoundError):
             await wait_for_row_change(db_session, Role, role.id, interval=0.05)
         await delete_task
