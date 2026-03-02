@@ -20,7 +20,7 @@ A modular collection of production-ready utilities for FastAPI. Install only wha
 
 ## Installation
 
-The base package includes the core modules (CRUD, database, schemas, exceptions, fixtures, dependencies, logging):
+The base package includes the core modules (CRUD, database, schemas, exceptions, fixtures, dependencies, model mixins, logging):
 
 ```bash
 uv add fastapi-toolsets
@@ -29,9 +29,9 @@ uv add fastapi-toolsets
 Install only the extras you need:
 
 ```bash
-uv add "fastapi-toolsets[cli]"      # CLI (typer)
-uv add "fastapi-toolsets[metrics]"  # Prometheus metrics (prometheus_client)
-uv add "fastapi-toolsets[pytest]"   # Pytest helpers (httpx, pytest-xdist)
+uv add "fastapi-toolsets[cli]"
+uv add "fastapi-toolsets[metrics]"
+uv add "fastapi-toolsets[pytest]"
 ```
 
 Or install everything:
@@ -44,10 +44,11 @@ uv add "fastapi-toolsets[all]"
 
 ### Core
 
-- **CRUD**: Generic async CRUD operations with `CrudFactory`, built-in full-text/faceted search and offset/cursor pagination.
+- **CRUD**: Generic async CRUD operations with `CrudFactory`, built-in full-text/faceted search and Offset/Cursor pagination.
 - **Database**: Session management, transaction helpers, table locking, and polling-based row change detection
 - **Dependencies**: FastAPI dependency factories (`PathDependency`, `BodyDependency`) for automatic DB lookups from path or body parameters
 - **Fixtures**: Fixture system with dependency management, context support, and pytest integration
+- **Model Mixins**: SQLAlchemy mixins for common column patterns (`UUIDMixin`, `CreatedAtMixin`, `UpdatedAtMixin`, `TimestampMixin`)
 - **Standardized API Responses**: Consistent response format with `Response`, `PaginatedResponse`, and `PydanticBase`
 - **Exception Handling**: Structured error responses with automatic OpenAPI documentation
 - **Logging**: Logging configuration with uvicorn integration via `configure_logging` and `get_logger`

@@ -113,6 +113,7 @@ Modules = [
     {Fixtures = "module/fixtures.md"},
     {Logger = "module/logger.md"},
     {Metrics = "module/metrics.md"},
+    {Models = "module/models.md"},
     {Pytest = "module/pytest.md"},
     {Schemas = "module/schemas.md"},
 ]
@@ -127,6 +128,7 @@ Reference = [
     {Fixtures = "reference/fixtures.md"},
     {Logger = "reference/logger.md"},
     {Metrics = "reference/metrics.md"},
+    {Models = "reference/models.md"},
     {Pytest = "reference/pytest.md"},
     {Schemas = "reference/schemas.md"},
 ]
