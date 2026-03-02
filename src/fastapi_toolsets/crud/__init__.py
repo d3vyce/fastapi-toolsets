@@ -1,7 +1,13 @@
 """Generic async CRUD operations for SQLAlchemy models."""
 
 from ..exceptions import InvalidFacetFilterError, NoSearchableFieldsError
-from ..types import FacetFieldType, JoinType, M2MFieldType, OrderByClause
+from ..types import (
+    FacetFieldType,
+    JoinType,
+    M2MFieldType,
+    OrderByClause,
+    SearchFieldType,
+)
 from .factory import CrudFactory
 from .search import SearchConfig, get_searchable_fields
 
@@ -15,4 +21,5 @@ __all__ = [
     "NoSearchableFieldsError",
     "OrderByClause",
     "SearchConfig",
+    "SearchFieldType",
 ]

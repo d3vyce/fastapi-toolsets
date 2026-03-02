@@ -1,4 +1,4 @@
-# `schemas` module
+# `schemas`
 
 Here's the reference for all response models and types provided by the `schemas` module.
 
