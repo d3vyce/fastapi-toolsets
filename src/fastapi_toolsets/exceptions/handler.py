@@ -1,10 +1,14 @@
 """Exception handlers for FastAPI applications."""
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, status
-from fastapi.exceptions import RequestValidationError, ResponseValidationError
-from fastapi.openapi.utils import get_openapi
+from fastapi.exceptions import (
+    HTTPException,
+    RequestValidationError,
+    ResponseValidationError,
+)
 from fastapi.responses import JSONResponse
 
 from ..schemas import ErrorResponse, ResponseStatus
@@ -14,43 +18,20 @@ from .exceptions import ApiException
 def init_exceptions_handlers(app: FastAPI) -> FastAPI:
     """Register exception handlers and custom OpenAPI schema on a FastAPI app.
 
-    Installs handlers for :class:`ApiException`, validation errors, and
-    unhandled exceptions, and replaces the default 422 schema with a
-    consistent error format.
-
     Args:
-        app: FastAPI application instance
+        app: FastAPI application instance.
 
     Returns:
-        The same FastAPI instance (for chaining)
-
-    Example:
-        ```python
-        from fastapi import FastAPI
-        from fastapi_toolsets.exceptions import init_exceptions_handlers
-
-        app = FastAPI()
-        init_exceptions_handlers(app)
-        ```
+        The same FastAPI instance (for chaining).
     """
     _register_exception_handlers(app)
-    app.openapi = lambda: _custom_openapi(app)  # type: ignore[method-assign]
+    _original_openapi = app.openapi
+    app.openapi = lambda: _patched_openapi(app, _original_openapi)  # type: ignore[method-assign]
     return app
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
-    """Register all exception handlers on a FastAPI application.
-
-    Args:
-        app: FastAPI application instance
-
-    Example:
-        from fastapi import FastAPI
-        from fastapi_toolsets.exceptions import init_exceptions_handlers
-
-        app = FastAPI()
-        init_exceptions_handlers(app)
-    """
+    """Register all exception handlers on a FastAPI application."""
 
     @app.exception_handler(ApiException)
     async def api_exception_handler(request: Request, exc: ApiException) -> Response:
@@ -62,10 +43,23 @@ def _register_exception_handlers(app: FastAPI) -> None:
             description=api_error.desc,
             error_code=api_error.err_code,
         )
-
         return JSONResponse(
             status_code=api_error.code,
             content=error_response.model_dump(),
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException) -> Response:
+        """Handle Starlette/FastAPI HTTPException with a consistent error format."""
+        detail = exc.detail if isinstance(exc.detail, str) else "HTTP Error"
+        error_response = ErrorResponse(
+            message=detail,
+            error_code=f"HTTP-{exc.status_code}",
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_response.model_dump(),
+            headers=getattr(exc, "headers", None),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -90,7 +84,6 @@ def _register_exception_handlers(app: FastAPI) -> None:
             description="An unexpected error occurred. Please try again later.",
             error_code="SERVER-500",
         )
-
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=error_response.model_dump(),
@@ -105,11 +98,10 @@ def _format_validation_error(
     formatted_errors = []
 
     for error in errors:
-        field_path = ".".join(
-            str(loc)
-            for loc in error["loc"]
-            if loc not in ("body", "query", "path", "header", "cookie")
-        )
+        locs = error["loc"]
+        if locs and locs[0] in ("body", "query", "path", "header", "cookie"):
+            locs = locs[1:]
+        field_path = ".".join(str(loc) for loc in locs)
         formatted_errors.append(
             {
                 "field": field_path or "root",
@@ -131,34 +123,22 @@ def _format_validation_error(
     )
 
 
-def _custom_openapi(app: FastAPI) -> dict[str, Any]:
-    """Generate custom OpenAPI schema with standardized error format.
-
-    Replaces default 422 validation error responses with the custom format.
+def _patched_openapi(
+    app: FastAPI, original_openapi: Callable[[], dict[str, Any]]
+) -> dict[str, Any]:
+    """Generate the OpenAPI schema and replace default 422 responses.
 
     Args:
-        app: FastAPI application instance
+        app: FastAPI application instance.
+        original_openapi: The previous ``app.openapi`` callable to delegate to.
 
     Returns:
-        OpenAPI schema dict
-
-    Example:
-        from fastapi import FastAPI
-        from fastapi_toolsets.exceptions import init_exceptions_handlers
-
-        app = FastAPI()
-        init_exceptions_handlers(app)  # Automatically sets custom OpenAPI
+        Patched OpenAPI schema dict.
     """
     if app.openapi_schema:
         return app.openapi_schema
 
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        openapi_version=app.openapi_version,
-        description=app.description,
-        routes=app.routes,
-    )
+    openapi_schema = original_openapi()
 
     for path_data in openapi_schema.get("paths", {}).values():
         for operation in path_data.values():
@@ -168,20 +148,25 @@ def _custom_openapi(app: FastAPI) -> dict[str, Any]:
                         "description": "Validation Error",
                         "content": {
                             "application/json": {
-                                "example": {
-                                    "data": {
-                                        "errors": [
-                                            {
-                                                "field": "field_name",
-                                                "message": "value is not valid",
-                                                "type": "value_error",
-                                            }
-                                        ]
-                                    },
-                                    "status": ResponseStatus.FAIL.value,
-                                    "message": "Validation Error",
-                                    "description": "1 validation error(s) detected",
-                                    "error_code": "VAL-422",
+                                "examples": {
+                                    "VAL-422": {
+                                        "summary": "Validation Error",
+                                        "value": {
+                                            "data": {
+                                                "errors": [
+                                                    {
+                                                        "field": "field_name",
+                                                        "message": "value is not valid",
+                                                        "type": "value_error",
+                                                    }
+                                                ]
+                                            },
+                                            "status": ResponseStatus.FAIL.value,
+                                            "message": "Validation Error",
+                                            "description": "1 validation error(s) detected",
+                                            "error_code": "VAL-422",
+                                        },
+                                    }
                                 }
                             }
                         },

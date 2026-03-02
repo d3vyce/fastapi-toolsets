@@ -2,6 +2,7 @@
 
 import pytest
 from fastapi import FastAPI
+from fastapi.exceptions import HTTPException
 from fastapi.testclient import TestClient
 
 from fastapi_toolsets.exceptions import (
@@ -36,8 +37,8 @@ class TestApiException:
         assert error.api_error.msg == "I'm a teapot"
         assert str(error) == "I'm a teapot"
 
-    def test_custom_detail_message(self):
-        """Custom detail overrides default message."""
+    def test_detail_overrides_msg_and_str(self):
+        """detail sets both str(exc) and api_error.msg; class-level msg is unchanged."""
 
         class CustomError(ApiException):
             api_error = ApiError(
@@ -47,8 +48,172 @@ class TestApiException:
                 err_code="BAD-400",
             )
 
-        error = CustomError("Custom message")
-        assert str(error) == "Custom message"
+        error = CustomError("Widget not found")
+        assert str(error) == "Widget not found"
+        assert error.api_error.msg == "Widget not found"
+        assert CustomError.api_error.msg == "Bad Request"  # class unchanged
+
+    def test_desc_override(self):
+        """desc kwarg overrides api_error.desc on the instance only."""
+
+        class MyError(ApiException):
+            api_error = ApiError(
+                code=400, msg="Error", desc="Default.", err_code="ERR-400"
+            )
+
+        err = MyError(desc="Custom desc.")
+        assert err.api_error.desc == "Custom desc."
+        assert MyError.api_error.desc == "Default."  # class unchanged
+
+    def test_data_override(self):
+        """data kwarg sets api_error.data on the instance only."""
+
+        class MyError(ApiException):
+            api_error = ApiError(
+                code=400, msg="Error", desc="Default.", err_code="ERR-400"
+            )
+
+        err = MyError(data={"key": "value"})
+        assert err.api_error.data == {"key": "value"}
+        assert MyError.api_error.data is None  # class unchanged
+
+    def test_desc_and_data_override(self):
+        """detail, desc and data can all be overridden together."""
+
+        class MyError(ApiException):
+            api_error = ApiError(
+                code=400, msg="Error", desc="Default.", err_code="ERR-400"
+            )
+
+        err = MyError("custom msg", desc="New desc.", data={"x": 1})
+        assert str(err) == "custom msg"
+        assert err.api_error.msg == "custom msg"  # detail also updates msg
+        assert err.api_error.desc == "New desc."
+        assert err.api_error.data == {"x": 1}
+        assert err.api_error.code == 400  # other fields unchanged
+
+    def test_class_api_error_not_mutated_after_instance_override(self):
+        """Raising with desc/data does not mutate the class-level api_error."""
+
+        class MyError(ApiException):
+            api_error = ApiError(
+                code=400, msg="Error", desc="Default.", err_code="ERR-400"
+            )
+
+        MyError(desc="Changed", data={"x": 1})
+        assert MyError.api_error.desc == "Default."
+        assert MyError.api_error.data is None
+
+    def test_subclass_uses_super_with_desc_and_data(self):
+        """Subclasses can delegate detail/desc/data to super().__init__()."""
+
+        class BuildValidationError(ApiException):
+            api_error = ApiError(
+                code=422,
+                msg="Build Validation Error",
+                desc="The build configuration is invalid.",
+                err_code="BUILD-422",
+            )
+
+            def __init__(self, *errors: str) -> None:
+                super().__init__(
+                    f"{len(errors)} validation error(s)",
+                    desc=", ".join(errors),
+                    data={"errors": [{"message": e} for e in errors]},
+                )
+
+        err = BuildValidationError("Field A is required", "Field B is invalid")
+        assert str(err) == "2 validation error(s)"
+        assert err.api_error.msg == "2 validation error(s)"  # detail set msg
+        assert err.api_error.desc == "Field A is required, Field B is invalid"
+        assert err.api_error.data == {
+            "errors": [
+                {"message": "Field A is required"},
+                {"message": "Field B is invalid"},
+            ]
+        }
+        assert err.api_error.code == 422  # other fields unchanged
+
+    def test_detail_desc_data_in_http_response(self):
+        """detail/desc/data overrides all appear correctly in the FastAPI HTTP response."""
+
+        class DynamicError(ApiException):
+            api_error = ApiError(
+                code=400, msg="Error", desc="Default.", err_code="ERR-400"
+            )
+
+            def __init__(self, message: str) -> None:
+                super().__init__(
+                    message,
+                    desc=f"Detail: {message}",
+                    data={"reason": message},
+                )
+
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/error")
+        async def raise_error():
+            raise DynamicError("something went wrong")
+
+        client = TestClient(app)
+        response = client.get("/error")
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["message"] == "something went wrong"
+        assert body["description"] == "Detail: something went wrong"
+        assert body["data"] == {"reason": "something went wrong"}
+
+
+class TestApiExceptionGuard:
+    """Tests for the __init_subclass__ api_error guard."""
+
+    def test_missing_api_error_raises_type_error(self):
+        """Defining a subclass without api_error raises TypeError at class creation time."""
+        with pytest.raises(
+            TypeError, match="must define an 'api_error' class attribute"
+        ):
+
+            class BrokenError(ApiException):
+                pass
+
+    def test_abstract_subclass_skips_guard(self):
+        """abstract=True allows intermediate base classes without api_error."""
+
+        class BaseGroupError(ApiException, abstract=True):
+            pass
+
+        # Concrete child must still define it
+        class ConcreteError(BaseGroupError):
+            api_error = ApiError(
+                code=400, msg="Error", desc="Desc.", err_code="ERR-400"
+            )
+
+        err = ConcreteError()
+        assert err.api_error.code == 400
+
+    def test_abstract_child_still_requires_api_error_on_concrete(self):
+        """Concrete subclass of an abstract class must define api_error."""
+
+        class Base(ApiException, abstract=True):
+            pass
+
+        with pytest.raises(
+            TypeError, match="must define an 'api_error' class attribute"
+        ):
+
+            class Concrete(Base):
+                pass
+
+    def test_inherited_api_error_satisfies_guard(self):
+        """Subclass that inherits api_error from a parent does not need its own."""
+
+        class ConcreteError(NotFoundError):
+            pass
+
+        err = ConcreteError()
+        assert err.api_error.code == 404
 
 
 class TestBuiltInExceptions:
@@ -90,7 +255,7 @@ class TestGenerateErrorResponses:
         assert responses[404]["description"] == "Not Found"
 
     def test_generates_multiple_responses(self):
-        """Generates responses for multiple exceptions."""
+        """Generates responses for multiple exceptions with distinct status codes."""
         responses = generate_error_responses(
             UnauthorizedError,
             ForbiddenError,
@@ -101,15 +266,24 @@ class TestGenerateErrorResponses:
         assert 403 in responses
         assert 404 in responses
 
-    def test_response_has_example(self):
-        """Generated response includes example."""
+    def test_response_has_named_example(self):
+        """Generated response uses named examples keyed by err_code."""
         responses = generate_error_responses(NotFoundError)
-        example = responses[404]["content"]["application/json"]["example"]
+        examples = responses[404]["content"]["application/json"]["examples"]
 
-        assert example["status"] == "FAIL"
-        assert example["error_code"] == "RES-404"
-        assert example["message"] == "Not Found"
-        assert example["data"] is None
+        assert "RES-404" in examples
+        value = examples["RES-404"]["value"]
+        assert value["status"] == "FAIL"
+        assert value["error_code"] == "RES-404"
+        assert value["message"] == "Not Found"
+        assert value["data"] is None
+
+    def test_response_example_has_summary(self):
+        """Each named example carries a summary equal to api_error.msg."""
+        responses = generate_error_responses(NotFoundError)
+        example = responses[404]["content"]["application/json"]["examples"]["RES-404"]
+
+        assert example["summary"] == "Not Found"
 
     def test_response_example_with_data(self):
         """Generated response includes data when set on ApiError."""
@@ -124,9 +298,49 @@ class TestGenerateErrorResponses:
             )
 
         responses = generate_error_responses(ErrorWithData)
-        example = responses[400]["content"]["application/json"]["example"]
+        value = responses[400]["content"]["application/json"]["examples"]["BAD-400"][
+            "value"
+        ]
 
-        assert example["data"] == {"details": "some context"}
+        assert value["data"] == {"details": "some context"}
+
+    def test_two_errors_same_code_both_present(self):
+        """Two exceptions with the same HTTP code produce two named examples."""
+
+        class BadRequestA(ApiException):
+            api_error = ApiError(
+                code=400, msg="Bad A", desc="Reason A.", err_code="ERR-A"
+            )
+
+        class BadRequestB(ApiException):
+            api_error = ApiError(
+                code=400, msg="Bad B", desc="Reason B.", err_code="ERR-B"
+            )
+
+        responses = generate_error_responses(BadRequestA, BadRequestB)
+
+        assert 400 in responses
+        examples = responses[400]["content"]["application/json"]["examples"]
+        assert "ERR-A" in examples
+        assert "ERR-B" in examples
+        assert examples["ERR-A"]["value"]["message"] == "Bad A"
+        assert examples["ERR-B"]["value"]["message"] == "Bad B"
+
+    def test_two_errors_same_code_single_top_level_entry(self):
+        """Two exceptions with the same HTTP code produce exactly one top-level entry."""
+
+        class BadRequestA(ApiException):
+            api_error = ApiError(
+                code=400, msg="Bad A", desc="Reason A.", err_code="ERR-A"
+            )
+
+        class BadRequestB(ApiException):
+            api_error = ApiError(
+                code=400, msg="Bad B", desc="Reason B.", err_code="ERR-B"
+            )
+
+        responses = generate_error_responses(BadRequestA, BadRequestB)
+        assert len([k for k in responses if k == 400]) == 1
 
 
 class TestInitExceptionsHandlers:
@@ -250,12 +464,67 @@ class TestInitExceptionsHandlers:
         assert data["status"] == "FAIL"
         assert data["error_code"] == "SERVER-500"
 
-    def test_custom_openapi_schema(self):
-        """Customizes OpenAPI schema for 422 responses."""
+    def test_handles_http_exception(self):
+        """Handles starlette HTTPException with consistent ErrorResponse envelope."""
         app = FastAPI()
         init_exceptions_handlers(app)
 
+        @app.get("/protected")
+        async def protected():
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        client = TestClient(app)
+        response = client.get("/protected")
+
+        assert response.status_code == 403
+        data = response.json()
+        assert data["status"] == "FAIL"
+        assert data["error_code"] == "HTTP-403"
+        assert data["message"] == "Forbidden"
+
+    def test_handles_http_exception_404_from_route(self):
+        """HTTPException(404) raised inside a route uses the consistent ErrorResponse envelope."""
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/items/{item_id}")
+        async def get_item(item_id: int):
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        client = TestClient(app)
+        response = client.get("/items/99")
+
+        assert response.status_code == 404
+        data = response.json()
+        assert data["status"] == "FAIL"
+        assert data["error_code"] == "HTTP-404"
+        assert data["message"] == "Item not found"
+
+    def test_handles_http_exception_forwards_headers(self):
+        """HTTPException with WWW-Authenticate header forwards it in the response."""
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/secure")
+        async def secure():
+            raise HTTPException(
+                status_code=401,
+                detail="Not authenticated",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        client = TestClient(app)
+        response = client.get("/secure")
+
+        assert response.status_code == 401
+        assert response.headers.get("www-authenticate") == "Bearer"
+
+    def test_custom_openapi_schema(self):
+        """Customises OpenAPI schema for 422 responses using named examples."""
         from pydantic import BaseModel
+
+        app = FastAPI()
+        init_exceptions_handlers(app)
 
         class Item(BaseModel):
             name: str
@@ -269,8 +538,128 @@ class TestInitExceptionsHandlers:
         post_op = openapi["paths"]["/items"]["post"]
         assert "422" in post_op["responses"]
         resp_422 = post_op["responses"]["422"]
-        example = resp_422["content"]["application/json"]["example"]
-        assert example["error_code"] == "VAL-422"
+        examples = resp_422["content"]["application/json"]["examples"]
+        assert "VAL-422" in examples
+        assert examples["VAL-422"]["value"]["error_code"] == "VAL-422"
+
+    def test_custom_openapi_preserves_app_metadata(self):
+        """_patched_openapi preserves custom FastAPI app-level metadata."""
+        app = FastAPI(
+            title="My API",
+            version="2.0.0",
+            description="Custom description",
+        )
+        init_exceptions_handlers(app)
+
+        schema = app.openapi()
+        assert schema["info"]["title"] == "My API"
+        assert schema["info"]["version"] == "2.0.0"
+
+    def test_handles_response_validation_error(self):
+        """Handles ResponseValidationError with a structured 422 response."""
+        from pydantic import BaseModel
+
+        class CountResponse(BaseModel):
+            count: int
+
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/broken", response_model=CountResponse)
+        async def broken():
+            return {"count": "not-a-number"}  # triggers ResponseValidationError
+
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/broken")
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["status"] == "FAIL"
+        assert data["error_code"] == "VAL-422"
+        assert "errors" in data["data"]
+
+    def test_handles_validation_error_with_non_standard_loc(self):
+        """Validation error with empty loc tuple maps the field to 'root'."""
+        from fastapi.exceptions import RequestValidationError
+
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/root-error")
+        async def root_error():
+            raise RequestValidationError(
+                [
+                    {
+                        "type": "custom",
+                        "loc": (),
+                        "msg": "root level error",
+                        "input": None,
+                        "url": "",
+                    }
+                ]
+            )
+
+        client = TestClient(app)
+        response = client.get("/root-error")
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["data"]["errors"][0]["field"] == "root"
+
+    def test_openapi_schema_cached_after_first_call(self):
+        """app.openapi() returns the cached schema on subsequent calls."""
+        from pydantic import BaseModel
+
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        class Item(BaseModel):
+            name: str
+
+        @app.post("/items")
+        async def create_item(item: Item):
+            return item
+
+        schema_first = app.openapi()
+        schema_second = app.openapi()
+        assert schema_first is schema_second
+
+    def test_openapi_skips_operations_without_422(self):
+        """_patched_openapi leaves operations that have no 422 response unchanged."""
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/ping")
+        async def ping():
+            return {"ok": True}
+
+        schema = app.openapi()
+        get_op = schema["paths"]["/ping"]["get"]
+        assert "422" not in get_op["responses"]
+        assert "200" in get_op["responses"]
+
+    def test_openapi_skips_non_dict_path_item_values(self):
+        """_patched_openapi ignores non-dict values in path items (e.g. path-level parameters)."""
+        from fastapi_toolsets.exceptions.handler import _patched_openapi
+
+        app = FastAPI()
+
+        def fake_openapi() -> dict:
+            return {
+                "paths": {
+                    "/items": {
+                        "parameters": [
+                            {"name": "q", "in": "query"}
+                        ],  # list, not a dict
+                        "get": {"responses": {"200": {"description": "OK"}}},
+                    }
+                }
+            }
+
+        schema = _patched_openapi(app, fake_openapi)
+        # The list value was skipped without error; the GET operation is intact
+        assert schema["paths"]["/items"]["parameters"] == [{"name": "q", "in": "query"}]
+        assert "422" not in schema["paths"]["/items"]["get"]["responses"]
 
 
 class TestExceptionIntegration:
@@ -352,12 +741,12 @@ class TestInvalidOrderFieldError:
         assert error.field == "unknown"
         assert error.valid_fields == ["name", "created_at"]
 
-    def test_message_contains_field_and_valid_fields(self):
-        """Exception message mentions the bad field and valid options."""
+    def test_description_contains_field_and_valid_fields(self):
+        """api_error.desc mentions the bad field and valid options."""
         error = InvalidOrderFieldError("bad_field", ["name", "email"])
-        assert "bad_field" in str(error)
-        assert "name" in str(error)
-        assert "email" in str(error)
+        assert "bad_field" in error.api_error.desc
+        assert "name" in error.api_error.desc
+        assert "email" in error.api_error.desc
 
     def test_handled_as_422_by_exception_handler(self):
         """init_exceptions_handlers turns InvalidOrderFieldError into a 422 response."""

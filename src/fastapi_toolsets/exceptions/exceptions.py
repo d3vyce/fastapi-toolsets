@@ -6,32 +6,46 @@ from ..schemas import ApiError, ErrorResponse, ResponseStatus
 
 
 class ApiException(Exception):
-    """Base exception for API errors with structured response.
-
-    Subclass this to create custom API exceptions with consistent error format.
-    The exception handler will use api_error to generate the response.
-
-    Example:
-        ```python
-        class CustomError(ApiException):
-            api_error = ApiError(
-                code=400,
-                msg="Bad Request",
-                desc="The request was invalid.",
-                err_code="CUSTOM-400",
-            )
-        ```
-    """
+    """Base exception for API errors with structured response."""
 
     api_error: ClassVar[ApiError]
 
-    def __init__(self, detail: str | None = None):
+    def __init_subclass__(cls, abstract: bool = False, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if not abstract and not hasattr(cls, "api_error"):
+            raise TypeError(
+                f"{cls.__name__} must define an 'api_error' class attribute. "
+                "Pass abstract=True when creating intermediate base classes."
+            )
+
+    def __init__(
+        self,
+        detail: str | None = None,
+        *,
+        desc: str | None = None,
+        data: Any = None,
+    ) -> None:
         """Initialize the exception.
 
         Args:
-            detail: Optional override for the error message
+            detail: Optional human-readable message
+            desc: Optional per-instance override for the ``description`` field
+                in the HTTP response body.
+            data: Optional per-instance override for the ``data`` field in the
+                HTTP response body.
         """
-        super().__init__(detail or self.api_error.msg)
+        updates: dict[str, Any] = {}
+        if detail is not None:
+            updates["msg"] = detail
+        if desc is not None:
+            updates["desc"] = desc
+        if data is not None:
+            updates["data"] = data
+        if updates:
+            object.__setattr__(
+                self, "api_error", self.__class__.api_error.model_copy(update=updates)
+            )
+        super().__init__(self.api_error.msg)
 
 
 class UnauthorizedError(ApiException):
@@ -92,14 +106,15 @@ class NoSearchableFieldsError(ApiException):
         """Initialize the exception.
 
         Args:
-            model: The SQLAlchemy model class that has no searchable fields
+            model: The model class that has no searchable fields configured.
         """
         self.model = model
-        detail = (
-            f"No searchable fields found for model '{model.__name__}'. "
-            "Provide 'search_fields' parameter or set 'searchable_fields' on the CRUD class."
+        super().__init__(
+            desc=(
+                f"No searchable fields found for model '{model.__name__}'. "
+                "Provide 'search_fields' parameter or set 'searchable_fields' on the CRUD class."
+            )
         )
-        super().__init__(detail)
 
 
 class InvalidFacetFilterError(ApiException):
@@ -116,16 +131,17 @@ class InvalidFacetFilterError(ApiException):
         """Initialize the exception.
 
         Args:
-            key: The unknown filter key provided by the caller
-            valid_keys: Set of valid keys derived from the declared facet_fields
+            key: The unknown filter key provided by the caller.
+            valid_keys: Set of valid keys derived from the declared facet_fields.
         """
         self.key = key
         self.valid_keys = valid_keys
-        detail = (
-            f"'{key}' is not a declared facet field. "
-            f"Valid keys: {sorted(valid_keys) or 'none — set facet_fields on the CRUD class'}."
+        super().__init__(
+            desc=(
+                f"'{key}' is not a declared facet field. "
+                f"Valid keys: {sorted(valid_keys) or 'none — set facet_fields on the CRUD class'}."
+            )
         )
-        super().__init__(detail)
 
 
 class InvalidOrderFieldError(ApiException):
@@ -142,15 +158,14 @@ class InvalidOrderFieldError(ApiException):
         """Initialize the exception.
 
         Args:
-            field: The unknown order field provided by the caller
-            valid_fields: List of valid field names
+            field: The unknown order field provided by the caller.
+            valid_fields: List of valid field names.
         """
         self.field = field
         self.valid_fields = valid_fields
-        detail = (
-            f"'{field}' is not an allowed order field. Valid fields: {valid_fields}."
+        super().__init__(
+            desc=f"'{field}' is not an allowed order field. Valid fields: {valid_fields}."
         )
-        super().__init__(detail)
 
 
 def generate_error_responses(
@@ -158,44 +173,39 @@ def generate_error_responses(
 ) -> dict[int | str, dict[str, Any]]:
     """Generate OpenAPI response documentation for exceptions.
 
-    Use this to document possible error responses for an endpoint.
-
     Args:
-        *errors: Exception classes that inherit from ApiException
+        *errors: Exception classes that inherit from ApiException.
 
     Returns:
-        Dict suitable for FastAPI's responses parameter
-
-    Example:
-        ```python
-        from fastapi_toolsets.exceptions import generate_error_responses, UnauthorizedError, ForbiddenError
-
-        @app.get(
-            "/admin",
-            responses=generate_error_responses(UnauthorizedError, ForbiddenError)
-        )
-        async def admin_endpoint():
-            ...
-        ```
+        Dict suitable for FastAPI's ``responses`` parameter.
     """
     responses: dict[int | str, dict[str, Any]] = {}
 
     for error in errors:
         api_error = error.api_error
+        code = api_error.code
 
-        responses[api_error.code] = {
-            "model": ErrorResponse,
-            "description": api_error.msg,
-            "content": {
-                "application/json": {
-                    "example": {
-                        "data": api_error.data,
-                        "status": ResponseStatus.FAIL.value,
-                        "message": api_error.msg,
-                        "description": api_error.desc,
-                        "error_code": api_error.err_code,
+        if code not in responses:
+            responses[code] = {
+                "model": ErrorResponse,
+                "description": api_error.msg,
+                "content": {
+                    "application/json": {
+                        "examples": {},
                     }
-                }
+                },
+            }
+
+        responses[code]["content"]["application/json"]["examples"][
+            api_error.err_code
+        ] = {
+            "summary": api_error.msg,
+            "value": {
+                "data": api_error.data,
+                "status": ResponseStatus.FAIL.value,
+                "message": api_error.msg,
+                "description": api_error.desc,
+                "error_code": api_error.err_code,
             },
         }
 
