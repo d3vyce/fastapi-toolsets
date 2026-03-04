@@ -53,17 +53,23 @@ def init_metrics(
         logger.debug("Initialising metric provider '%s'", provider.name)
         provider.func()
 
-    collectors = registry.get_collectors()
+    # Partition collectors and cache env check at startup — both are stable for the app lifetime.
+    async_collectors = [
+        c for c in registry.get_collectors() if asyncio.iscoroutinefunction(c.func)
+    ]
+    sync_collectors = [
+        c for c in registry.get_collectors() if not asyncio.iscoroutinefunction(c.func)
+    ]
+    multiprocess_mode = _is_multiprocess()
 
     @app.get(path, include_in_schema=False)
     async def metrics_endpoint() -> Response:
-        for collector in collectors:
-            if asyncio.iscoroutinefunction(collector.func):
-                await collector.func()
-            else:
-                collector.func()
+        for collector in sync_collectors:
+            collector.func()
+        for collector in async_collectors:
+            await collector.func()
 
-        if _is_multiprocess():
+        if multiprocess_mode:
             prom_registry = CollectorRegistry()
             multiprocess.MultiProcessCollector(prom_registry)
             output = generate_latest(prom_registry)

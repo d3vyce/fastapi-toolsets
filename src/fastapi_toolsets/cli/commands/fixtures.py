@@ -72,7 +72,7 @@ async def load(
     registry = get_fixtures_registry()
     db_context = get_db_context()
 
-    context_list = [c.value for c in contexts] if contexts else [Context.BASE]
+    context_list = list(contexts) if contexts else [Context.BASE]
 
     ordered = registry.resolve_context_dependencies(*context_list)
 

@@ -6,11 +6,10 @@ import base64
 import inspect
 import json
 import uuid as uuid_module
-import warnings
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, ClassVar, Generic, Literal, Self, TypeVar, cast, overload
+from typing import Any, ClassVar, Generic, Literal, Self, cast, overload
 
 from fastapi import Query
 from pydantic import BaseModel
@@ -21,27 +20,27 @@ from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, QueryableAttribute, selectinload
 from sqlalchemy.sql.base import ExecutableOption
-from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.roles import WhereHavingRole
 
 from ..db import get_transaction
 from ..exceptions import InvalidOrderFieldError, NotFoundError
 from ..schemas import CursorPagination, OffsetPagination, PaginatedResponse, Response
-from .search import (
+from ..types import (
     FacetFieldType,
-    SearchConfig,
+    JoinType,
+    M2MFieldType,
+    ModelType,
+    OrderByClause,
+    SchemaType,
     SearchFieldType,
+)
+from .search import (
+    SearchConfig,
     build_facets,
     build_filter_by,
     build_search_filters,
     facet_keys,
 )
-
-ModelType = TypeVar("ModelType", bound=DeclarativeBase)
-SchemaType = TypeVar("SchemaType", bound=BaseModel)
-JoinType = list[tuple[type[DeclarativeBase], Any]]
-M2MFieldType = Mapping[str, QueryableAttribute[Any]]
-OrderByClause = ColumnElement[Any] | QueryableAttribute[Any]
 
 
 def _encode_cursor(value: Any) -> str:
@@ -52,6 +51,22 @@ def _encode_cursor(value: Any) -> str:
 def _decode_cursor(cursor: str) -> str:
     """Decode cursor base64 string."""
     return json.loads(base64.b64decode(cursor.encode()).decode())
+
+
+def _apply_joins(q: Any, joins: JoinType | None, outer_join: bool) -> Any:
+    """Apply a list of (model, condition) joins to a SQLAlchemy select query."""
+    if not joins:
+        return q
+    for model, condition in joins:
+        q = q.outerjoin(model, condition) if outer_join else q.join(model, condition)
+    return q
+
+
+def _apply_search_joins(q: Any, search_joins: list[Any]) -> Any:
+    """Apply relationship-based outer joins (from search/filter_by) to a query."""
+    for join_rel in search_joins:
+        q = q.outerjoin(join_rel)
+    return q
 
 
 class AsyncCrud(Generic[ModelType]):
@@ -134,6 +149,48 @@ class AsyncCrud(Generic[ModelType]):
         return set(cls.m2m_fields.keys())
 
     @classmethod
+    def _resolve_facet_fields(
+        cls: type[Self],
+        facet_fields: Sequence[FacetFieldType] | None,
+    ) -> Sequence[FacetFieldType] | None:
+        """Return facet_fields if given, otherwise fall back to the class-level default."""
+        return facet_fields if facet_fields is not None else cls.facet_fields
+
+    @classmethod
+    def _prepare_filter_by(
+        cls: type[Self],
+        filter_by: dict[str, Any] | BaseModel | None,
+        facet_fields: Sequence[FacetFieldType] | None,
+    ) -> tuple[list[Any], list[Any]]:
+        """Normalize filter_by and return (filters, joins) to apply to the query."""
+        if isinstance(filter_by, BaseModel):
+            filter_by = filter_by.model_dump(exclude_none=True)
+        if not filter_by:
+            return [], []
+        resolved = cls._resolve_facet_fields(facet_fields)
+        return build_filter_by(filter_by, resolved or [])
+
+    @classmethod
+    async def _build_filter_attributes(
+        cls: type[Self],
+        session: AsyncSession,
+        facet_fields: Sequence[FacetFieldType] | None,
+        filters: list[Any],
+        search_joins: list[Any],
+    ) -> dict[str, list[Any]] | None:
+        """Build facet filter_attributes, or return None if no facet fields configured."""
+        resolved = cls._resolve_facet_fields(facet_fields)
+        if not resolved:
+            return None
+        return await build_facets(
+            session,
+            cls.model,
+            resolved,
+            base_filters=filters,
+            base_joins=search_joins,
+        )
+
+    @classmethod
     def filter_params(
         cls: type[Self],
         *,
@@ -153,7 +210,7 @@ class AsyncCrud(Generic[ModelType]):
             ValueError: If no facet fields are configured on this CRUD class and none are
                 provided via ``facet_fields``.
         """
-        fields = facet_fields if facet_fields is not None else cls.facet_fields
+        fields = cls._resolve_facet_fields(facet_fields)
         if not fields:
             raise ValueError(
                 f"{cls.__name__} has no facet_fields configured. "
@@ -244,10 +301,8 @@ class AsyncCrud(Generic[ModelType]):
         obj: BaseModel,
         *,
         schema: type[SchemaType],
-        as_response: bool = ...,
     ) -> Response[SchemaType]: ...
 
-    # Backward-compatible - will be removed in v2.0
     @overload
     @classmethod
     async def create(  # pragma: no cover
@@ -255,18 +310,6 @@ class AsyncCrud(Generic[ModelType]):
         session: AsyncSession,
         obj: BaseModel,
         *,
-        as_response: Literal[True],
-        schema: None = ...,
-    ) -> Response[ModelType]: ...
-
-    @overload
-    @classmethod
-    async def create(  # pragma: no cover
-        cls: type[Self],
-        session: AsyncSession,
-        obj: BaseModel,
-        *,
-        as_response: Literal[False] = ...,
         schema: None = ...,
     ) -> ModelType: ...
 
@@ -276,29 +319,19 @@ class AsyncCrud(Generic[ModelType]):
         session: AsyncSession,
         obj: BaseModel,
         *,
-        as_response: bool = False,
         schema: type[BaseModel] | None = None,
-    ) -> ModelType | Response[ModelType] | Response[Any]:
+    ) -> ModelType | Response[Any]:
         """Create a new record in the database.
 
         Args:
             session: DB async session
             obj: Pydantic model with data to create
-            as_response: Deprecated. Use ``schema`` instead. Will be removed in v2.0.
             schema: Pydantic schema to serialize the result into. When provided,
                 the result is automatically wrapped in a ``Response[schema]``.
 
         Returns:
-            Created model instance, or ``Response[schema]`` when ``schema`` is given,
-            or ``Response[ModelType]`` when ``as_response=True`` (deprecated).
+            Created model instance, or ``Response[schema]`` when ``schema`` is given.
         """
-        if as_response and schema is None:
-            warnings.warn(
-                "as_response is deprecated and will be removed in v2.0. "
-                "Use schema=YourSchema instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         async with get_transaction(session):
             m2m_exclude = cls._m2m_schema_fields()
             data = (
@@ -314,9 +347,8 @@ class AsyncCrud(Generic[ModelType]):
             session.add(db_model)
         await session.refresh(db_model)
         result = cast(ModelType, db_model)
-        if as_response or schema:
-            data_out = schema.model_validate(result) if schema else result
-            return Response(data=data_out)
+        if schema:
+            return Response(data=schema.model_validate(result))
         return result
 
     @overload
@@ -331,10 +363,8 @@ class AsyncCrud(Generic[ModelType]):
         with_for_update: bool = False,
         load_options: list[ExecutableOption] | None = None,
         schema: type[SchemaType],
-        as_response: bool = ...,
     ) -> Response[SchemaType]: ...
 
-    # Backward-compatible - will be removed in v2.0
     @overload
     @classmethod
     async def get(  # pragma: no cover
@@ -346,22 +376,6 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         with_for_update: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        as_response: Literal[True],
-        schema: None = ...,
-    ) -> Response[ModelType]: ...
-
-    @overload
-    @classmethod
-    async def get(  # pragma: no cover
-        cls: type[Self],
-        session: AsyncSession,
-        filters: list[Any],
-        *,
-        joins: JoinType | None = None,
-        outer_join: bool = False,
-        with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
-        as_response: Literal[False] = ...,
         schema: None = ...,
     ) -> ModelType: ...
 
@@ -375,9 +389,8 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         with_for_update: bool = False,
         load_options: list[ExecutableOption] | None = None,
-        as_response: bool = False,
         schema: type[BaseModel] | None = None,
-    ) -> ModelType | Response[ModelType] | Response[Any]:
+    ) -> ModelType | Response[Any]:
         """Get exactly one record. Raises NotFoundError if not found.
 
         Args:
@@ -387,33 +400,18 @@ class AsyncCrud(Generic[ModelType]):
             outer_join: Use LEFT OUTER JOIN instead of INNER JOIN
             with_for_update: Lock the row for update
             load_options: SQLAlchemy loader options (e.g., selectinload)
-            as_response: Deprecated. Use ``schema`` instead. Will be removed in v2.0.
             schema: Pydantic schema to serialize the result into. When provided,
                 the result is automatically wrapped in a ``Response[schema]``.
 
         Returns:
-            Model instance, or ``Response[schema]`` when ``schema`` is given,
-            or ``Response[ModelType]`` when ``as_response=True`` (deprecated).
+            Model instance, or ``Response[schema]`` when ``schema`` is given.
 
         Raises:
             NotFoundError: If no record found
             MultipleResultsFound: If more than one record found
         """
-        if as_response and schema is None:
-            warnings.warn(
-                "as_response is deprecated and will be removed in v2.0. "
-                "Use schema=YourSchema instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         q = select(cls.model)
-        if joins:
-            for model, condition in joins:
-                q = (
-                    q.outerjoin(model, condition)
-                    if outer_join
-                    else q.join(model, condition)
-                )
+        q = _apply_joins(q, joins, outer_join)
         q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
@@ -424,9 +422,8 @@ class AsyncCrud(Generic[ModelType]):
         if not item:
             raise NotFoundError()
         result = cast(ModelType, item)
-        if as_response or schema:
-            data_out = schema.model_validate(result) if schema else result
-            return Response(data=data_out)
+        if schema:
+            return Response(data=schema.model_validate(result))
         return result
 
     @classmethod
@@ -452,13 +449,7 @@ class AsyncCrud(Generic[ModelType]):
             Model instance or None
         """
         q = select(cls.model)
-        if joins:
-            for model, condition in joins:
-                q = (
-                    q.outerjoin(model, condition)
-                    if outer_join
-                    else q.join(model, condition)
-                )
+        q = _apply_joins(q, joins, outer_join)
         if filters:
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
@@ -495,13 +486,7 @@ class AsyncCrud(Generic[ModelType]):
             List of model instances
         """
         q = select(cls.model)
-        if joins:
-            for model, condition in joins:
-                q = (
-                    q.outerjoin(model, condition)
-                    if outer_join
-                    else q.join(model, condition)
-                )
+        q = _apply_joins(q, joins, outer_join)
         if filters:
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
@@ -526,10 +511,8 @@ class AsyncCrud(Generic[ModelType]):
         exclude_unset: bool = True,
         exclude_none: bool = False,
         schema: type[SchemaType],
-        as_response: bool = ...,
     ) -> Response[SchemaType]: ...
 
-    # Backward-compatible - will be removed in v2.0
     @overload
     @classmethod
     async def update(  # pragma: no cover
@@ -540,21 +523,6 @@ class AsyncCrud(Generic[ModelType]):
         *,
         exclude_unset: bool = True,
         exclude_none: bool = False,
-        as_response: Literal[True],
-        schema: None = ...,
-    ) -> Response[ModelType]: ...
-
-    @overload
-    @classmethod
-    async def update(  # pragma: no cover
-        cls: type[Self],
-        session: AsyncSession,
-        obj: BaseModel,
-        filters: list[Any],
-        *,
-        exclude_unset: bool = True,
-        exclude_none: bool = False,
-        as_response: Literal[False] = ...,
         schema: None = ...,
     ) -> ModelType: ...
 
@@ -567,9 +535,8 @@ class AsyncCrud(Generic[ModelType]):
         *,
         exclude_unset: bool = True,
         exclude_none: bool = False,
-        as_response: bool = False,
         schema: type[BaseModel] | None = None,
-    ) -> ModelType | Response[ModelType] | Response[Any]:
+    ) -> ModelType | Response[Any]:
         """Update a record in the database.
 
         Args:
@@ -578,24 +545,15 @@ class AsyncCrud(Generic[ModelType]):
             filters: List of SQLAlchemy filter conditions
             exclude_unset: Exclude fields not explicitly set in the schema
             exclude_none: Exclude fields with None value
-            as_response: Deprecated. Use ``schema`` instead. Will be removed in v2.0.
             schema: Pydantic schema to serialize the result into. When provided,
                 the result is automatically wrapped in a ``Response[schema]``.
 
         Returns:
-            Updated model instance, or ``Response[schema]`` when ``schema`` is given,
-            or ``Response[ModelType]`` when ``as_response=True`` (deprecated).
+            Updated model instance, or ``Response[schema]`` when ``schema`` is given.
 
         Raises:
             NotFoundError: If no record found
         """
-        if as_response and schema is None:
-            warnings.warn(
-                "as_response is deprecated and will be removed in v2.0. "
-                "Use schema=YourSchema instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         async with get_transaction(session):
             m2m_exclude = cls._m2m_schema_fields()
 
@@ -625,9 +583,8 @@ class AsyncCrud(Generic[ModelType]):
                 for rel_attr, related_instances in m2m_resolved.items():
                     setattr(db_model, rel_attr, related_instances)
         await session.refresh(db_model)
-        if as_response or schema:
-            data_out = schema.model_validate(db_model) if schema else db_model
-            return Response(data=data_out)
+        if schema:
+            return Response(data=schema.model_validate(db_model))
         return db_model
 
     @classmethod
@@ -683,7 +640,7 @@ class AsyncCrud(Generic[ModelType]):
         session: AsyncSession,
         filters: list[Any],
         *,
-        as_response: Literal[True],
+        return_response: Literal[True],
     ) -> Response[None]: ...
 
     @overload
@@ -693,8 +650,8 @@ class AsyncCrud(Generic[ModelType]):
         session: AsyncSession,
         filters: list[Any],
         *,
-        as_response: Literal[False] = ...,
-    ) -> bool: ...
+        return_response: Literal[False] = ...,
+    ) -> None: ...
 
     @classmethod
     async def delete(
@@ -702,33 +659,26 @@ class AsyncCrud(Generic[ModelType]):
         session: AsyncSession,
         filters: list[Any],
         *,
-        as_response: bool = False,
-    ) -> bool | Response[None]:
+        return_response: bool = False,
+    ) -> None | Response[None]:
         """Delete records from the database.
 
         Args:
             session: DB async session
             filters: List of SQLAlchemy filter conditions
-            as_response: Deprecated. Will be removed in v2.0. When ``True``,
-                returns ``Response[None]`` instead of ``bool``.
+            return_response: When ``True``, returns ``Response[None]`` instead
+                of ``None``. Useful for API endpoints that expect a consistent
+                response envelope.
 
         Returns:
-            ``True`` if deletion was executed, or ``Response[None]`` when
-            ``as_response=True`` (deprecated).
+            ``None``, or ``Response[None]`` when ``return_response=True``.
         """
-        if as_response:
-            warnings.warn(
-                "as_response is deprecated and will be removed in v2.0. "
-                "Use schema=YourSchema instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         async with get_transaction(session):
             q = sql_delete(cls.model).where(and_(*filters))
             await session.execute(q)
-        if as_response:
+        if return_response:
             return Response(data=None)
-        return True
+        return None
 
     @classmethod
     async def count(
@@ -751,13 +701,7 @@ class AsyncCrud(Generic[ModelType]):
             Number of matching records
         """
         q = select(func.count()).select_from(cls.model)
-        if joins:
-            for model, condition in joins:
-                q = (
-                    q.outerjoin(model, condition)
-                    if outer_join
-                    else q.join(model, condition)
-                )
+        q = _apply_joins(q, joins, outer_join)
         if filters:
             q = q.where(and_(*filters))
         result = await session.execute(q)
@@ -784,57 +728,10 @@ class AsyncCrud(Generic[ModelType]):
             True if at least one record matches
         """
         q = select(cls.model)
-        if joins:
-            for model, condition in joins:
-                q = (
-                    q.outerjoin(model, condition)
-                    if outer_join
-                    else q.join(model, condition)
-                )
+        q = _apply_joins(q, joins, outer_join)
         q = q.where(and_(*filters)).exists().select()
         result = await session.execute(q)
         return bool(result.scalar())
-
-    @overload
-    @classmethod
-    async def offset_paginate(  # pragma: no cover
-        cls: type[Self],
-        session: AsyncSession,
-        *,
-        filters: list[Any] | None = None,
-        joins: JoinType | None = None,
-        outer_join: bool = False,
-        load_options: list[ExecutableOption] | None = None,
-        order_by: OrderByClause | None = None,
-        page: int = 1,
-        items_per_page: int = 20,
-        search: str | SearchConfig | None = None,
-        search_fields: Sequence[SearchFieldType] | None = None,
-        facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | BaseModel | None = None,
-        schema: type[SchemaType],
-    ) -> PaginatedResponse[SchemaType]: ...
-
-    # Backward-compatible - will be removed in v2.0
-    @overload
-    @classmethod
-    async def offset_paginate(  # pragma: no cover
-        cls: type[Self],
-        session: AsyncSession,
-        *,
-        filters: list[Any] | None = None,
-        joins: JoinType | None = None,
-        outer_join: bool = False,
-        load_options: list[ExecutableOption] | None = None,
-        order_by: OrderByClause | None = None,
-        page: int = 1,
-        items_per_page: int = 20,
-        search: str | SearchConfig | None = None,
-        search_fields: Sequence[SearchFieldType] | None = None,
-        facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | BaseModel | None = None,
-        schema: None = ...,
-    ) -> PaginatedResponse[ModelType]: ...
 
     @classmethod
     async def offset_paginate(
@@ -852,8 +749,8 @@ class AsyncCrud(Generic[ModelType]):
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
-        schema: type[BaseModel] | None = None,
-    ) -> PaginatedResponse[ModelType] | PaginatedResponse[Any]:
+        schema: type[BaseModel],
+    ) -> PaginatedResponse[Any]:
         """Get paginated results using offset-based pagination.
 
         Args:
@@ -871,54 +768,36 @@ class AsyncCrud(Generic[ModelType]):
             filter_by: Dict of {column_key: value} to filter by declared facet fields.
                 Keys must match the column.key of a facet field. Scalar → equality,
                 list → IN clause. Raises InvalidFacetFilterError for unknown keys.
-            schema: Optional Pydantic schema to serialize each item into.
+            schema: Pydantic schema to serialize each item into.
 
         Returns:
             PaginatedResponse with OffsetPagination metadata
         """
         filters = list(filters) if filters else []
         offset = (page - 1) * items_per_page
-        search_joins: list[Any] = []
 
-        if isinstance(filter_by, BaseModel):
-            filter_by = filter_by.model_dump(exclude_none=True) or None
-
-        # Build filter_by conditions from declared facet fields
-        if filter_by:
-            resolved_facets_for_filter = (
-                facet_fields if facet_fields is not None else cls.facet_fields
-            )
-            fb_filters, fb_joins = build_filter_by(
-                filter_by, resolved_facets_for_filter or []
-            )
-            filters.extend(fb_filters)
-            search_joins.extend(fb_joins)
+        fb_filters, search_joins = cls._prepare_filter_by(filter_by, facet_fields)
+        filters.extend(fb_filters)
 
         # Build search filters
         if search:
-            search_filters, search_joins = build_search_filters(
+            search_filters, new_search_joins = build_search_filters(
                 cls.model,
                 search,
                 search_fields=search_fields,
                 default_fields=cls.searchable_fields,
             )
             filters.extend(search_filters)
+            search_joins.extend(new_search_joins)
 
         # Build query with joins
         q = select(cls.model)
 
         # Apply explicit joins
-        if joins:
-            for model, condition in joins:
-                q = (
-                    q.outerjoin(model, condition)
-                    if outer_join
-                    else q.join(model, condition)
-                )
+        q = _apply_joins(q, joins, outer_join)
 
         # Apply search joins (always outer joins for search)
-        for join_rel in search_joins:
-            q = q.outerjoin(join_rel)
+        q = _apply_search_joins(q, search_joins)
 
         if filters:
             q = q.where(and_(*filters))
@@ -930,9 +809,7 @@ class AsyncCrud(Generic[ModelType]):
         q = q.offset(offset).limit(items_per_page)
         result = await session.execute(q)
         raw_items = cast(list[ModelType], result.unique().scalars().all())
-        items: list[Any] = (
-            [schema.model_validate(item) for item in raw_items] if schema else raw_items
-        )
+        items: list[Any] = [schema.model_validate(item) for item in raw_items]
 
         # Count query (with same joins and filters)
         pk_col = cls.model.__mapper__.primary_key[0]
@@ -940,17 +817,10 @@ class AsyncCrud(Generic[ModelType]):
         count_q = count_q.select_from(cls.model)
 
         # Apply explicit joins to count query
-        if joins:
-            for model, condition in joins:
-                count_q = (
-                    count_q.outerjoin(model, condition)
-                    if outer_join
-                    else count_q.join(model, condition)
-                )
+        count_q = _apply_joins(count_q, joins, outer_join)
 
         # Apply search joins to count query
-        for join_rel in search_joins:
-            count_q = count_q.outerjoin(join_rel)
+        count_q = _apply_search_joins(count_q, search_joins)
 
         if filters:
             count_q = count_q.where(and_(*filters))
@@ -958,19 +828,9 @@ class AsyncCrud(Generic[ModelType]):
         count_result = await session.execute(count_q)
         total_count = count_result.scalar_one()
 
-        # Build facets
-        resolved_facet_fields = (
-            facet_fields if facet_fields is not None else cls.facet_fields
+        filter_attributes = await cls._build_filter_attributes(
+            session, facet_fields, filters, search_joins
         )
-        filter_attributes: dict[str, list[Any]] | None = None
-        if resolved_facet_fields:
-            filter_attributes = await build_facets(
-                session,
-                cls.model,
-                resolved_facet_fields,
-                base_filters=filters or None,
-                base_joins=search_joins or None,
-            )
 
         return PaginatedResponse(
             data=items,
@@ -982,50 +842,6 @@ class AsyncCrud(Generic[ModelType]):
             ),
             filter_attributes=filter_attributes,
         )
-
-    # Backward-compatible - will be removed in v2.0
-    paginate = offset_paginate
-
-    @overload
-    @classmethod
-    async def cursor_paginate(  # pragma: no cover
-        cls: type[Self],
-        session: AsyncSession,
-        *,
-        cursor: str | None = None,
-        filters: list[Any] | None = None,
-        joins: JoinType | None = None,
-        outer_join: bool = False,
-        load_options: list[ExecutableOption] | None = None,
-        order_by: OrderByClause | None = None,
-        items_per_page: int = 20,
-        search: str | SearchConfig | None = None,
-        search_fields: Sequence[SearchFieldType] | None = None,
-        facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | BaseModel | None = None,
-        schema: type[SchemaType],
-    ) -> PaginatedResponse[SchemaType]: ...
-
-    # Backward-compatible - will be removed in v2.0
-    @overload
-    @classmethod
-    async def cursor_paginate(  # pragma: no cover
-        cls: type[Self],
-        session: AsyncSession,
-        *,
-        cursor: str | None = None,
-        filters: list[Any] | None = None,
-        joins: JoinType | None = None,
-        outer_join: bool = False,
-        load_options: list[ExecutableOption] | None = None,
-        order_by: OrderByClause | None = None,
-        items_per_page: int = 20,
-        search: str | SearchConfig | None = None,
-        search_fields: Sequence[SearchFieldType] | None = None,
-        facet_fields: Sequence[FacetFieldType] | None = None,
-        filter_by: dict[str, Any] | BaseModel | None = None,
-        schema: None = ...,
-    ) -> PaginatedResponse[ModelType]: ...
 
     @classmethod
     async def cursor_paginate(
@@ -1043,8 +859,8 @@ class AsyncCrud(Generic[ModelType]):
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
-        schema: type[BaseModel] | None = None,
-    ) -> PaginatedResponse[ModelType] | PaginatedResponse[Any]:
+        schema: type[BaseModel],
+    ) -> PaginatedResponse[Any]:
         """Get paginated results using cursor-based pagination.
 
         Args:
@@ -1071,21 +887,9 @@ class AsyncCrud(Generic[ModelType]):
             PaginatedResponse with CursorPagination metadata
         """
         filters = list(filters) if filters else []
-        search_joins: list[Any] = []
 
-        if isinstance(filter_by, BaseModel):
-            filter_by = filter_by.model_dump(exclude_none=True) or None
-
-        # Build filter_by conditions from declared facet fields
-        if filter_by:
-            resolved_facets_for_filter = (
-                facet_fields if facet_fields is not None else cls.facet_fields
-            )
-            fb_filters, fb_joins = build_filter_by(
-                filter_by, resolved_facets_for_filter or []
-            )
-            filters.extend(fb_filters)
-            search_joins.extend(fb_joins)
+        fb_filters, search_joins = cls._prepare_filter_by(filter_by, facet_fields)
+        filters.extend(fb_filters)
 
         if cls.cursor_column is None:
             raise ValueError(
@@ -1118,29 +922,23 @@ class AsyncCrud(Generic[ModelType]):
 
         # Build search filters
         if search:
-            search_filters, search_joins = build_search_filters(
+            search_filters, new_search_joins = build_search_filters(
                 cls.model,
                 search,
                 search_fields=search_fields,
                 default_fields=cls.searchable_fields,
             )
             filters.extend(search_filters)
+            search_joins.extend(new_search_joins)
 
         # Build query
         q = select(cls.model)
 
         # Apply explicit joins
-        if joins:
-            for model, condition in joins:
-                q = (
-                    q.outerjoin(model, condition)
-                    if outer_join
-                    else q.join(model, condition)
-                )
+        q = _apply_joins(q, joins, outer_join)
 
         # Apply search joins (always outer joins)
-        for join_rel in search_joins:
-            q = q.outerjoin(join_rel)
+        q = _apply_search_joins(q, search_joins)
 
         if filters:
             q = q.where(and_(*filters))
@@ -1170,25 +968,11 @@ class AsyncCrud(Generic[ModelType]):
         if cursor is not None and items_page:
             prev_cursor = _encode_cursor(getattr(items_page[0], cursor_col_name))
 
-        items: list[Any] = (
-            [schema.model_validate(item) for item in items_page]
-            if schema
-            else items_page
-        )
+        items: list[Any] = [schema.model_validate(item) for item in items_page]
 
-        # Build facets
-        resolved_facet_fields = (
-            facet_fields if facet_fields is not None else cls.facet_fields
+        filter_attributes = await cls._build_filter_attributes(
+            session, facet_fields, filters, search_joins
         )
-        filter_attributes: dict[str, list[Any]] | None = None
-        if resolved_facet_fields:
-            filter_attributes = await build_facets(
-                session,
-                cls.model,
-                resolved_facet_fields,
-                base_filters=filters or None,
-                base_joins=search_joins or None,
-            )
 
         return PaginatedResponse(
             data=items,

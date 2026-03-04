@@ -1,23 +1,22 @@
 """Base Pydantic schemas for API responses."""
 
 from enum import Enum
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic
 
 from pydantic import BaseModel, ConfigDict
+
+from .types import DataT
 
 __all__ = [
     "ApiError",
     "CursorPagination",
     "ErrorResponse",
     "OffsetPagination",
-    "Pagination",
     "PaginatedResponse",
     "PydanticBase",
     "Response",
     "ResponseStatus",
 ]
-
-DataT = TypeVar("DataT")
 
 
 class PydanticBase(BaseModel):
@@ -106,10 +105,6 @@ class OffsetPagination(PydanticBase):
     items_per_page: int
     page: int
     has_more: bool
-
-
-# Backward-compatible - will be removed in v2.0
-Pagination = OffsetPagination
 
 
 class CursorPagination(PydanticBase):

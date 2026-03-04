@@ -95,9 +95,6 @@ The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.Async
 }
 ```
 
-!!! warning "Deprecated: `paginate`"
-    The `paginate` function is a backward-compatible alias for `offset_paginate`. This function is **deprecated** and will be removed in **v2.0**.
-
 ### Cursor pagination
 
 ```python
@@ -470,9 +467,6 @@ async def list_users(session: SessionDep, page: int = 1) -> PaginatedResponse[Us
 ```
 
 The schema must have `from_attributes=True` (or inherit from [`PydanticBase`](../reference/schemas.md#fastapi_toolsets.schemas.PydanticBase)) so it can be built from SQLAlchemy model instances.
-
-!!! warning "Deprecated: `as_response`"
-    The `as_response=True` parameter is **deprecated** and will be removed in **v2.0**. Replace it with `schema=YourSchema`.
 
 ---
 

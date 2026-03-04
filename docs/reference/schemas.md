@@ -1,4 +1,4 @@
-# `schemas` module
+# `schemas`
 
 Here's the reference for all response models and types provided by the `schemas` module.
 
@@ -12,7 +12,8 @@ from fastapi_toolsets.schemas import (
     BaseResponse,
     Response,
     ErrorResponse,
-    Pagination,
+    OffsetPagination,
+    CursorPagination,
     PaginatedResponse,
 )
 ```
@@ -29,6 +30,8 @@ from fastapi_toolsets.schemas import (
 
 ## ::: fastapi_toolsets.schemas.ErrorResponse
 
-## ::: fastapi_toolsets.schemas.Pagination
+## ::: fastapi_toolsets.schemas.OffsetPagination
+
+## ::: fastapi_toolsets.schemas.CursorPagination
 
 ## ::: fastapi_toolsets.schemas.PaginatedResponse

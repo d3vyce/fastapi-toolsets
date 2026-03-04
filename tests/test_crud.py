@@ -15,8 +15,10 @@ from .conftest import (
     EventCrud,
     EventDateCursorCrud,
     EventDateTimeCursorCrud,
+    EventRead,
     IntRoleCreate,
     IntRoleCursorCrud,
+    IntRoleRead,
     Post,
     PostCreate,
     PostCrud,
@@ -26,6 +28,7 @@ from .conftest import (
     ProductCreate,
     ProductCrud,
     ProductNumericCursorCrud,
+    ProductRead,
     Role,
     RoleCreate,
     RoleCrud,
@@ -169,7 +172,14 @@ class TestDefaultLoadOptionsIntegration:
     async def test_default_load_options_applied_to_paginate(
         self, db_session: AsyncSession
     ):
-        """default_load_options loads relationships automatically on paginate()."""
+        """default_load_options loads relationships automatically on offset_paginate()."""
+        from fastapi_toolsets.schemas import PydanticBase
+
+        class UserWithRoleRead(PydanticBase):
+            id: uuid.UUID
+            username: str
+            role: RoleRead | None = None
+
         UserWithDefaultLoad = CrudFactory(
             User, default_load_options=[selectinload(User.role)]
         )
@@ -178,7 +188,9 @@ class TestDefaultLoadOptionsIntegration:
             db_session,
             UserCreate(username="alice", email="alice@test.com", role_id=role.id),
         )
-        result = await UserWithDefaultLoad.paginate(db_session)
+        result = await UserWithDefaultLoad.offset_paginate(
+            db_session, schema=UserWithRoleRead
+        )
         assert result.data[0].role is not None
         assert result.data[0].role.name == "admin"
 
@@ -430,7 +442,7 @@ class TestCrudDelete:
         role = await RoleCrud.create(db_session, RoleCreate(name="to_delete"))
         result = await RoleCrud.delete(db_session, [Role.id == role.id])
 
-        assert result is True
+        assert result is None
         assert await RoleCrud.first(db_session, [Role.id == role.id]) is None
 
     @pytest.mark.anyio
@@ -453,6 +465,20 @@ class TestCrudDelete:
         remaining = await UserCrud.get_multi(db_session)
         assert len(remaining) == 1
         assert remaining[0].username == "u3"
+
+    @pytest.mark.anyio
+    async def test_delete_return_response(self, db_session: AsyncSession):
+        """Delete with return_response=True returns Response[None]."""
+        from fastapi_toolsets.schemas import Response
+
+        role = await RoleCrud.create(db_session, RoleCreate(name="to_delete_resp"))
+        result = await RoleCrud.delete(
+            db_session, [Role.id == role.id], return_response=True
+        )
+
+        assert isinstance(result, Response)
+        assert result.data is None
+        assert await RoleCrud.first(db_session, [Role.id == role.id]) is None
 
 
 class TestCrudExists:
@@ -594,7 +620,9 @@ class TestCrudPaginate:
 
         from fastapi_toolsets.schemas import OffsetPagination
 
-        result = await RoleCrud.paginate(db_session, page=1, items_per_page=10)
+        result = await RoleCrud.offset_paginate(
+            db_session, page=1, items_per_page=10, schema=RoleRead
+        )
 
         assert isinstance(result.pagination, OffsetPagination)
         assert len(result.data) == 10
@@ -609,7 +637,9 @@ class TestCrudPaginate:
         for i in range(25):
             await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
 
-        result = await RoleCrud.paginate(db_session, page=3, items_per_page=10)
+        result = await RoleCrud.offset_paginate(
+            db_session, page=3, items_per_page=10, schema=RoleRead
+        )
 
         assert len(result.data) == 5
         assert result.pagination.has_more is False
@@ -629,11 +659,12 @@ class TestCrudPaginate:
 
         from fastapi_toolsets.schemas import OffsetPagination
 
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             filters=[User.is_active == True],  # noqa: E712
             page=1,
             items_per_page=10,
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -646,11 +677,12 @@ class TestCrudPaginate:
         await RoleCrud.create(db_session, RoleCreate(name="alpha"))
         await RoleCrud.create(db_session, RoleCreate(name="bravo"))
 
-        result = await RoleCrud.paginate(
+        result = await RoleCrud.offset_paginate(
             db_session,
             order_by=Role.name,
             page=1,
             items_per_page=10,
+            schema=RoleRead,
         )
 
         names = [r.name for r in result.data]
@@ -855,12 +887,13 @@ class TestCrudJoins:
         from fastapi_toolsets.schemas import OffsetPagination
 
         # Paginate users with published posts
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             joins=[(Post, Post.author_id == User.id)],
             filters=[Post.is_published == True],  # noqa: E712
             page=1,
             items_per_page=10,
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -889,12 +922,13 @@ class TestCrudJoins:
         from fastapi_toolsets.schemas import OffsetPagination
 
         # Paginate with outer join
-        result = await UserCrud.paginate(
+        result = await UserCrud.offset_paginate(
             db_session,
             joins=[(Post, Post.author_id == User.id)],
             outer_join=True,
             page=1,
             items_per_page=10,
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -929,70 +963,6 @@ class TestCrudJoins:
         )
         assert len(users) == 1
         assert users[0].username == "multi_join"
-
-
-class TestAsResponse:
-    """Tests for as_response parameter (deprecated, kept for backward compat)."""
-
-    @pytest.mark.anyio
-    async def test_create_as_response(self, db_session: AsyncSession):
-        """Create with as_response=True returns Response and emits DeprecationWarning."""
-        from fastapi_toolsets.schemas import Response
-
-        data = RoleCreate(name="response_role")
-        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
-            result = await RoleCrud.create(db_session, data, as_response=True)
-
-        assert isinstance(result, Response)
-        assert result.data is not None
-        assert result.data.name == "response_role"
-
-    @pytest.mark.anyio
-    async def test_get_as_response(self, db_session: AsyncSession):
-        """Get with as_response=True returns Response and emits DeprecationWarning."""
-        from fastapi_toolsets.schemas import Response
-
-        created = await RoleCrud.create(db_session, RoleCreate(name="get_response"))
-        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
-            result = await RoleCrud.get(
-                db_session, [Role.id == created.id], as_response=True
-            )
-
-        assert isinstance(result, Response)
-        assert result.data is not None
-        assert result.data.id == created.id
-
-    @pytest.mark.anyio
-    async def test_update_as_response(self, db_session: AsyncSession):
-        """Update with as_response=True returns Response and emits DeprecationWarning."""
-        from fastapi_toolsets.schemas import Response
-
-        created = await RoleCrud.create(db_session, RoleCreate(name="old_name"))
-        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
-            result = await RoleCrud.update(
-                db_session,
-                RoleUpdate(name="new_name"),
-                [Role.id == created.id],
-                as_response=True,
-            )
-
-        assert isinstance(result, Response)
-        assert result.data is not None
-        assert result.data.name == "new_name"
-
-    @pytest.mark.anyio
-    async def test_delete_as_response(self, db_session: AsyncSession):
-        """Delete with as_response=True returns Response and emits DeprecationWarning."""
-        from fastapi_toolsets.schemas import Response
-
-        created = await RoleCrud.create(db_session, RoleCreate(name="to_delete"))
-        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
-            result = await RoleCrud.delete(
-                db_session, [Role.id == created.id], as_response=True
-            )
-
-        assert isinstance(result, Response)
-        assert result.data is None
 
 
 class TestCrudFactoryM2M:
@@ -1475,91 +1445,34 @@ class TestSchemaResponse:
         assert isinstance(result, Response)
 
     @pytest.mark.anyio
-    async def test_paginate_with_schema(self, db_session: AsyncSession):
-        """paginate with schema returns PaginatedResponse[SchemaType]."""
+    async def test_offset_paginate_with_schema(self, db_session: AsyncSession):
+        """offset_paginate with schema returns PaginatedResponse[SchemaType]."""
         from fastapi_toolsets.schemas import PaginatedResponse
 
         await RoleCrud.create(db_session, RoleCreate(name="p_role1"))
         await RoleCrud.create(db_session, RoleCreate(name="p_role2"))
 
-        result = await RoleCrud.paginate(db_session, schema=RoleRead)
+        result = await RoleCrud.offset_paginate(db_session, schema=RoleRead)
 
         assert isinstance(result, PaginatedResponse)
         assert len(result.data) == 2
         assert all(isinstance(item, RoleRead) for item in result.data)
 
     @pytest.mark.anyio
-    async def test_paginate_schema_filters_fields(self, db_session: AsyncSession):
-        """paginate with schema only exposes schema fields per item."""
+    async def test_offset_paginate_schema_filters_fields(
+        self, db_session: AsyncSession
+    ):
+        """offset_paginate with schema only exposes schema fields per item."""
         await UserCrud.create(
             db_session,
             UserCreate(username="pg_user", email="pg@test.com"),
         )
 
-        result = await UserCrud.paginate(db_session, schema=UserRead)
+        result = await UserCrud.offset_paginate(db_session, schema=UserRead)
 
         assert isinstance(result.data[0], UserRead)
         assert result.data[0].username == "pg_user"
         assert not hasattr(result.data[0], "email")
-
-    @pytest.mark.anyio
-    async def test_as_response_true_without_schema_unchanged(
-        self, db_session: AsyncSession
-    ):
-        """as_response=True without schema still returns Response[ModelType] with a warning."""
-        from fastapi_toolsets.schemas import Response
-
-        created = await RoleCrud.create(db_session, RoleCreate(name="compat"))
-        with pytest.warns(DeprecationWarning, match="as_response is deprecated"):
-            result = await RoleCrud.get(
-                db_session, [Role.id == created.id], as_response=True
-            )
-
-        assert isinstance(result, Response)
-        assert isinstance(result.data, Role)
-
-    @pytest.mark.anyio
-    async def test_schema_with_explicit_as_response_true(
-        self, db_session: AsyncSession
-    ):
-        """schema combined with explicit as_response=True works correctly."""
-        from fastapi_toolsets.schemas import Response
-
-        created = await RoleCrud.create(db_session, RoleCreate(name="combined"))
-        result = await RoleCrud.get(
-            db_session,
-            [Role.id == created.id],
-            as_response=True,
-            schema=RoleRead,
-        )
-
-        assert isinstance(result, Response)
-        assert isinstance(result.data, RoleRead)
-
-
-class TestPaginateAlias:
-    """Tests that paginate is a backward-compatible alias for offset_paginate."""
-
-    def test_paginate_is_alias_of_offset_paginate(self):
-        """paginate and offset_paginate are the same underlying function."""
-        assert RoleCrud.paginate.__func__ is RoleCrud.offset_paginate.__func__
-
-    @pytest.mark.anyio
-    async def test_paginate_alias_returns_offset_pagination(
-        self, db_session: AsyncSession
-    ):
-        """paginate() still works and returns PaginatedResponse with OffsetPagination."""
-        from fastapi_toolsets.schemas import OffsetPagination, PaginatedResponse
-
-        for i in range(3):
-            await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
-
-        result = await RoleCrud.paginate(db_session, page=1, items_per_page=10)
-
-        assert isinstance(result, PaginatedResponse)
-        assert isinstance(result.pagination, OffsetPagination)
-        assert result.pagination.total_count == 3
-        assert result.pagination.page == 1
 
 
 class TestCursorPaginate:
@@ -1573,7 +1486,9 @@ class TestCursorPaginate:
         for i in range(25):
             await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
 
-        result = await RoleCursorCrud.cursor_paginate(db_session, items_per_page=10)
+        result = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=10, schema=RoleRead
+        )
 
         assert isinstance(result, PaginatedResponse)
         assert isinstance(result.pagination, CursorPagination)
@@ -1591,7 +1506,9 @@ class TestCursorPaginate:
         for i in range(5):
             await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
 
-        result = await RoleCursorCrud.cursor_paginate(db_session, items_per_page=10)
+        result = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=10, schema=RoleRead
+        )
 
         assert isinstance(result.pagination, CursorPagination)
         assert len(result.data) == 5
@@ -1606,14 +1523,16 @@ class TestCursorPaginate:
 
         from fastapi_toolsets.schemas import CursorPagination
 
-        page1 = await RoleCursorCrud.cursor_paginate(db_session, items_per_page=10)
+        page1 = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=10, schema=RoleRead
+        )
         assert isinstance(page1.pagination, CursorPagination)
         assert len(page1.data) == 10
         assert page1.pagination.has_more is True
 
         cursor = page1.pagination.next_cursor
         page2 = await RoleCursorCrud.cursor_paginate(
-            db_session, cursor=cursor, items_per_page=10
+            db_session, cursor=cursor, items_per_page=10, schema=RoleRead
         )
         assert isinstance(page2.pagination, CursorPagination)
         assert len(page2.data) == 5
@@ -1628,12 +1547,15 @@ class TestCursorPaginate:
 
         from fastapi_toolsets.schemas import CursorPagination
 
-        page1 = await RoleCursorCrud.cursor_paginate(db_session, items_per_page=4)
+        page1 = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=4, schema=RoleRead
+        )
         assert isinstance(page1.pagination, CursorPagination)
         page2 = await RoleCursorCrud.cursor_paginate(
             db_session,
             cursor=page1.pagination.next_cursor,
             items_per_page=4,
+            schema=RoleRead,
         )
 
         ids_page1 = {r.id for r in page1.data}
@@ -1646,7 +1568,9 @@ class TestCursorPaginate:
         """cursor_paginate on an empty table returns empty data with no cursor."""
         from fastapi_toolsets.schemas import CursorPagination
 
-        result = await RoleCursorCrud.cursor_paginate(db_session, items_per_page=10)
+        result = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=10, schema=RoleRead
+        )
 
         assert isinstance(result.pagination, CursorPagination)
         assert result.data == []
@@ -1671,6 +1595,7 @@ class TestCursorPaginate:
             db_session,
             filters=[User.is_active == True],  # noqa: E712
             items_per_page=20,
+            schema=UserRead,
         )
 
         assert len(result.data) == 5
@@ -1703,7 +1628,9 @@ class TestCursorPaginate:
         for i in range(5):
             await RoleNameCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
 
-        result = await RoleNameCrud.cursor_paginate(db_session, items_per_page=3)
+        result = await RoleNameCrud.cursor_paginate(
+            db_session, items_per_page=3, schema=RoleRead
+        )
 
         assert isinstance(result.pagination, CursorPagination)
         assert len(result.data) == 3
@@ -1714,7 +1641,7 @@ class TestCursorPaginate:
     async def test_raises_without_cursor_column(self, db_session: AsyncSession):
         """cursor_paginate raises ValueError when cursor_column is not configured."""
         with pytest.raises(ValueError, match="cursor_column is not set"):
-            await RoleCrud.cursor_paginate(db_session)
+            await RoleCrud.cursor_paginate(db_session, schema=RoleRead)
 
 
 class TestCursorPaginatePrevCursor:
@@ -1728,7 +1655,9 @@ class TestCursorPaginatePrevCursor:
 
         from fastapi_toolsets.schemas import CursorPagination
 
-        result = await RoleCursorCrud.cursor_paginate(db_session, items_per_page=3)
+        result = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=3, schema=RoleRead
+        )
 
         assert isinstance(result.pagination, CursorPagination)
         assert result.pagination.prev_cursor is None
@@ -1741,12 +1670,15 @@ class TestCursorPaginatePrevCursor:
 
         from fastapi_toolsets.schemas import CursorPagination
 
-        page1 = await RoleCursorCrud.cursor_paginate(db_session, items_per_page=5)
+        page1 = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=5, schema=RoleRead
+        )
         assert isinstance(page1.pagination, CursorPagination)
         page2 = await RoleCursorCrud.cursor_paginate(
             db_session,
             cursor=page1.pagination.next_cursor,
             items_per_page=5,
+            schema=RoleRead,
         )
         assert isinstance(page2.pagination, CursorPagination)
         assert page2.pagination.prev_cursor is not None
@@ -1762,12 +1694,15 @@ class TestCursorPaginatePrevCursor:
 
         from fastapi_toolsets.schemas import CursorPagination
 
-        page1 = await RoleCursorCrud.cursor_paginate(db_session, items_per_page=5)
+        page1 = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=5, schema=RoleRead
+        )
         assert isinstance(page1.pagination, CursorPagination)
         page2 = await RoleCursorCrud.cursor_paginate(
             db_session,
             cursor=page1.pagination.next_cursor,
             items_per_page=5,
+            schema=RoleRead,
         )
         assert isinstance(page2.pagination, CursorPagination)
         assert page2.pagination.prev_cursor is not None
@@ -1802,6 +1737,7 @@ class TestCursorPaginateWithSearch:
             db_session,
             search="admin",
             items_per_page=20,
+            schema=RoleRead,
         )
 
         assert len(result.data) == 5
@@ -1836,6 +1772,7 @@ class TestCursorPaginateExtraOptions:
             db_session,
             joins=[(Role, User.role_id == Role.id)],
             items_per_page=20,
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, CursorPagination)
@@ -1867,6 +1804,7 @@ class TestCursorPaginateExtraOptions:
             joins=[(Role, User.role_id == Role.id)],
             outer_join=True,
             items_per_page=20,
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, CursorPagination)
@@ -1876,7 +1814,12 @@ class TestCursorPaginateExtraOptions:
     @pytest.mark.anyio
     async def test_with_load_options(self, db_session: AsyncSession):
         """cursor_paginate passes load_options to the query."""
-        from fastapi_toolsets.schemas import CursorPagination
+        from fastapi_toolsets.schemas import CursorPagination, PydanticBase
+
+        class UserWithRoleRead(PydanticBase):
+            id: uuid.UUID
+            username: str
+            role: RoleRead | None = None
 
         role = await RoleCrud.create(db_session, RoleCreate(name="manager"))
         for i in range(3):
@@ -1893,6 +1836,7 @@ class TestCursorPaginateExtraOptions:
             db_session,
             load_options=[selectinload(User.role)],
             items_per_page=20,
+            schema=UserWithRoleRead,
         )
 
         assert isinstance(result.pagination, CursorPagination)
@@ -1912,6 +1856,7 @@ class TestCursorPaginateExtraOptions:
             db_session,
             order_by=Role.name.desc(),
             items_per_page=3,
+            schema=RoleRead,
         )
 
         assert isinstance(result.pagination, CursorPagination)
@@ -1925,7 +1870,9 @@ class TestCursorPaginateExtraOptions:
         for i in range(5):
             await IntRoleCursorCrud.create(db_session, IntRoleCreate(name=f"role{i}"))
 
-        page1 = await IntRoleCursorCrud.cursor_paginate(db_session, items_per_page=3)
+        page1 = await IntRoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=3, schema=IntRoleRead
+        )
 
         assert isinstance(page1.pagination, CursorPagination)
         assert len(page1.data) == 3
@@ -1935,6 +1882,7 @@ class TestCursorPaginateExtraOptions:
             db_session,
             cursor=page1.pagination.next_cursor,
             items_per_page=3,
+            schema=IntRoleRead,
         )
 
         assert isinstance(page2.pagination, CursorPagination)
@@ -1955,7 +1903,9 @@ class TestCursorPaginateExtraOptions:
         await RoleCrud.create(db_session, RoleCreate(name="role01"))
 
         # First page succeeds (no cursor to decode)
-        page1 = await RoleNameCursorCrud.cursor_paginate(db_session, items_per_page=1)
+        page1 = await RoleNameCursorCrud.cursor_paginate(
+            db_session, items_per_page=1, schema=RoleRead
+        )
         assert page1.pagination.has_more is True
         assert isinstance(page1.pagination, CursorPagination)
 
@@ -1965,6 +1915,7 @@ class TestCursorPaginateExtraOptions:
                 db_session,
                 cursor=page1.pagination.next_cursor,
                 items_per_page=1,
+                schema=RoleRead,
             )
 
 
@@ -2003,6 +1954,7 @@ class TestCursorPaginateSearchJoins:
             search="administrator",
             search_fields=[(User.role, Role.name)],
             items_per_page=20,
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, CursorPagination)
@@ -2049,7 +2001,7 @@ class TestCursorPaginateColumnTypes:
             )
 
         page1 = await EventDateTimeCursorCrud.cursor_paginate(
-            db_session, items_per_page=3
+            db_session, items_per_page=3, schema=EventRead
         )
 
         assert isinstance(page1.pagination, CursorPagination)
@@ -2060,6 +2012,7 @@ class TestCursorPaginateColumnTypes:
             db_session,
             cursor=page1.pagination.next_cursor,
             items_per_page=3,
+            schema=EventRead,
         )
 
         assert isinstance(page2.pagination, CursorPagination)
@@ -2087,7 +2040,9 @@ class TestCursorPaginateColumnTypes:
                 ),
             )
 
-        page1 = await EventDateCursorCrud.cursor_paginate(db_session, items_per_page=3)
+        page1 = await EventDateCursorCrud.cursor_paginate(
+            db_session, items_per_page=3, schema=EventRead
+        )
 
         assert isinstance(page1.pagination, CursorPagination)
         assert len(page1.data) == 3
@@ -2097,6 +2052,7 @@ class TestCursorPaginateColumnTypes:
             db_session,
             cursor=page1.pagination.next_cursor,
             items_per_page=3,
+            schema=EventRead,
         )
 
         assert isinstance(page2.pagination, CursorPagination)
@@ -2123,7 +2079,7 @@ class TestCursorPaginateColumnTypes:
             )
 
         page1 = await ProductNumericCursorCrud.cursor_paginate(
-            db_session, items_per_page=3
+            db_session, items_per_page=3, schema=ProductRead
         )
 
         assert isinstance(page1.pagination, CursorPagination)
@@ -2134,6 +2090,7 @@ class TestCursorPaginateColumnTypes:
             db_session,
             cursor=page1.pagination.next_cursor,
             items_per_page=3,
+            schema=ProductRead,
         )
 
         assert isinstance(page2.pagination, CursorPagination)

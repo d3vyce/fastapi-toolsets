@@ -22,19 +22,43 @@ async def get_user(user: User = UserDep) -> Response[UserSchema]:
 
 ### [`PaginatedResponse[T]`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse)
 
-Wraps a list of items with pagination metadata and optional facet values.
+Wraps a list of items with pagination metadata and optional facet values. The `pagination` field accepts either [`OffsetPagination`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPagination) or [`CursorPagination`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPagination) depending on the strategy used.
+
+#### [`OffsetPagination`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPagination)
+
+Page-number based. Requires `total_count` so clients can compute the total number of pages.
 
 ```python
-from fastapi_toolsets.schemas import PaginatedResponse, Pagination
+from fastapi_toolsets.schemas import PaginatedResponse, OffsetPagination
 
 @router.get("/users")
 async def list_users() -> PaginatedResponse[UserSchema]:
     return PaginatedResponse(
         data=users,
-        pagination=Pagination(
+        pagination=OffsetPagination(
             total_count=100,
             items_per_page=10,
             page=1,
+            has_more=True,
+        ),
+    )
+```
+
+#### [`CursorPagination`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPagination)
+
+Cursor based. Efficient for large or frequently updated datasets where offset pagination is impractical. Provides opaque `next_cursor` / `prev_cursor` tokens; no total count is exposed.
+
+```python
+from fastapi_toolsets.schemas import PaginatedResponse, CursorPagination
+
+@router.get("/events")
+async def list_events() -> PaginatedResponse[EventSchema]:
+    return PaginatedResponse(
+        data=events,
+        pagination=CursorPagination(
+            next_cursor="eyJpZCI6IDQyfQ==",
+            prev_cursor=None,
+            items_per_page=20,
             has_more=True,
         ),
     )

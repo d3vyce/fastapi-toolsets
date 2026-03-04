@@ -14,6 +14,10 @@ from fastapi.responses import JSONResponse
 from ..schemas import ErrorResponse, ResponseStatus
 from .exceptions import ApiException
 
+_VALIDATION_LOCATION_PARAMS: frozenset[str] = frozenset(
+    {"body", "query", "path", "header", "cookie"}
+)
+
 
 def init_exceptions_handlers(app: FastAPI) -> FastAPI:
     """Register exception handlers and custom OpenAPI schema on a FastAPI app.
@@ -99,7 +103,7 @@ def _format_validation_error(
 
     for error in errors:
         locs = error["loc"]
-        if locs and locs[0] in ("body", "query", "path", "header", "cookie"):
+        if locs and locs[0] in _VALIDATION_LOCATION_PARAMS:
             locs = locs[1:]
         field_path = ".".join(str(loc) for loc in locs)
         formatted_errors.append(

@@ -1,19 +1,16 @@
 """Dependency factories for FastAPI routes."""
 
 import inspect
-from collections.abc import AsyncGenerator, Callable
-from typing import Any, TypeVar, cast
+from collections.abc import Callable
+from typing import Any, cast
 
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import DeclarativeBase
 
 from .crud import CrudFactory
+from .types import ModelType, SessionDependency
 
 __all__ = ["BodyDependency", "PathDependency"]
-
-ModelType = TypeVar("ModelType", bound=DeclarativeBase)
-SessionDependency = Callable[[], AsyncGenerator[AsyncSession, None]]
 
 
 def PathDependency(

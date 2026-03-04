@@ -1,23 +1,22 @@
 """Search utilities for AsyncCrud."""
 
 import asyncio
+import functools
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import String, or_, select
+from sqlalchemy import String, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 
 from ..exceptions import InvalidFacetFilterError, NoSearchableFieldsError
+from ..types import FacetFieldType, SearchFieldType
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
-
-SearchFieldType = InstrumentedAttribute[Any] | tuple[InstrumentedAttribute[Any], ...]
-FacetFieldType = SearchFieldType
 
 
 @dataclass
@@ -37,6 +36,7 @@ class SearchConfig:
     match_mode: Literal["any", "all"] = "any"
 
 
+@functools.lru_cache(maxsize=128)
 def get_searchable_fields(
     model: type[DeclarativeBase],
     *,
@@ -101,14 +101,11 @@ def build_search_filters(
     if isinstance(search, str):
         config = SearchConfig(query=search, fields=search_fields)
     else:
-        config = search
-        if search_fields is not None:
-            config = SearchConfig(
-                query=config.query,
-                fields=search_fields,
-                case_sensitive=config.case_sensitive,
-                match_mode=config.match_mode,
-            )
+        config = (
+            replace(search, fields=search_fields)
+            if search_fields is not None
+            else search
+        )
 
     if not config.query or not config.query.strip():
         return [], []
@@ -227,8 +224,6 @@ async def build_facets(
                 q = q.outerjoin(rel)
 
         if base_filters:
-            from sqlalchemy import and_
-
             q = q.where(and_(*base_filters))
 
         q = q.order_by(column)

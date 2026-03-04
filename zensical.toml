@@ -77,6 +77,10 @@ md_in_html = {}
 "pymdownx.tasklist" = {custom_checkbox = true}
 "pymdownx.tilde" = {}
 
+[project.markdown_extensions.pymdownx.emoji]
+emoji_index = "zensical.extensions.emoji.twemoji"
+emoji_generator = "zensical.extensions.emoji.to_svg"
+
 [project.markdown_extensions."pymdownx.highlight"]
 anchor_linenums = true
 line_spans = "__span"
@@ -95,3 +99,49 @@ permalink = true
 [project.markdown_extensions."pymdownx.snippets"]
 base_path = ["."]
 check_paths = true
+
+[[project.nav]]
+Home = "index.md"
+
+[[project.nav]]
+Modules = [
+    {CLI = "module/cli.md"},
+    {CRUD = "module/crud.md"},
+    {Database = "module/db.md"},
+    {Dependencies = "module/dependencies.md"},
+    {Exceptions = "module/exceptions.md"},
+    {Fixtures = "module/fixtures.md"},
+    {Logger = "module/logger.md"},
+    {Metrics = "module/metrics.md"},
+    {Models = "module/models.md"},
+    {Pytest = "module/pytest.md"},
+    {Schemas = "module/schemas.md"},
+]
+
+[[project.nav]]
+Reference = [
+    {CLI = "reference/cli.md"},
+    {CRUD = "reference/crud.md"},
+    {Database = "reference/db.md"},
+    {Dependencies = "reference/dependencies.md"},
+    {Exceptions = "reference/exceptions.md"},
+    {Fixtures = "reference/fixtures.md"},
+    {Logger = "reference/logger.md"},
+    {Metrics = "reference/metrics.md"},
+    {Models = "reference/models.md"},
+    {Pytest = "reference/pytest.md"},
+    {Schemas = "reference/schemas.md"},
+]
+
+[[project.nav]]
+Examples = [
+    {"Pagination & Search" = "examples/pagination-search.md"},
+]
+
+[[project.nav]]
+Migration = [
+    {"v2.0" = "migration/v2.md"},
+]
+
+[[project.nav]]
+"Changelog ↗" = "https://github.com/d3vyce/fastapi-toolsets/releases"
