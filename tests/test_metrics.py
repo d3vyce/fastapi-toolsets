@@ -159,6 +159,42 @@ class TestMetricsRegistry:
         assert registry.get_all()[0].func is second
 
 
+class TestGet:
+    """Tests for MetricsRegistry.get method."""
+
+    def test_get_returns_instance_after_init(self):
+        """get() returns the metric instance stored by init_metrics."""
+        app = FastAPI()
+        registry = MetricsRegistry()
+
+        @registry.register
+        def my_gauge():
+            return Gauge("get_test_gauge", "A test gauge")
+
+        init_metrics(app, registry)
+
+        instance = registry.get("my_gauge")
+        assert isinstance(instance, Gauge)
+
+    def test_get_raises_for_registered_but_not_initialized(self):
+        """get() raises KeyError with an informative message when init_metrics was not called."""
+        registry = MetricsRegistry()
+
+        @registry.register
+        def my_counter():
+            return Counter("get_uninit_counter", "A counter")
+
+        with pytest.raises(KeyError, match="not been initialized yet"):
+            registry.get("my_counter")
+
+    def test_get_raises_for_unknown_name(self):
+        """get() raises KeyError when the metric name is not registered at all."""
+        registry = MetricsRegistry()
+
+        with pytest.raises(KeyError, match="Unknown metric"):
+            registry.get("nonexistent")
+
+
 class TestIncludeRegistry:
     """Tests for MetricsRegistry.include_registry method."""
 

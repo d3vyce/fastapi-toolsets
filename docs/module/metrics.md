@@ -36,7 +36,13 @@ This mounts the `/metrics` endpoint that Prometheus can scrape.
 
 ### Providers
 
-Providers are called once at startup and register metrics that are updated externally (e.g. counters, histograms):
+Providers are called once at startup by `init_metrics`. The return value (the Prometheus metric object) is stored in the registry and can be retrieved later with [`registry.get(name)`](../reference/metrics.md#fastapi_toolsets.metrics.registry.MetricsRegistry.get).
+
+Use providers when you want **deferred initialization**: the Prometheus metric is not registered with the global `CollectorRegistry` until `init_metrics` runs, not at import time. This is particularly useful for testing — importing the module in a test suite without calling `init_metrics` leaves no metrics registered, avoiding cross-test pollution.
+
+It is also useful when metrics are defined across multiple modules and merged with `include_registry`: any code that needs a metric can call `metrics.get()` on the shared registry instead of importing the metric directly from its origin module.
+
+If neither of these applies to you, declaring metrics at module level (e.g. `HTTP_REQUESTS = Counter(...)`) is simpler and equally valid.
 
 ```python
 from prometheus_client import Counter, Histogram
@@ -50,15 +56,32 @@ def request_duration():
     return Histogram("request_duration_seconds", "Request duration")
 ```
 
-### Collectors
-
-Collectors are called on every scrape. Use them for metrics that reflect current state (e.g. gauges):
+To use a provider's metric elsewhere (e.g. in a middleware), call `metrics.get()` inside the handler — **not** at module level, as providers are only initialized when `init_metrics` runs:
 
 ```python
+async def metrics_middleware(request: Request, call_next):
+    response = await call_next(request)
+    metrics.get("http_requests").labels(
+        method=request.method, status=response.status_code
+    ).inc()
+    return response
+```
+
+### Collectors
+
+Collectors are called on every scrape. Use them for metrics that reflect current state (e.g. gauges).
+
+!!! warning "Declare the metric at module level"
+    Do **not** instantiate the Prometheus metric inside the collector function. Doing so recreates it on every scrape, raising `ValueError: Duplicated timeseries in CollectorRegistry`. Declare it once at module level instead:
+
+```python
+from prometheus_client import Gauge
+
+_queue_depth = Gauge("queue_depth", "Current queue depth")
+
 @metrics.register(collect=True)
-def queue_depth():
-    gauge = Gauge("queue_depth", "Current queue depth")
-    gauge.set(get_current_queue_depth())
+def collect_queue_depth():
+    _queue_depth.set(get_current_queue_depth())
 ```
 
 ## Merging registries

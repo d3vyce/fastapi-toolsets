@@ -19,31 +19,11 @@ class Metric:
 
 
 class MetricsRegistry:
-    """Registry for managing Prometheus metric providers and collectors.
-
-    Example:
-        ```python
-        from prometheus_client import Counter, Gauge
-        from fastapi_toolsets.metrics import MetricsRegistry
-
-        metrics = MetricsRegistry()
-
-        @metrics.register
-        def http_requests():
-            return Counter("http_requests_total", "Total HTTP requests", ["method", "status"])
-
-        @metrics.register(name="db_pool")
-        def database_pool_size():
-            return Gauge("db_pool_size", "Database connection pool size")
-
-        @metrics.register(collect=True)
-        def collect_queue_depth(gauge=Gauge("queue_depth", "Current queue depth")):
-            gauge.set(get_current_queue_depth())
-        ```
-    """
+    """Registry for managing Prometheus metric providers and collectors."""
 
     def __init__(self) -> None:
         self._metrics: dict[str, Metric] = {}
+        self._instances: dict[str, Any] = {}
 
     def register(
         self,
@@ -61,17 +41,6 @@ class MetricsRegistry:
             name: Metric name (defaults to function name).
             collect: If ``True``, the function is called on every scrape.
                 If ``False`` (default), called once at init time.
-
-        Example:
-            ```python
-            @metrics.register
-            def my_counter():
-                return Counter("my_counter", "A counter")
-
-            @metrics.register(collect=True, name="queue")
-            def collect_queue_depth():
-                gauge.set(compute_depth())
-            ```
         """
 
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -87,6 +56,25 @@ class MetricsRegistry:
             return decorator(func)
         return decorator
 
+    def get(self, name: str) -> Any:
+        """Return the metric instance created by a provider.
+
+        Args:
+            name: The metric name (defaults to the provider function name).
+
+        Raises:
+            KeyError: If the metric name is unknown or ``init_metrics`` has not
+                been called yet.
+        """
+        if name not in self._instances:
+            if name in self._metrics:
+                raise KeyError(
+                    f"Metric '{name}' exists but has not been initialized yet. "
+                    "Ensure init_metrics() has been called before accessing metric instances."
+                )
+            raise KeyError(f"Unknown metric '{name}'.")
+        return self._instances[name]
+
     def include_registry(self, registry: "MetricsRegistry") -> None:
         """Include another :class:`MetricsRegistry` into this one.
 
@@ -95,18 +83,6 @@ class MetricsRegistry:
 
         Raises:
             ValueError: If a metric name already exists in the current registry.
-
-        Example:
-            ```python
-            main = MetricsRegistry()
-            sub = MetricsRegistry()
-
-            @sub.register
-            def sub_metric():
-                return Counter("sub_total", "Sub counter")
-
-            main.include_registry(sub)
-            ```
         """
         for metric_name, definition in registry._metrics.items():
             if metric_name in self._metrics:

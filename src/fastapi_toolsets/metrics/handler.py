@@ -51,7 +51,7 @@ def init_metrics(
     """
     for provider in registry.get_providers():
         logger.debug("Initialising metric provider '%s'", provider.name)
-        provider.func()
+        registry._instances[provider.name] = provider.func()
 
     # Partition collectors and cache env check at startup — both are stable for the app lifetime.
     async_collectors = [
