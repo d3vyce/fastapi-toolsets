@@ -40,10 +40,10 @@ async def http_client(db_session):
 
 ## Database sessions in tests
 
-Use [`create_db_session`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_db_session) to create an isolated `AsyncSession` for a test:
+Use [`create_db_session`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_db_session) to create an isolated `AsyncSession` for a test, combined with [`create_worker_database`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_worker_database) to set up a per-worker database:
 
 ```python
-from fastapi_toolsets.pytest import create_db_session, create_worker_database
+from fastapi_toolsets.pytest import create_worker_database, create_db_session
 
 @pytest.fixture(scope="session")
 async def worker_db_url():
@@ -64,16 +64,28 @@ async def db_session(worker_db_url):
 !!! info
     In this example, the database is reset between each test using the argument `cleanup=True`.
 
+Use [`worker_database_url`](../reference/pytest.md#fastapi_toolsets.pytest.utils.worker_database_url) to derive the per-worker URL manually if needed:
+
+```python
+from fastapi_toolsets.pytest import worker_database_url
+
+url = worker_database_url("postgresql+asyncpg://user:pass@localhost/test_db", default_test_db="test")
+# e.g. "postgresql+asyncpg://user:pass@localhost/test_db_gw0" under xdist
+```
+
 ## Parallel testing with pytest-xdist
 
 The examples above are already compatible with parallel test execution with `pytest-xdist`.
 
 ## Cleaning up tables
 
-If you want to manually clean up a database you can use [`cleanup_tables`](../reference/pytest.md#fastapi_toolsets.pytest.utils.cleanup_tables), this will truncates all tables between tests for fast isolation:
+!!! warning
+    Since `V2.1.0` `cleanup_tables` now live in `fastapi_toolsets.db`. For backward compatibility the function is still available in `fastapi_toolsets.pytest`, but this will be remove in `V3.0.0`.
+
+If you want to manually clean up a database you can use [`cleanup_tables`](../reference/db.md#fastapi_toolsets.db.cleanup_tables), this will truncate all tables between tests for fast isolation:
 
 ```python
-from fastapi_toolsets.pytest import cleanup_tables
+from fastapi_toolsets.db import cleanup_tables
 
 @pytest.fixture(autouse=True)
 async def clean(db_session):

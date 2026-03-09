@@ -7,6 +7,8 @@ You can import them directly from `fastapi_toolsets.db`:
 ```python
 from fastapi_toolsets.db import (
     LockMode,
+    cleanup_tables,
+    create_database,
     create_db_dependency,
     create_db_context,
     get_transaction,
@@ -26,3 +28,7 @@ from fastapi_toolsets.db import (
 ## ::: fastapi_toolsets.db.lock_tables
 
 ## ::: fastapi_toolsets.db.wait_for_row_change
+
+## ::: fastapi_toolsets.db.create_database
+
+## ::: fastapi_toolsets.db.cleanup_tables
