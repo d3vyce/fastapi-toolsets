@@ -89,6 +89,8 @@ await wait_for_row_change(
 
 ## Creating a database
 
+!!! info "Added in `v2.1`"
+
 [`create_database`](../reference/db.md#fastapi_toolsets.db.create_database) creates a database at a given URL. It connects to *server_url* and issues a `CREATE DATABASE` statement:
 
 ```python
@@ -102,6 +104,8 @@ await create_database(db_name="myapp_test", server_url=SERVER_URL)
 For test isolation with automatic cleanup, use [`create_worker_database`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_worker_database) from the `pytest` module instead — it handles drop-before, create, and drop-after automatically.
 
 ## Cleaning up tables
+
+!!! info "Added in `v2.1`"
 
 [`cleanup_tables`](../reference/db.md#fastapi_toolsets.db.cleanup_tables) truncates all tables:
 
