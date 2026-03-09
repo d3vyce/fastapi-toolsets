@@ -4,10 +4,15 @@ import asyncio
 import uuid
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
 from fastapi_toolsets.db import (
     LockMode,
+    cleanup_tables,
+    create_database,
     create_db_context,
     create_db_dependency,
     get_transaction,
@@ -15,8 +20,9 @@ from fastapi_toolsets.db import (
     wait_for_row_change,
 )
 from fastapi_toolsets.exceptions import NotFoundError
+from fastapi_toolsets.pytest import create_db_session
 
-from .conftest import DATABASE_URL, Base, Role, RoleCrud, User
+from .conftest import DATABASE_URL, Base, Role, RoleCrud, User, UserCrud
 
 
 class TestCreateDbDependency:
@@ -344,3 +350,83 @@ class TestWaitForRowChange:
         with pytest.raises(NotFoundError):
             await wait_for_row_change(db_session, Role, role.id, interval=0.05)
         await delete_task
+
+
+class TestCreateDatabase:
+    """Tests for create_database."""
+
+    @pytest.mark.anyio
+    async def test_creates_database(self):
+        """Database is created by create_database."""
+        target_url = (
+            make_url(DATABASE_URL)
+            .set(database="test_create_db_general")
+            .render_as_string(hide_password=False)
+        )
+        expected_db: str = make_url(target_url).database  # type: ignore[assignment]
+
+        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text(f"DROP DATABASE IF EXISTS {expected_db}"))
+
+            await create_database(db_name=expected_db, server_url=DATABASE_URL)
+
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                    {"name": expected_db},
+                )
+                assert result.scalar() == 1
+
+            # Cleanup
+            async with engine.connect() as conn:
+                await conn.execute(text(f"DROP DATABASE IF EXISTS {expected_db}"))
+        finally:
+            await engine.dispose()
+
+
+class TestCleanupTables:
+    """Tests for cleanup_tables helper."""
+
+    @pytest.mark.anyio
+    async def test_truncates_all_tables(self):
+        """All table rows are removed after cleanup_tables."""
+        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
+            role = Role(id=uuid.uuid4(), name="cleanup_role")
+            session.add(role)
+            await session.flush()
+
+            user = User(
+                id=uuid.uuid4(),
+                username="cleanup_user",
+                email="cleanup@test.com",
+                role_id=role.id,
+            )
+            session.add(user)
+            await session.commit()
+
+            # Verify rows exist
+            roles_count = await RoleCrud.count(session)
+            users_count = await UserCrud.count(session)
+            assert roles_count == 1
+            assert users_count == 1
+
+            await cleanup_tables(session, Base)
+
+            # Verify tables are empty
+            roles_count = await RoleCrud.count(session)
+            users_count = await UserCrud.count(session)
+            assert roles_count == 0
+            assert users_count == 0
+
+    @pytest.mark.anyio
+    async def test_noop_for_empty_metadata(self):
+        """cleanup_tables does not raise when metadata has no tables."""
+
+        class EmptyBase(DeclarativeBase):
+            pass
+
+        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
+            # Should not raise
+            await cleanup_tables(session, EmptyBase)

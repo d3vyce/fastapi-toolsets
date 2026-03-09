@@ -8,11 +8,10 @@ from httpx import AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, selectinload
+from sqlalchemy.orm import selectinload
 
 from fastapi_toolsets.fixtures import Context, FixtureRegistry
 from fastapi_toolsets.pytest import (
-    cleanup_tables,
     create_async_client,
     create_db_session,
     create_worker_database,
@@ -406,7 +405,6 @@ class TestCreateWorkerDatabase:
         ) as url:
             assert make_url(url).database == expected_db
 
-            # Verify the database exists while inside the context
             engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
             async with engine.connect() as conn:
                 result = await conn.execute(
@@ -416,7 +414,6 @@ class TestCreateWorkerDatabase:
                 assert result.scalar() == 1
             await engine.dispose()
 
-        # After context exit the database should be dropped
         engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
         async with engine.connect() as conn:
             result = await conn.execute(
@@ -439,7 +436,6 @@ class TestCreateWorkerDatabase:
         async with create_worker_database(DATABASE_URL) as url:
             assert make_url(url).database == expected_db
 
-            # Verify the database exists while inside the context
             engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
             async with engine.connect() as conn:
                 result = await conn.execute(
@@ -449,7 +445,6 @@ class TestCreateWorkerDatabase:
                 assert result.scalar() == 1
             await engine.dispose()
 
-        # After context exit the database should be dropped
         engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
         async with engine.connect() as conn:
             result = await conn.execute(
@@ -467,18 +462,15 @@ class TestCreateWorkerDatabase:
             worker_database_url(DATABASE_URL, default_test_db="unused")
         ).database
 
-        # Pre-create the database to simulate a stale leftover
         engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
         async with engine.connect() as conn:
             await conn.execute(text(f"DROP DATABASE IF EXISTS {expected_db}"))
             await conn.execute(text(f"CREATE DATABASE {expected_db}"))
         await engine.dispose()
 
-        # Should succeed despite the database already existing
         async with create_worker_database(DATABASE_URL) as url:
             assert make_url(url).database == expected_db
 
-        # Verify cleanup after context exit
         engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
         async with engine.connect() as conn:
             result = await conn.execute(
@@ -487,49 +479,3 @@ class TestCreateWorkerDatabase:
             )
             assert result.scalar() is None
         await engine.dispose()
-
-
-class TestCleanupTables:
-    """Tests for cleanup_tables helper."""
-
-    @pytest.mark.anyio
-    async def test_truncates_all_tables(self):
-        """All table rows are removed after cleanup_tables."""
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
-            role = Role(id=uuid.uuid4(), name="cleanup_role")
-            session.add(role)
-            await session.flush()
-
-            user = User(
-                id=uuid.uuid4(),
-                username="cleanup_user",
-                email="cleanup@test.com",
-                role_id=role.id,
-            )
-            session.add(user)
-            await session.commit()
-
-            # Verify rows exist
-            roles_count = await RoleCrud.count(session)
-            users_count = await UserCrud.count(session)
-            assert roles_count == 1
-            assert users_count == 1
-
-            await cleanup_tables(session, Base)
-
-            # Verify tables are empty
-            roles_count = await RoleCrud.count(session)
-            users_count = await UserCrud.count(session)
-            assert roles_count == 0
-            assert users_count == 0
-
-    @pytest.mark.anyio
-    async def test_noop_for_empty_metadata(self):
-        """cleanup_tables does not raise when metadata has no tables."""
-
-        class EmptyBase(DeclarativeBase):
-            pass
-
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
-            # Should not raise
-            await cleanup_tables(session, EmptyBase)

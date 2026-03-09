@@ -24,5 +24,3 @@ from fastapi_toolsets.pytest import (
 ## ::: fastapi_toolsets.pytest.utils.worker_database_url
 
 ## ::: fastapi_toolsets.pytest.utils.create_worker_database
-
-## ::: fastapi_toolsets.pytest.utils.cleanup_tables
