@@ -29,6 +29,9 @@ user = await UserCrud.create(session=session, obj=UserCreateSchema(username="ali
 # Get one (raises NotFoundError if not found)
 user = await UserCrud.get(session=session, filters=[User.id == user_id])
 
+# Get one or None (never raises)
+user = await UserCrud.get_or_none(session=session, filters=[User.id == user_id])
+
 # Get first or None
 user = await UserCrud.first(session=session, filters=[User.email == email])
 
@@ -44,6 +47,36 @@ await UserCrud.delete(session=session, filters=[User.id == user_id])
 # Count / exists
 count = await UserCrud.count(session=session, filters=[User.is_active == True])
 exists = await UserCrud.exists(session=session, filters=[User.email == email])
+```
+
+## Fetching a single record
+
+Three methods fetch a single record — choose based on how you want to handle the "not found" case and whether you need strict uniqueness:
+
+| Method | Not found | Multiple results |
+|---|---|---|
+| `get` | raises `NotFoundError` | raises `MultipleResultsFound` |
+| `get_or_none` | returns `None` | raises `MultipleResultsFound` |
+| `first` | returns `None` | returns the first match silently |
+
+Use `get` when the record must exist (e.g. a detail endpoint that should return 404):
+
+```python
+user = await UserCrud.get(session=session, filters=[User.id == user_id])
+```
+
+Use `get_or_none` when the record may not exist but you still want strict uniqueness enforcement:
+
+```python
+user = await UserCrud.get_or_none(session=session, filters=[User.email == email])
+if user is None:
+    ...  # handle missing case without catching an exception
+```
+
+Use `first` when you only care about any one match and don't need uniqueness:
+
+```python
+user = await UserCrud.first(session=session, filters=[User.is_active == True])
 ```
 
 ## Pagination

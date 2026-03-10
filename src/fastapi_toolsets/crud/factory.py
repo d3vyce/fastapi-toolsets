@@ -409,6 +409,82 @@ class AsyncCrud(Generic[ModelType]):
             NotFoundError: If no record found
             MultipleResultsFound: If more than one record found
         """
+        result = await cls.get_or_none(
+            session,
+            filters,
+            joins=joins,
+            outer_join=outer_join,
+            with_for_update=with_for_update,
+            load_options=load_options,
+            schema=schema,
+        )
+        if result is None:
+            raise NotFoundError()
+        return result
+
+    @overload
+    @classmethod
+    async def get_or_none(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        filters: list[Any],
+        *,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        with_for_update: bool = False,
+        load_options: list[ExecutableOption] | None = None,
+        schema: type[SchemaType],
+    ) -> Response[SchemaType] | None: ...
+
+    @overload
+    @classmethod
+    async def get_or_none(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        filters: list[Any],
+        *,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        with_for_update: bool = False,
+        load_options: list[ExecutableOption] | None = None,
+        schema: None = ...,
+    ) -> ModelType | None: ...
+
+    @classmethod
+    async def get_or_none(
+        cls: type[Self],
+        session: AsyncSession,
+        filters: list[Any],
+        *,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        with_for_update: bool = False,
+        load_options: list[ExecutableOption] | None = None,
+        schema: type[BaseModel] | None = None,
+    ) -> ModelType | Response[Any] | None:
+        """Get exactly one record, or ``None`` if not found.
+
+        Like :meth:`get` but returns ``None`` instead of raising
+        :class:`~fastapi_toolsets.exceptions.NotFoundError` when no record
+        matches the filters.
+
+        Args:
+            session: DB async session
+            filters: List of SQLAlchemy filter conditions
+            joins: List of (model, condition) tuples for joining related tables
+            outer_join: Use LEFT OUTER JOIN instead of INNER JOIN
+            with_for_update: Lock the row for update
+            load_options: SQLAlchemy loader options (e.g., selectinload)
+            schema: Pydantic schema to serialize the result into. When provided,
+                the result is automatically wrapped in a ``Response[schema]``.
+
+        Returns:
+            Model instance, ``Response[schema]`` when ``schema`` is given,
+            or ``None`` when no record matches.
+
+        Raises:
+            MultipleResultsFound: If more than one record found
+        """
         q = select(cls.model)
         q = _apply_joins(q, joins, outer_join)
         q = q.where(and_(*filters))
@@ -418,12 +494,40 @@ class AsyncCrud(Generic[ModelType]):
             q = q.with_for_update()
         result = await session.execute(q)
         item = result.unique().scalar_one_or_none()
-        if not item:
-            raise NotFoundError()
-        result = cast(ModelType, item)
+        if item is None:
+            return None
+        db_model = cast(ModelType, item)
         if schema:
-            return Response(data=schema.model_validate(result))
-        return result
+            return Response(data=schema.model_validate(db_model))
+        return db_model
+
+    @overload
+    @classmethod
+    async def first(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        filters: list[Any] | None = None,
+        *,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        with_for_update: bool = False,
+        load_options: list[ExecutableOption] | None = None,
+        schema: type[SchemaType],
+    ) -> Response[SchemaType] | None: ...
+
+    @overload
+    @classmethod
+    async def first(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        filters: list[Any] | None = None,
+        *,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        with_for_update: bool = False,
+        load_options: list[ExecutableOption] | None = None,
+        schema: None = ...,
+    ) -> ModelType | None: ...
 
     @classmethod
     async def first(
@@ -433,8 +537,10 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
+        with_for_update: bool = False,
         load_options: list[ExecutableOption] | None = None,
-    ) -> ModelType | None:
+        schema: type[BaseModel] | None = None,
+    ) -> ModelType | Response[Any] | None:
         """Get the first matching record, or None.
 
         Args:
@@ -442,10 +548,14 @@ class AsyncCrud(Generic[ModelType]):
             filters: List of SQLAlchemy filter conditions
             joins: List of (model, condition) tuples for joining related tables
             outer_join: Use LEFT OUTER JOIN instead of INNER JOIN
-            load_options: SQLAlchemy loader options
+            with_for_update: Lock the row for update
+            load_options: SQLAlchemy loader options (e.g., selectinload)
+            schema: Pydantic schema to serialize the result into. When provided,
+                the result is automatically wrapped in a ``Response[schema]``.
 
         Returns:
-            Model instance or None
+            Model instance, ``Response[schema]`` when ``schema`` is given,
+            or ``None`` when no record matches.
         """
         q = select(cls.model)
         q = _apply_joins(q, joins, outer_join)
@@ -453,8 +563,16 @@ class AsyncCrud(Generic[ModelType]):
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
+        if with_for_update:
+            q = q.with_for_update()
         result = await session.execute(q)
-        return cast(ModelType | None, result.unique().scalars().first())
+        item = result.unique().scalars().first()
+        if item is None:
+            return None
+        db_model = cast(ModelType, item)
+        if schema:
+            return Response(data=schema.model_validate(db_model))
+        return db_model
 
     @classmethod
     async def get_multi(
