@@ -22,6 +22,8 @@ UserCrud = CrudFactory(model=User)
 
 ## Basic operations
 
+!!! info "`get_or_none` added in `v2.2`"
+
 ```python
 # Create
 user = await UserCrud.create(session=session, obj=UserCreateSchema(username="alice"))
