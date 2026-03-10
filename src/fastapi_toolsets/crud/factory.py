@@ -14,7 +14,6 @@ from typing import Any, ClassVar, Generic, Literal, Self, cast, overload
 from fastapi import Query
 from pydantic import BaseModel
 from sqlalchemy import Date, DateTime, Float, Integer, Numeric, Uuid, and_, func, select
-from sqlalchemy import delete as sql_delete
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -674,8 +673,10 @@ class AsyncCrud(Generic[ModelType]):
             ``None``, or ``Response[None]`` when ``return_response=True``.
         """
         async with get_transaction(session):
-            q = sql_delete(cls.model).where(and_(*filters))
-            await session.execute(q)
+            result = await session.execute(select(cls.model).where(and_(*filters)))
+            objects = result.scalars().all()
+            for obj in objects:
+                await session.delete(obj)
         if return_response:
             return Response(data=None)
         return None
