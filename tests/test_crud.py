@@ -295,6 +295,100 @@ class TestCrudGet:
         assert user.username == "active"
 
 
+class TestCrudGetOrNone:
+    """Tests for CRUD get_or_none operations."""
+
+    @pytest.mark.anyio
+    async def test_returns_record_when_found(self, db_session: AsyncSession):
+        """get_or_none returns the record when it exists."""
+        created = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        fetched = await RoleCrud.get_or_none(db_session, [Role.id == created.id])
+
+        assert fetched is not None
+        assert fetched.id == created.id
+        assert fetched.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_returns_none_when_not_found(self, db_session: AsyncSession):
+        """get_or_none returns None instead of raising NotFoundError."""
+        result = await RoleCrud.get_or_none(db_session, [Role.id == uuid.uuid4()])
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_with_schema_returns_response_when_found(
+        self, db_session: AsyncSession
+    ):
+        """get_or_none with schema returns Response[schema] when found."""
+        from fastapi_toolsets.schemas import Response
+
+        created = await RoleCrud.create(db_session, RoleCreate(name="editor"))
+        result = await RoleCrud.get_or_none(
+            db_session, [Role.id == created.id], schema=RoleRead
+        )
+
+        assert isinstance(result, Response)
+        assert isinstance(result.data, RoleRead)
+        assert result.data.name == "editor"
+
+    @pytest.mark.anyio
+    async def test_with_schema_returns_none_when_not_found(
+        self, db_session: AsyncSession
+    ):
+        """get_or_none with schema returns None (not Response) when not found."""
+        result = await RoleCrud.get_or_none(
+            db_session, [Role.id == uuid.uuid4()], schema=RoleRead
+        )
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_with_load_options(self, db_session: AsyncSession):
+        """get_or_none respects load_options."""
+        from sqlalchemy.orm import selectinload
+
+        role = await RoleCrud.create(db_session, RoleCreate(name="member"))
+        user = await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+
+        fetched = await UserCrud.get_or_none(
+            db_session,
+            [User.id == user.id],
+            load_options=[selectinload(User.role)],
+        )
+
+        assert fetched is not None
+        assert fetched.role is not None
+        assert fetched.role.name == "member"
+
+    @pytest.mark.anyio
+    async def test_with_join(self, db_session: AsyncSession):
+        """get_or_none respects joins."""
+        user = await UserCrud.create(
+            db_session, UserCreate(username="author", email="author@test.com")
+        )
+        await PostCrud.create(
+            db_session,
+            PostCreate(title="Published", author_id=user.id, is_published=True),
+        )
+
+        fetched = await UserCrud.get_or_none(
+            db_session,
+            [User.id == user.id, Post.is_published == True],  # noqa: E712
+            joins=[(Post, Post.author_id == User.id)],
+        )
+        assert fetched is not None
+        assert fetched.id == user.id
+
+        # Filter that matches no join — returns None
+        missing = await UserCrud.get_or_none(
+            db_session,
+            [User.id == user.id, Post.is_published == False],  # noqa: E712
+            joins=[(Post, Post.author_id == User.id)],
+        )
+        assert missing is None
+
+
 class TestCrudFirst:
     """Tests for CRUD first operations."""
 
@@ -321,6 +415,38 @@ class TestCrudFirst:
 
         role = await RoleCrud.first(db_session)
         assert role is not None
+
+    @pytest.mark.anyio
+    async def test_first_with_schema(self, db_session: AsyncSession):
+        """First with schema returns a Response wrapping the serialized record."""
+        await RoleCrud.create(db_session, RoleCreate(name="admin"))
+
+        result = await RoleCrud.first(
+            db_session, [Role.name == "admin"], schema=RoleRead
+        )
+
+        assert result is not None
+        assert result.data is not None
+        assert result.data.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_first_with_schema_not_found(self, db_session: AsyncSession):
+        """First with schema returns None when no record matches."""
+        result = await RoleCrud.first(
+            db_session, [Role.name == "ghost"], schema=RoleRead
+        )
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_first_with_for_update(self, db_session: AsyncSession):
+        """First with with_for_update locks the row."""
+        await RoleCrud.create(db_session, RoleCreate(name="admin"))
+
+        role = await RoleCrud.first(
+            db_session, [Role.name == "admin"], with_for_update=True
+        )
+        assert role is not None
+        assert role.name == "admin"
 
 
 class TestCrudGetMulti:
