@@ -1071,17 +1071,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fastapi_toolsets.crud.factory.AsyncCrud.get_or_none" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get_or_none
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1783,17 +1772,6 @@
     <span class="md-ellipsis">
       
         get_multi
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#fastapi_toolsets.crud.factory.AsyncCrud.get_or_none" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get_or_none
       
     </span>
   </a>
@@ -2890,7 +2868,7 @@ provided via <code>facet_fields</code>.</p>
 
 
 <h3 id="fastapi_toolsets.crud.factory.AsyncCrud.first" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">first</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="n">filters</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">joins</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">outer_join</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">with_for_update</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">load_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">schema</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">first</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="n">filters</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">joins</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">outer_join</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">load_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-async"><code>async</code></small>
@@ -2898,28 +2876,6 @@ provided via <code>facet_fields</code>.</p>
   </span>
 
 <a href="#fastapi_toolsets.crud.factory.AsyncCrud.first" class="headerlink" title="Permanent link">&para;</a></h3>
-          <div class="doc-overloads">
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">first</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">session</span><span class="p">:</span> <span class="n">AsyncSession</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">filters</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">joins</span><span class="p">:</span> <span class="n">JoinType</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">outer_join</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">with_for_update</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">load_options</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ExecutableOption</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">schema</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">SchemaType</span><span class="p">],</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Response</span><span class="p">[</span><span class="n">SchemaType</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span>
-</span></code></pre></div><div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">first</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">session</span><span class="p">:</span> <span class="n">AsyncSession</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">filters</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">joins</span><span class="p">:</span> <span class="n">JoinType</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">outer_join</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">with_for_update</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">load_options</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ExecutableOption</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">schema</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ModelType</span> <span class="o">|</span> <span class="kc">None</span>
-</span></code></pre></div>          </div>
 
 
     <div class="doc doc-contents ">
@@ -3004,22 +2960,6 @@ provided via <code>facet_fields</code>.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>with_for_update</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Lock the row for update</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
                 <code>load_options</code>
             </td>
             <td>
@@ -3027,24 +2967,7 @@ provided via <code>facet_fields</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>SQLAlchemy loader options (e.g., selectinload)</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>schema</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#type">type</a>[<span title="pydantic.BaseModel">BaseModel</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Pydantic schema to serialize the result into. When provided,
-the result is automatically wrapped in a <code>Response[schema]</code>.</p>
+                <p>SQLAlchemy loader options</p>
               </div>
             </td>
             <td>
@@ -3066,21 +2989,11 @@ the result is automatically wrapped in a <code>Response[schema]</code>.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="fastapi_toolsets.types.ModelType">ModelType</span> | <a class="autorefs autorefs-internal" title="&lt;code&gt;fastapi_toolsets.schemas.Response&lt;/code&gt;" href="../schemas/#fastapi_toolsets.schemas.Response">Response</a>[<a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>] | None</code>
+                  <code><span title="fastapi_toolsets.types.ModelType">ModelType</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Model instance, <code>Response[schema]</code> when <code>schema</code> is given,</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="fastapi_toolsets.types.ModelType">ModelType</span> | <a class="autorefs autorefs-internal" title="&lt;code&gt;fastapi_toolsets.schemas.Response&lt;/code&gt;" href="../schemas/#fastapi_toolsets.schemas.Response">Response</a>[<a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>or <code>None</code> when no record matches.</p>
+                <p>Model instance or None</p>
               </div>
             </td>
           </tr>
@@ -3499,238 +3412,6 @@ the result is automatically wrapped in a <code>Response[schema]</code>.</p>
             <td>
               <div class="doc-md-description">
                 <p>List of model instances</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h3 id="fastapi_toolsets.crud.factory.AsyncCrud.get_or_none" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">get_or_none</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="n">filters</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">joins</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">outer_join</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">with_for_update</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">load_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">schema</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-async"><code>async</code></small>
-      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
-  </span>
-
-<a href="#fastapi_toolsets.crud.factory.AsyncCrud.get_or_none" class="headerlink" title="Permanent link">&para;</a></h3>
-          <div class="doc-overloads">
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_or_none</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">session</span><span class="p">:</span> <span class="n">AsyncSession</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">filters</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">joins</span><span class="p">:</span> <span class="n">JoinType</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">outer_join</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">with_for_update</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">load_options</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ExecutableOption</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">schema</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">SchemaType</span><span class="p">],</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Response</span><span class="p">[</span><span class="n">SchemaType</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span>
-</span></code></pre></div><div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_or_none</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">session</span><span class="p">:</span> <span class="n">AsyncSession</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">filters</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">joins</span><span class="p">:</span> <span class="n">JoinType</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">outer_join</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">with_for_update</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">load_options</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ExecutableOption</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">schema</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ModelType</span> <span class="o">|</span> <span class="kc">None</span>
-</span></code></pre></div>          </div>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Get exactly one record, or <code>None</code> if not found.</p>
-<p>Like :meth:<code>get</code> but returns <code>None</code> instead of raising
-:class:<code>~fastapi_toolsets.exceptions.NotFoundError</code> when no record
-matches the filters.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>session</code>
-            </td>
-            <td>
-                  <code><span title="sqlalchemy.ext.asyncio.AsyncSession">AsyncSession</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>DB async session</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>filters</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a>[<a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>List of SQLAlchemy filter conditions</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>joins</code>
-            </td>
-            <td>
-                  <code><span title="fastapi_toolsets.types.JoinType">JoinType</span> | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>List of (model, condition) tuples for joining related tables</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>outer_join</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Use LEFT OUTER JOIN instead of INNER JOIN</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>with_for_update</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Lock the row for update</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>load_options</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a>[<span title="sqlalchemy.sql.base.ExecutableOption">ExecutableOption</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>SQLAlchemy loader options (e.g., selectinload)</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>schema</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#type">type</a>[<span title="pydantic.BaseModel">BaseModel</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Pydantic schema to serialize the result into. When provided,
-the result is automatically wrapped in a <code>Response[schema]</code>.</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="fastapi_toolsets.types.ModelType">ModelType</span> | <a class="autorefs autorefs-internal" title="&lt;code&gt;fastapi_toolsets.schemas.Response&lt;/code&gt;" href="../schemas/#fastapi_toolsets.schemas.Response">Response</a>[<a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Model instance, <code>Response[schema]</code> when <code>schema</code> is given,</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="fastapi_toolsets.types.ModelType">ModelType</span> | <a class="autorefs autorefs-internal" title="&lt;code&gt;fastapi_toolsets.schemas.Response&lt;/code&gt;" href="../schemas/#fastapi_toolsets.schemas.Response">Response</a>[<a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>or <code>None</code> when no record matches.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-<p><span class="doc-section-title">Raises:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="MultipleResultsFound">MultipleResultsFound</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>If more than one record found</p>
               </div>
             </td>
           </tr>
