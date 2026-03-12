@@ -86,6 +86,101 @@ class TestCrudFactory:
         assert crud_with.default_load_options == options
         assert crud_without.default_load_options is None
 
+    def test_base_class_custom_methods_inherited(self):
+        """CrudFactory with base_class inherits custom methods from that base."""
+        from typing import Generic, TypeVar
+
+        from sqlalchemy.orm import DeclarativeBase
+
+        T = TypeVar("T", bound=DeclarativeBase)
+
+        class CustomBase(AsyncCrud[T], Generic[T]):
+            @classmethod
+            def custom_method(cls) -> str:
+                return f"custom:{cls.model.__name__}"
+
+        UserCrudCustom = CrudFactory(User, base_class=CustomBase)
+        PostCrudCustom = CrudFactory(Post, base_class=CustomBase)
+
+        assert issubclass(UserCrudCustom, CustomBase)
+        assert issubclass(PostCrudCustom, CustomBase)
+        assert UserCrudCustom.custom_method() == "custom:User"
+        assert PostCrudCustom.custom_method() == "custom:Post"
+
+    def test_base_class_pk_injected(self):
+        """PK is still injected when using a custom base_class."""
+        from typing import Generic, TypeVar
+
+        from sqlalchemy.orm import DeclarativeBase
+
+        T = TypeVar("T", bound=DeclarativeBase)
+
+        class CustomBase(AsyncCrud[T], Generic[T]):
+            pass
+
+        crud = CrudFactory(User, base_class=CustomBase)
+        assert crud.searchable_fields is not None
+        assert User.id in crud.searchable_fields
+
+
+class TestAsyncCrudSubclass:
+    """Tests for direct AsyncCrud subclassing (alternative to CrudFactory)."""
+
+    def test_subclass_with_model_only(self):
+        """Subclassing with just model auto-injects PK into searchable_fields."""
+
+        class UserCrudDirect(AsyncCrud[User]):
+            model = User
+
+        assert UserCrudDirect.searchable_fields == [User.id]
+
+    def test_subclass_with_explicit_fields_prepends_pk(self):
+        """Subclassing with searchable_fields prepends PK automatically."""
+
+        class UserCrudDirect(AsyncCrud[User]):
+            model = User
+            searchable_fields = [User.username]
+
+        assert UserCrudDirect.searchable_fields == [User.id, User.username]
+
+    def test_subclass_with_pk_already_in_fields(self):
+        """PK is not duplicated when already in searchable_fields."""
+
+        class UserCrudDirect(AsyncCrud[User]):
+            model = User
+            searchable_fields = [User.id, User.username]
+
+        assert UserCrudDirect.searchable_fields == [User.id, User.username]
+
+    def test_subclass_has_default_class_vars(self):
+        """Other ClassVars are None by default on a direct subclass."""
+
+        class UserCrudDirect(AsyncCrud[User]):
+            model = User
+
+        assert UserCrudDirect.facet_fields is None
+        assert UserCrudDirect.default_load_options is None
+        assert UserCrudDirect.cursor_column is None
+
+    def test_subclass_with_load_options(self):
+        """Direct subclass can declare default_load_options."""
+        opts = [selectinload(User.role)]
+
+        class UserCrudDirect(AsyncCrud[User]):
+            model = User
+            default_load_options = opts
+
+        assert UserCrudDirect.default_load_options is opts
+
+    def test_abstract_base_without_model_not_processed(self):
+        """Intermediate abstract class without model is not processed."""
+
+        class AbstractCrud(AsyncCrud[User]):
+            pass
+
+        # Should not raise, and searchable_fields inherits base default (None)
+        assert AbstractCrud.searchable_fields is None
+
 
 class TestResolveLoadOptions:
     """Tests for _resolve_load_options logic."""
