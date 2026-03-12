@@ -79,13 +79,13 @@ class AsyncCrud(Generic[ModelType]):
     facet_fields: ClassVar[Sequence[FacetFieldType] | None] = None
     order_fields: ClassVar[Sequence[QueryableAttribute[Any]] | None] = None
     m2m_fields: ClassVar[M2MFieldType | None] = None
-    default_load_options: ClassVar[list[ExecutableOption] | None] = None
+    default_load_options: ClassVar[Sequence[ExecutableOption] | None] = None
     cursor_column: ClassVar[Any | None] = None
 
     @classmethod
     def _resolve_load_options(
-        cls, load_options: list[ExecutableOption] | None
-    ) -> list[ExecutableOption] | None:
+        cls, load_options: Sequence[ExecutableOption] | None
+    ) -> Sequence[ExecutableOption] | None:
         """Return load_options if provided, else fall back to default_load_options."""
         if load_options is not None:
             return load_options
@@ -360,7 +360,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: type[SchemaType],
     ) -> Response[SchemaType]: ...
 
@@ -374,7 +374,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: None = ...,
     ) -> ModelType: ...
 
@@ -387,7 +387,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: type[BaseModel] | None = None,
     ) -> ModelType | Response[Any]:
         """Get exactly one record. Raises NotFoundError if not found.
@@ -432,7 +432,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: type[SchemaType],
     ) -> Response[SchemaType] | None: ...
 
@@ -446,7 +446,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: None = ...,
     ) -> ModelType | None: ...
 
@@ -459,7 +459,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: type[BaseModel] | None = None,
     ) -> ModelType | Response[Any] | None:
         """Get exactly one record, or ``None`` if not found.
@@ -511,7 +511,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: type[SchemaType],
     ) -> Response[SchemaType] | None: ...
 
@@ -525,7 +525,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: None = ...,
     ) -> ModelType | None: ...
 
@@ -538,7 +538,7 @@ class AsyncCrud(Generic[ModelType]):
         joins: JoinType | None = None,
         outer_join: bool = False,
         with_for_update: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         schema: type[BaseModel] | None = None,
     ) -> ModelType | Response[Any] | None:
         """Get the first matching record, or None.
@@ -582,7 +582,7 @@ class AsyncCrud(Generic[ModelType]):
         filters: list[Any] | None = None,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         order_by: OrderByClause | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -860,7 +860,7 @@ class AsyncCrud(Generic[ModelType]):
         filters: list[Any] | None = None,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         order_by: OrderByClause | None = None,
         page: int = 1,
         items_per_page: int = 20,
@@ -971,7 +971,7 @@ class AsyncCrud(Generic[ModelType]):
         filters: list[Any] | None = None,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        load_options: list[ExecutableOption] | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
         order_by: OrderByClause | None = None,
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
@@ -1112,7 +1112,7 @@ def CrudFactory(
     facet_fields: Sequence[FacetFieldType] | None = None,
     order_fields: Sequence[QueryableAttribute[Any]] | None = None,
     m2m_fields: M2MFieldType | None = None,
-    default_load_options: list[ExecutableOption] | None = None,
+    default_load_options: Sequence[ExecutableOption] | None = None,
     cursor_column: Any | None = None,
 ) -> type[AsyncCrud[ModelType]]:
     """Create a CRUD class for a specific model.
