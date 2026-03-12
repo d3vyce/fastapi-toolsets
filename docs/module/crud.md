@@ -7,9 +7,11 @@ Generic async CRUD operations for SQLAlchemy models with search, pagination, and
 
 ## Overview
 
-The `crud` module provides [`AsyncCrud`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud), an abstract base class with a full suite of async database operations, and [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory), a convenience function to instantiate it for a given model.
+The `crud` module provides [`AsyncCrud`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud), a base class with a full suite of async database operations, and [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory), a convenience function to instantiate it for a given model.
 
 ## Creating a CRUD class
+
+### Factory style
 
 ```python
 from fastapi_toolsets.crud import CrudFactory
@@ -18,7 +20,65 @@ from myapp.models import User
 UserCrud = CrudFactory(model=User)
 ```
 
-[`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory) dynamically creates a class named `AsyncUserCrud` with `User` as its model.
+[`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory) dynamically creates a class named `AsyncUserCrud` with `User` as its model. This is the most concise option for straightforward CRUD with no custom logic.
+
+### Subclass style
+
+!!! info "Added in `v2.3.0`"
+
+```python
+from fastapi_toolsets.crud.factory import AsyncCrud
+from myapp.models import User
+
+class UserCrud(AsyncCrud[User]):
+    model = User
+    searchable_fields = [User.username, User.email]
+    default_load_options = [selectinload(User.role)]
+```
+
+Subclassing [`AsyncCrud`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud) directly is the preferred style when you need to add custom methods or when the configuration is complex enough to benefit from a named class body. 
+
+### Adding custom methods
+
+```python
+class UserCrud(AsyncCrud[User]):
+    model = User
+
+    @classmethod
+    async def get_active(cls, session: AsyncSession) -> list[User]:
+        return await cls.get_multi(session, filters=[User.is_active == True])
+```
+
+### Sharing a custom base across multiple models
+
+Define a generic base class with the shared methods, then subclass it for each model:
+
+```python
+from typing import Generic, TypeVar
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import DeclarativeBase
+from fastapi_toolsets.crud.factory import AsyncCrud
+
+T = TypeVar("T", bound=DeclarativeBase)
+
+class AuditedCrud(AsyncCrud[T], Generic[T]):
+    """Base CRUD with custom function"""
+
+    @classmethod
+    async def get_active(cls, session: AsyncSession):
+        return await cls.get_multi(session, filters=[cls.model.is_active == True])
+
+
+class UserCrud(AuditedCrud[User]):
+    model = User
+    searchable_fields = [User.username, User.email]
+```
+
+You can also use the factory shorthand with the same base by passing `base_class`:
+
+```python
+UserCrud = CrudFactory(User, base_class=AuditedCrud)
+```
 
 ## Basic operations
 
