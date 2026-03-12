@@ -1211,12 +1211,26 @@ def CrudFactory(
         )
         ```
     """
+    pk_key = model.__mapper__.primary_key[0].key
+    assert pk_key is not None
+    pk_col = getattr(model, pk_key)
+
+    if searchable_fields is None:
+        effective_searchable = [pk_col]
+    else:
+        existing_keys = {f.key for f in searchable_fields if not isinstance(f, tuple)}
+        effective_searchable = (
+            [pk_col, *searchable_fields]
+            if pk_key not in existing_keys
+            else list(searchable_fields)
+        )
+
     cls = type(
         f"Async{model.__name__}Crud",
         (AsyncCrud,),
         {
             "model": model,
-            "searchable_fields": searchable_fields,
+            "searchable_fields": effective_searchable,
             "facet_fields": facet_fields,
             "order_fields": order_fields,
             "m2m_fields": m2m_fields,

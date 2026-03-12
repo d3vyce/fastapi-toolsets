@@ -211,14 +211,17 @@ class TestPaginateSearch:
         assert result.data[0].username == "active_john"
 
     @pytest.mark.anyio
-    async def test_search_auto_detect_fields(self, db_session: AsyncSession):
-        """Auto-detect searchable fields when not specified."""
+    async def test_search_explicit_fields(self, db_session: AsyncSession):
+        """Search works when search_fields are passed per call."""
         await UserCrud.create(
             db_session, UserCreate(username="findme", email="other@test.com")
         )
 
         result = await UserCrud.offset_paginate(
-            db_session, search="findme", schema=UserRead
+            db_session,
+            search="findme",
+            search_fields=[User.username],
+            schema=UserRead,
         )
 
         assert isinstance(result.pagination, OffsetPagination)

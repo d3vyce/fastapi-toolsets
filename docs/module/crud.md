@@ -212,6 +212,9 @@ Two search strategies are available, both compatible with [`offset_paginate`](..
 
 ### Full-text search
 
+!!! info "Added in `v2.2.1`"
+    The model's primary key is always included in `searchable_fields` automatically, so searching by ID works out of the box without any configuration. When no `searchable_fields` are declared, only the primary key is searched.
+
 Declare `searchable_fields` on the CRUD class. Relationship traversal is supported via tuples:
 
 ```python
