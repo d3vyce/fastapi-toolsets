@@ -1,7 +1,7 @@
 """Base Pydantic schemas for API responses."""
 
 from enum import Enum
-from typing import Any, ClassVar, Generic
+from typing import Any, ClassVar, Generic, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -10,9 +10,12 @@ from .types import DataT
 __all__ = [
     "ApiError",
     "CursorPagination",
+    "CursorPaginatedResponse",
     "ErrorResponse",
     "OffsetPagination",
+    "OffsetPaginatedResponse",
     "PaginatedResponse",
+    "PaginationType",
     "PydanticBase",
     "Response",
     "ResponseStatus",
@@ -123,9 +126,48 @@ class CursorPagination(PydanticBase):
     has_more: bool
 
 
+class PaginationType(str, Enum):
+    """Pagination strategy selector for :meth:`.AsyncCrud.paginate`."""
+
+    OFFSET = "offset"
+    CURSOR = "cursor"
+
+
 class PaginatedResponse(BaseResponse, Generic[DataT]):
-    """Paginated API response for list endpoints."""
+    """Paginated API response for list endpoints.
+
+    Base class and return type for endpoints that support both pagination
+    strategies.  Use :class:`OffsetPaginatedResponse` or
+    :class:`CursorPaginatedResponse` when the strategy is fixed;  use
+    ``PaginatedResponse`` as the return annotation for unified endpoints that
+    dispatch via :meth:`~fastapi_toolsets.crud.factory.AsyncCrud.paginate`.
+    """
 
     data: list[DataT]
     pagination: OffsetPagination | CursorPagination
+    pagination_type: PaginationType | None = None
     filter_attributes: dict[str, list[Any]] | None = None
+
+
+class OffsetPaginatedResponse(PaginatedResponse[DataT]):
+    """Paginated response with typed offset-based pagination metadata.
+
+    The ``pagination_type`` field is always ``"offset"`` and acts as a
+    discriminator, allowing frontend clients to narrow the union type returned
+    by a unified ``paginate()`` endpoint.
+    """
+
+    pagination: OffsetPagination
+    pagination_type: Literal[PaginationType.OFFSET] = PaginationType.OFFSET
+
+
+class CursorPaginatedResponse(PaginatedResponse[DataT]):
+    """Paginated response with typed cursor-based pagination metadata.
+
+    The ``pagination_type`` field is always ``"cursor"`` and acts as a
+    discriminator, allowing frontend clients to narrow the union type returned
+    by a unified ``paginate()`` endpoint.
+    """
+
+    pagination: CursorPagination
+    pagination_type: Literal[PaginationType.CURSOR] = PaginationType.CURSOR

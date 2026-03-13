@@ -393,3 +393,105 @@ class TestCursorSorting:
         body = resp.json()
         assert body["error_code"] == "SORT-422"
         assert body["status"] == "FAIL"
+
+
+class TestPaginateUnified:
+    """Tests for the unified GET /articles/ endpoint using paginate()."""
+
+    @pytest.mark.anyio
+    async def test_defaults_to_offset_pagination(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """Without pagination_type, defaults to offset pagination."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination_type"] == "offset"
+        assert "total_count" in body["pagination"]
+        assert body["pagination"]["total_count"] == 3
+
+    @pytest.mark.anyio
+    async def test_explicit_offset_pagination(self, client: AsyncClient, ex_db_session):
+        """pagination_type=offset returns OffsetPagination metadata."""
+        await seed(ex_db_session)
+
+        resp = await client.get(
+            "/articles/?pagination_type=offset&page=1&items_per_page=2"
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination_type"] == "offset"
+        assert body["pagination"]["total_count"] == 3
+        assert body["pagination"]["page"] == 1
+        assert body["pagination"]["has_more"] is True
+        assert len(body["data"]) == 2
+
+    @pytest.mark.anyio
+    async def test_cursor_pagination_type(self, client: AsyncClient, ex_db_session):
+        """pagination_type=cursor returns CursorPagination metadata."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/?pagination_type=cursor&items_per_page=2")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination_type"] == "cursor"
+        assert "next_cursor" in body["pagination"]
+        assert "total_count" not in body["pagination"]
+        assert body["pagination"]["has_more"] is True
+        assert len(body["data"]) == 2
+
+    @pytest.mark.anyio
+    async def test_cursor_pagination_navigate_pages(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """Cursor from first page can be used to fetch the next page."""
+        await seed(ex_db_session)
+
+        first = await client.get("/articles/?pagination_type=cursor&items_per_page=2")
+        assert first.status_code == 200
+        first_body = first.json()
+        next_cursor = first_body["pagination"]["next_cursor"]
+        assert next_cursor is not None
+
+        second = await client.get(
+            f"/articles/?pagination_type=cursor&items_per_page=2&cursor={next_cursor}"
+        )
+        assert second.status_code == 200
+        second_body = second.json()
+        assert second_body["pagination_type"] == "cursor"
+        assert second_body["pagination"]["has_more"] is False
+        assert len(second_body["data"]) == 1
+
+    @pytest.mark.anyio
+    async def test_cursor_pagination_with_search(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """paginate() with cursor type respects search parameter."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/?pagination_type=cursor&search=fastapi")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination_type"] == "cursor"
+        assert len(body["data"]) == 1
+        assert body["data"][0]["title"] == "FastAPI tips"
+
+    @pytest.mark.anyio
+    async def test_offset_pagination_with_filter(
+        self, client: AsyncClient, ex_db_session
+    ):
+        """paginate() with offset type respects filter_by parameter."""
+        await seed(ex_db_session)
+
+        resp = await client.get("/articles/?pagination_type=offset&status=published")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination_type"] == "offset"
+        assert body["pagination"]["total_count"] == 2

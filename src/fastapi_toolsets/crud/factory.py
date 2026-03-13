@@ -23,7 +23,14 @@ from sqlalchemy.sql.roles import WhereHavingRole
 
 from ..db import get_transaction
 from ..exceptions import InvalidOrderFieldError, NotFoundError
-from ..schemas import CursorPagination, OffsetPagination, PaginatedResponse, Response
+from ..schemas import (
+    CursorPaginatedResponse,
+    CursorPagination,
+    OffsetPaginatedResponse,
+    OffsetPagination,
+    PaginationType,
+    Response,
+)
 from ..types import (
     FacetFieldType,
     JoinType,
@@ -892,7 +899,7 @@ class AsyncCrud(Generic[ModelType]):
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
-    ) -> PaginatedResponse[Any]:
+    ) -> OffsetPaginatedResponse[Any]:
         """Get paginated results using offset-based pagination.
 
         Args:
@@ -974,7 +981,7 @@ class AsyncCrud(Generic[ModelType]):
             session, facet_fields, filters, search_joins
         )
 
-        return PaginatedResponse(
+        return OffsetPaginatedResponse(
             data=items,
             pagination=OffsetPagination(
                 total_count=total_count,
@@ -1002,7 +1009,7 @@ class AsyncCrud(Generic[ModelType]):
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
-    ) -> PaginatedResponse[Any]:
+    ) -> CursorPaginatedResponse[Any]:
         """Get paginated results using cursor-based pagination.
 
         Args:
@@ -1142,7 +1149,7 @@ class AsyncCrud(Generic[ModelType]):
             session, facet_fields, filters, search_joins
         )
 
-        return PaginatedResponse(
+        return CursorPaginatedResponse(
             data=items,
             pagination=CursorPagination(
                 next_cursor=next_cursor,
@@ -1151,6 +1158,136 @@ class AsyncCrud(Generic[ModelType]):
                 has_more=has_more,
             ),
             filter_attributes=filter_attributes,
+        )
+
+    @overload
+    @classmethod
+    async def paginate(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        *,
+        pagination_type: Literal[PaginationType.OFFSET],
+        filters: list[Any] | None = ...,
+        joins: JoinType | None = ...,
+        outer_join: bool = ...,
+        load_options: Sequence[ExecutableOption] | None = ...,
+        order_by: OrderByClause | None = ...,
+        page: int = ...,
+        cursor: str | None = ...,
+        items_per_page: int = ...,
+        search: str | SearchConfig | None = ...,
+        search_fields: Sequence[SearchFieldType] | None = ...,
+        facet_fields: Sequence[FacetFieldType] | None = ...,
+        filter_by: dict[str, Any] | BaseModel | None = ...,
+        schema: type[BaseModel],
+    ) -> OffsetPaginatedResponse[Any]: ...
+
+    @overload
+    @classmethod
+    async def paginate(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        *,
+        pagination_type: Literal[PaginationType.CURSOR],
+        filters: list[Any] | None = ...,
+        joins: JoinType | None = ...,
+        outer_join: bool = ...,
+        load_options: Sequence[ExecutableOption] | None = ...,
+        order_by: OrderByClause | None = ...,
+        page: int = ...,
+        cursor: str | None = ...,
+        items_per_page: int = ...,
+        search: str | SearchConfig | None = ...,
+        search_fields: Sequence[SearchFieldType] | None = ...,
+        facet_fields: Sequence[FacetFieldType] | None = ...,
+        filter_by: dict[str, Any] | BaseModel | None = ...,
+        schema: type[BaseModel],
+    ) -> CursorPaginatedResponse[Any]: ...
+
+    @classmethod
+    async def paginate(
+        cls: type[Self],
+        session: AsyncSession,
+        *,
+        pagination_type: PaginationType = PaginationType.OFFSET,
+        filters: list[Any] | None = None,
+        joins: JoinType | None = None,
+        outer_join: bool = False,
+        load_options: Sequence[ExecutableOption] | None = None,
+        order_by: OrderByClause | None = None,
+        page: int = 1,
+        cursor: str | None = None,
+        items_per_page: int = 20,
+        search: str | SearchConfig | None = None,
+        search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        filter_by: dict[str, Any] | BaseModel | None = None,
+        schema: type[BaseModel],
+    ) -> OffsetPaginatedResponse[Any] | CursorPaginatedResponse[Any]:
+        """Get paginated results using either offset or cursor pagination.
+
+        Args:
+            session: DB async session.
+            pagination_type: Pagination strategy.  Defaults to
+                ``PaginationType.OFFSET``.
+            filters: List of SQLAlchemy filter conditions.
+            joins: List of ``(model, condition)`` tuples for joining related
+                tables.
+            outer_join: Use LEFT OUTER JOIN instead of INNER JOIN.
+            load_options: SQLAlchemy loader options.  Falls back to
+                ``default_load_options`` when not provided.
+            order_by: Column or expression to order results by.
+            page: Page number (1-indexed).  Only used when
+                ``pagination_type`` is ``OFFSET``.
+            cursor: Cursor token from a previous
+                :class:`.CursorPaginatedResponse`.  Only used when
+                ``pagination_type`` is ``CURSOR``.
+            items_per_page: Number of items per page (default 20).
+            search: Search query string or :class:`.SearchConfig` object.
+            search_fields: Fields to search in (overrides class default).
+            facet_fields: Columns to compute distinct values for (overrides
+                class default).
+            filter_by: Dict of ``{column_key: value}`` to filter by declared
+                facet fields.  Keys must match the ``column.key`` of a facet
+                field.  Scalar → equality, list → IN clause.  Raises
+                :exc:`.InvalidFacetFilterError` for unknown keys.
+            schema: Pydantic schema to serialize each item into.
+
+        Returns:
+            :class:`.OffsetPaginatedResponse` when ``pagination_type`` is
+            ``OFFSET``, :class:`.CursorPaginatedResponse` when it is
+            ``CURSOR``.
+        """
+        if pagination_type is PaginationType.CURSOR:
+            return await cls.cursor_paginate(
+                session,
+                cursor=cursor,
+                filters=filters,
+                joins=joins,
+                outer_join=outer_join,
+                load_options=load_options,
+                order_by=order_by,
+                items_per_page=items_per_page,
+                search=search,
+                search_fields=search_fields,
+                facet_fields=facet_fields,
+                filter_by=filter_by,
+                schema=schema,
+            )
+        return await cls.offset_paginate(
+            session,
+            filters=filters,
+            joins=joins,
+            outer_join=outer_join,
+            load_options=load_options,
+            order_by=order_by,
+            page=page,
+            items_per_page=items_per_page,
+            search=search,
+            search_fields=search_fields,
+            facet_fields=facet_fields,
+            filter_by=filter_by,
+            schema=schema,
         )
 
 
