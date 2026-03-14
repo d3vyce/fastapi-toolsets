@@ -18,7 +18,7 @@ class Article(Base, UUIDMixin, TimestampMixin):
     content: Mapped[str]
 ```
 
-All timestamp columns are timezone-aware (`TIMESTAMPTZ`). All defaults are server-side, so they are also applied when inserting rows via raw SQL outside the ORM.
+All timestamp columns are timezone-aware (`TIMESTAMPTZ`). All defaults are server-side (`clock_timestamp()`), so they are also applied when inserting rows via raw SQL outside the ORM.
 
 ## Mixins
 
@@ -42,7 +42,7 @@ print(user.id)  # UUID('...')
 
 ### [`CreatedAtMixin`](../reference/models.md#fastapi_toolsets.models.CreatedAtMixin)
 
-Adds a `created_at: datetime` column set to `NOW()` on insert. The column has no `onupdate` hook — it is intentionally immutable after the row is created.
+Adds a `created_at: datetime` column set to `clock_timestamp()` on insert. The column has no `onupdate` hook — it is intentionally immutable after the row is created.
 
 ```python
 from fastapi_toolsets.models import UUIDMixin, CreatedAtMixin
@@ -55,7 +55,7 @@ class Order(Base, UUIDMixin, CreatedAtMixin):
 
 ### [`UpdatedAtMixin`](../reference/models.md#fastapi_toolsets.models.UpdatedAtMixin)
 
-Adds an `updated_at: datetime` column set to `NOW()` on insert and automatically updated to `NOW()` on every ORM-level update (via SQLAlchemy's `onupdate` hook).
+Adds an `updated_at: datetime` column set to `clock_timestamp()` on insert and automatically updated to `clock_timestamp()` on every ORM-level update (via SQLAlchemy's `onupdate` hook).
 
 ```python
 from fastapi_toolsets.models import UUIDMixin, UpdatedAtMixin
