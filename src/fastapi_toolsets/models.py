@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Uuid, func, text
+from sqlalchemy import DateTime, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 __all__ = [
@@ -29,7 +29,7 @@ class CreatedAtMixin:
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.now(),
+        server_default=text("clock_timestamp()"),
     )
 
 
@@ -38,8 +38,8 @@ class UpdatedAtMixin:
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
+        server_default=text("clock_timestamp()"),
+        onupdate=text("clock_timestamp()"),
     )
 
 

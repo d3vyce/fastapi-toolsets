@@ -1,8 +1,9 @@
-import datetime
 import uuid
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, ForeignKey, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from fastapi_toolsets.models import CreatedAtMixin
 
 
 class Base(DeclarativeBase):
@@ -18,13 +19,10 @@ class Category(Base):
     articles: Mapped[list["Article"]] = relationship(back_populates="category")
 
 
-class Article(Base):
+class Article(Base, CreatedAtMixin):
     __tablename__ = "articles"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
     title: Mapped[str] = mapped_column(String(256))
     body: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32))
