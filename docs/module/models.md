@@ -24,7 +24,9 @@ All timestamp columns are timezone-aware (`TIMESTAMPTZ`). All defaults are serve
 
 ### [`UUIDMixin`](../reference/models.md#fastapi_toolsets.models.UUIDMixin)
 
-Adds a `id: UUID` primary key generated server-side by PostgreSQL using `gen_random_uuid()` (requires PostgreSQL 13+). The value is retrieved via `RETURNING` after insert, so it is available on the Python object immediately after `flush()`.
+Adds a `id: UUID` primary key generated server-side by PostgreSQL using `gen_random_uuid()`. The value is retrieved via `RETURNING` after insert, so it is available on the Python object immediately after `flush()`.
+
+!!! warning "Requires PostgreSQL 13+"
 
 ```python
 from fastapi_toolsets.models import UUIDMixin
@@ -36,8 +38,32 @@ class User(Base, UUIDMixin):
 
 # id is None before flush
 user = User(username="alice")
+session.add(user)
 await session.flush()
 print(user.id)  # UUID('...')
+```
+
+### [`UUIDv7Mixin`](../reference/models.md#fastapi_toolsets.models.UUIDv7Mixin)
+
+!!! info "Added in `v2.3`"
+
+Adds a `id: UUID` primary key generated server-side by PostgreSQL using `uuidv7()`. It's a time-ordered UUID format that encodes a millisecond-precision timestamp in the most significant bits, making it naturally sortable and index-friendly.
+
+!!! warning "Requires PostgreSQL 18+"
+
+```python
+from fastapi_toolsets.models import UUIDv7Mixin
+
+class Event(Base, UUIDv7Mixin):
+    __tablename__ = "events"
+
+    name: Mapped[str]
+
+# id is None before flush
+event = Event(name="user.signup")
+session.add(event)
+await session.flush()
+print(event.id)  # UUID('019...')
 ```
 
 ### [`CreatedAtMixin`](../reference/models.md#fastapi_toolsets.models.CreatedAtMixin)

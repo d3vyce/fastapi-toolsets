@@ -7,6 +7,7 @@ You can import them directly from `fastapi_toolsets.models`:
 ```python
 from fastapi_toolsets.models import (
     UUIDMixin,
+    UUIDv7Mixin,
     CreatedAtMixin,
     UpdatedAtMixin,
     TimestampMixin,
@@ -14,6 +15,8 @@ from fastapi_toolsets.models import (
 ```
 
 ## ::: fastapi_toolsets.models.UUIDMixin
+
+## ::: fastapi_toolsets.models.UUIDv7Mixin
 
 ## ::: fastapi_toolsets.models.CreatedAtMixin
 
