@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from fastapi_toolsets.crud import CrudFactory
+from fastapi_toolsets.crud import CrudFactory, PaginationType
 from fastapi_toolsets.crud.factory import AsyncCrud
 from fastapi_toolsets.exceptions import NotFoundError
 
@@ -2452,3 +2452,72 @@ class TestCursorPaginateColumnTypes:
         page1_ids = {p.id for p in page1.data}
         page2_ids = {p.id for p in page2.data}
         assert page1_ids.isdisjoint(page2_ids)
+
+
+class TestPaginate:
+    """Tests for the unified paginate() method."""
+
+    @pytest.mark.anyio
+    async def test_offset_pagination(self, db_session: AsyncSession):
+        """paginate() with OFFSET returns OffsetPaginatedResponse."""
+        from fastapi_toolsets.schemas import OffsetPagination
+
+        await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        await RoleCrud.create(db_session, RoleCreate(name="user"))
+
+        result = await RoleCrud.paginate(
+            db_session,
+            pagination_type=PaginationType.OFFSET,
+            schema=RoleRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination_type == PaginationType.OFFSET
+
+    @pytest.mark.anyio
+    async def test_cursor_pagination(self, db_session: AsyncSession):
+        """paginate() with CURSOR returns CursorPaginatedResponse."""
+        from fastapi_toolsets.schemas import CursorPagination
+
+        await RoleCursorCrud.create(db_session, RoleCreate(name="admin"))
+
+        result = await RoleCursorCrud.paginate(
+            db_session,
+            pagination_type=PaginationType.CURSOR,
+            schema=RoleRead,
+        )
+
+        assert isinstance(result.pagination, CursorPagination)
+        assert result.pagination_type == PaginationType.CURSOR
+
+    @pytest.mark.anyio
+    async def test_invalid_items_per_page_raises(self, db_session: AsyncSession):
+        """paginate() raises ValueError when items_per_page < 1."""
+        with pytest.raises(ValueError, match="items_per_page"):
+            await RoleCrud.paginate(
+                db_session,
+                pagination_type=PaginationType.OFFSET,
+                items_per_page=0,
+                schema=RoleRead,
+            )
+
+    @pytest.mark.anyio
+    async def test_invalid_page_raises(self, db_session: AsyncSession):
+        """paginate() raises ValueError when page < 1 for offset pagination."""
+        with pytest.raises(ValueError, match="page"):
+            await RoleCrud.paginate(
+                db_session,
+                pagination_type=PaginationType.OFFSET,
+                page=0,
+                schema=RoleRead,
+            )
+
+    @pytest.mark.anyio
+    async def test_unknown_pagination_type_raises(self, db_session: AsyncSession):
+        """paginate() raises ValueError for unknown pagination_type."""
+        with pytest.raises(ValueError, match="Unknown pagination_type"):
+            await RoleCrud.paginate(
+                db_session,
+                pagination_type="unknown",
+                schema=RoleRead,
+            )  # type: ignore[no-matching-overload]

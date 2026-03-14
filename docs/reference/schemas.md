@@ -14,7 +14,10 @@ from fastapi_toolsets.schemas import (
     ErrorResponse,
     OffsetPagination,
     CursorPagination,
+    PaginationType,
     PaginatedResponse,
+    OffsetPaginatedResponse,
+    CursorPaginatedResponse,
 )
 ```
 
@@ -34,4 +37,10 @@ from fastapi_toolsets.schemas import (
 
 ## ::: fastapi_toolsets.schemas.CursorPagination
 
+## ::: fastapi_toolsets.schemas.PaginationType
+
 ## ::: fastapi_toolsets.schemas.PaginatedResponse
+
+## ::: fastapi_toolsets.schemas.OffsetPaginatedResponse
+
+## ::: fastapi_toolsets.schemas.CursorPaginatedResponse
