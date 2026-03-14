@@ -20,49 +20,112 @@ async def get_user(user: User = UserDep) -> Response[UserSchema]:
     return Response(data=user, message="User retrieved")
 ```
 
-### [`PaginatedResponse[T]`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse)
+### Paginated response models
 
-Wraps a list of items with pagination metadata and optional facet values. The `pagination` field accepts either [`OffsetPagination`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPagination) or [`CursorPagination`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPagination) depending on the strategy used.
+Three classes wrap paginated list results. Pick the one that matches your endpoint's strategy:
 
-#### [`OffsetPagination`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPagination)
+| Class | `pagination` type | `pagination_type` field | Use when |
+|---|---|---|---|
+| [`OffsetPaginatedResponse[T]`](#offsetpaginatedresponset) | `OffsetPagination` | `"offset"` (fixed) | endpoint always uses offset |
+| [`CursorPaginatedResponse[T]`](#cursorpaginatedresponset) | `CursorPagination` | `"cursor"` (fixed) | endpoint always uses cursor |
+| [`PaginatedResponse[T]`](#paginatedresponset) | `OffsetPagination \| CursorPagination` | — | unified endpoint supporting both strategies |
 
-Page-number based. Requires `total_count` so clients can compute the total number of pages.
+#### [`OffsetPaginatedResponse[T]`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPaginatedResponse)
+
+!!! info "Added in `v2.3.0`"
+
+Use as the return type when the endpoint always uses [`offset_paginate`](crud.md#offset-pagination).  The `pagination` field is guaranteed to be an [`OffsetPagination`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPagination) object; the response always includes a `pagination_type: "offset"` discriminator.
 
 ```python
-from fastapi_toolsets.schemas import PaginatedResponse, OffsetPagination
+from fastapi_toolsets.schemas import OffsetPaginatedResponse
 
 @router.get("/users")
-async def list_users() -> PaginatedResponse[UserSchema]:
-    return PaginatedResponse(
-        data=users,
-        pagination=OffsetPagination(
-            total_count=100,
-            items_per_page=10,
-            page=1,
-            has_more=True,
-        ),
+async def list_users(
+    page: int = 1,
+    items_per_page: int = 20,
+) -> OffsetPaginatedResponse[UserSchema]:
+    return await UserCrud.offset_paginate(
+        session, page=page, items_per_page=items_per_page, schema=UserSchema
     )
 ```
 
-#### [`CursorPagination`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPagination)
+**Response shape:**
 
-Cursor based. Efficient for large or frequently updated datasets where offset pagination is impractical. Provides opaque `next_cursor` / `prev_cursor` tokens; no total count is exposed.
+```json
+{
+  "status": "SUCCESS",
+  "pagination_type": "offset",
+  "data": ["..."],
+  "pagination": {
+    "total_count": 100,
+    "page": 1,
+    "items_per_page": 20,
+    "has_more": true
+  }
+}
+```
+
+#### [`CursorPaginatedResponse[T]`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPaginatedResponse)
+
+!!! info "Added in `v2.3.0`"
+
+Use as the return type when the endpoint always uses [`cursor_paginate`](crud.md#cursor-pagination).  The `pagination` field is guaranteed to be a [`CursorPagination`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPagination) object; the response always includes a `pagination_type: "cursor"` discriminator.
 
 ```python
-from fastapi_toolsets.schemas import PaginatedResponse, CursorPagination
+from fastapi_toolsets.schemas import CursorPaginatedResponse
 
 @router.get("/events")
-async def list_events() -> PaginatedResponse[EventSchema]:
-    return PaginatedResponse(
-        data=events,
-        pagination=CursorPagination(
-            next_cursor="eyJpZCI6IDQyfQ==",
-            prev_cursor=None,
-            items_per_page=20,
-            has_more=True,
-        ),
+async def list_events(
+    cursor: str | None = None,
+    items_per_page: int = 20,
+) -> CursorPaginatedResponse[EventSchema]:
+    return await EventCrud.cursor_paginate(
+        session, cursor=cursor, items_per_page=items_per_page, schema=EventSchema
     )
 ```
+
+**Response shape:**
+
+```json
+{
+  "status": "SUCCESS",
+  "pagination_type": "cursor",
+  "data": ["..."],
+  "pagination": {
+    "next_cursor": "eyJpZCI6IDQyfQ==",
+    "prev_cursor": null,
+    "items_per_page": 20,
+    "has_more": true
+  }
+}
+```
+
+#### [`PaginatedResponse[T]`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse)
+
+Base class and return type for endpoints that support **both** pagination strategies via a `pagination_type` query parameter (using [`paginate()`](crud.md#unified-paginate--both-strategies-on-one-endpoint))
+
+```python
+from fastapi_toolsets.crud import PaginationType
+from fastapi_toolsets.schemas import PaginatedResponse
+
+@router.get("/users")
+async def list_users(
+    pagination_type: PaginationType = PaginationType.OFFSET,
+    page: int = 1,
+    cursor: str | None = None,
+    items_per_page: int = 20,
+) -> PaginatedResponse[UserSchema]:
+    return await UserCrud.paginate(
+        session,
+        pagination_type=pagination_type,
+        page=page,
+        cursor=cursor,
+        items_per_page=items_per_page,
+        schema=UserSchema,
+    )
+```
+
+#### Pagination metadata models
 
 The optional `filter_attributes` field is populated when `facet_fields` are configured on the CRUD class (see [Filter attributes](crud.md#filter-attributes-facets)). It is `None` by default and can be hidden from API responses with `response_model_exclude_none=True`.
 

@@ -145,41 +145,40 @@ user = await UserCrud.first(session=session, filters=[User.is_active == True])
 
 !!! info "Added in `v1.1` (only offset_pagination via `paginate` if `<v1.1`)"
 
-Two pagination strategies are available. Both return a [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse) but differ in how they navigate through results.
+Three pagination methods are available.  All return a typed response whose `pagination_type` field tells clients which strategy was used.
 
-| | `offset_paginate` | `cursor_paginate` |
-|---|---|---|
-| Total count | Yes | No |
-| Jump to arbitrary page | Yes | No |
-| Performance on deep pages | Degrades | Constant |
-| Stable under concurrent inserts | No | Yes |
-| Search compatible | Yes | Yes |
-| Use case | Admin panels, numbered pagination | Feeds, APIs, infinite scroll |
+| | `offset_paginate` | `cursor_paginate` | `paginate` |
+|---|---|---|---|
+| Return type | `OffsetPaginatedResponse` | `CursorPaginatedResponse` | either, based on `pagination_type` param |
+| Total count | Yes | No | / |
+| Jump to arbitrary page | Yes | No | / |
+| Performance on deep pages | Degrades | Constant | / |
+| Stable under concurrent inserts | No | Yes | / |
+| Use case | Admin panels, numbered pagination | Feeds, APIs, infinite scroll | single endpoint, both strategies |
 
 ### Offset pagination
 
 ```python
-@router.get(
-    "",
-    response_model=PaginatedResponse[User],
-)
+@router.get("")
 async def get_users(
     session: SessionDep,
     items_per_page: int = 50,
     page: int = 1,
-):
-    return await crud.UserCrud.offset_paginate(
+) -> OffsetPaginatedResponse[UserRead]:
+    return await UserCrud.offset_paginate(
         session=session,
         items_per_page=items_per_page,
         page=page,
+        schema=UserRead,
     )
 ```
 
-The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) method returns a [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse) whose `pagination` field is an [`OffsetPagination`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPagination) object:
+The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) method returns an [`OffsetPaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPaginatedResponse):
 
 ```json
 {
   "status": "SUCCESS",
+  "pagination_type": "offset",
   "data": ["..."],
   "pagination": {
     "total_count": 100,
@@ -193,27 +192,26 @@ The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.Async
 ### Cursor pagination
 
 ```python
-@router.get(
-    "",
-    response_model=PaginatedResponse[UserRead],
-)
+@router.get("")
 async def list_users(
     session: SessionDep,
     cursor: str | None = None,
     items_per_page: int = 20,
-):
+) -> CursorPaginatedResponse[UserRead]:
     return await UserCrud.cursor_paginate(
         session=session,
         cursor=cursor,
         items_per_page=items_per_page,
+        schema=UserRead,
     )
 ```
 
-The [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate) method returns a [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse) whose `pagination` field is a [`CursorPagination`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPagination) object:
+The [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate) method returns a [`CursorPaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPaginatedResponse):
 
 ```json
 {
   "status": "SUCCESS",
+  "pagination_type": "cursor",
   "data": ["..."],
   "pagination": {
     "next_cursor": "eyJ2YWx1ZSI6ICIzZjQ3YWM2OS0uLi4ifQ==",
@@ -258,6 +256,41 @@ PostCrud = CrudFactory(model=Post, cursor_column=Post.id)
 PostCrud = CrudFactory(model=Post, cursor_column=Post.created_at)
 ```
 
+### Unified endpoint (both strategies)
+
+!!! info "Added in `v2.3.0`"
+
+[`paginate()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.paginate) dispatches to `offset_paginate` or `cursor_paginate` based on a `pagination_type` query parameter, letting you expose **one endpoint** that supports both strategies.  The `pagination_type` field in the response tells clients which strategy was used, enabling frontend discriminated-union typing.
+
+```python
+from fastapi_toolsets.crud import PaginationType
+from fastapi_toolsets.schemas import PaginatedResponse
+
+@router.get("")
+async def list_users(
+    session: SessionDep,
+    pagination_type: PaginationType = PaginationType.OFFSET,
+    page: int = Query(1, ge=1, description="Current page (offset only)"),
+    cursor: str | None = Query(None, description="Cursor token (cursor only)"),
+    items_per_page: int = Query(20, ge=1, le=100),
+) -> PaginatedResponse[UserRead]:
+    return await UserCrud.paginate(
+        session,
+        pagination_type=pagination_type,
+        page=page,
+        cursor=cursor,
+        items_per_page=items_per_page,
+        schema=UserRead,
+    )
+```
+
+```
+GET /users?pagination_type=offset&page=2&items_per_page=10
+GET /users?pagination_type=cursor&cursor=eyJ2YWx1ZSI6...&items_per_page=10
+```
+
+Both `page` and `cursor` are always accepted by the endpoint — unused parameters are silently ignored by `paginate()`.
+
 ## Search
 
 Two search strategies are available, both compatible with [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) and [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate).
@@ -300,40 +333,36 @@ result = await UserCrud.offset_paginate(
 This allows searching with both [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) and [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate):
 
 ```python
-@router.get(
-    "",
-    response_model=PaginatedResponse[User],
-)
+@router.get("")
 async def get_users(
     session: SessionDep,
     items_per_page: int = 50,
     page: int = 1,
     search: str | None = None,
-):
-    return await crud.UserCrud.offset_paginate(
+) -> OffsetPaginatedResponse[UserRead]:
+    return await UserCrud.offset_paginate(
         session=session,
         items_per_page=items_per_page,
         page=page,
         search=search,
+        schema=UserRead,
     )
 ```
 
 ```python
-@router.get(
-    "",
-    response_model=PaginatedResponse[User],
-)
+@router.get("")
 async def get_users(
     session: SessionDep,
     cursor: str | None = None,
     items_per_page: int = 50,
     search: str | None = None,
-):
-    return await crud.UserCrud.cursor_paginate(
+) -> CursorPaginatedResponse[UserRead]:
+    return await UserCrud.cursor_paginate(
         session=session,
         items_per_page=items_per_page,
         cursor=cursor,
         search=search,
+        schema=UserRead,
     )
 ```
 
@@ -404,11 +433,12 @@ async def list_users(
     session: SessionDep,
     page: int = 1,
     filter_by: Annotated[dict[str, list[str]], Depends(UserCrud.filter_params())],
-) -> PaginatedResponse[UserRead]:
+) -> OffsetPaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(
         session=session,
         page=page,
         filter_by=filter_by,
+        schema=UserRead,
     )
 ```
 
@@ -448,8 +478,8 @@ from fastapi_toolsets.crud import OrderByClause
 async def list_users(
     session: SessionDep,
     order_by: Annotated[OrderByClause | None, Depends(UserCrud.order_params())],
-) -> PaginatedResponse[UserRead]:
-    return await UserCrud.offset_paginate(session=session, order_by=order_by)
+) -> OffsetPaginatedResponse[UserRead]:
+    return await UserCrud.offset_paginate(session=session, order_by=order_by, schema=UserRead)
 ```
 
 The dependency adds two query parameters to the endpoint:
@@ -556,7 +586,7 @@ async def get_user(session: SessionDep, uuid: UUID) -> Response[UserRead]:
     )
 
 @router.get("")
-async def list_users(session: SessionDep, page: int = 1) -> PaginatedResponse[UserRead]:
+async def list_users(session: SessionDep, page: int = 1) -> OffsetPaginatedResponse[UserRead]:
     return await crud.UserCrud.offset_paginate(
         session=session,
         page=page,

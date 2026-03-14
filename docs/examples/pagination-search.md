@@ -42,12 +42,17 @@ Declare `searchable_fields`, `facet_fields`, and `order_fields` once on [`CrudFa
 
 
 ## Routes
+
+```python title="routes.py:1:17"
+--8<-- "docs_src/examples/pagination_search/routes.py:1:17"
+```
+
 ### Offset pagination
 
 Best for admin panels or any UI that needs a total item count and numbered pages.
 
-```python title="routes.py:1:36"
---8<-- "docs_src/examples/pagination_search/routes.py:1:36"
+```python title="routes.py:20:40"
+--8<-- "docs_src/examples/pagination_search/routes.py:20:40"
 ```
 
 **Example request**
@@ -61,6 +66,7 @@ GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published&or
 ```json
 {
   "status": "SUCCESS",
+  "pagination_type": "offset",
   "data": [
     { "id": "3f47ac69-...", "title": "FastAPI tips", "status": "published", ... }
   ],
@@ -83,8 +89,8 @@ GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published&or
 
 Best for feeds, infinite scroll, or any high-throughput API where offset performance degrades.
 
-```python title="routes.py:39:59"
---8<-- "docs_src/examples/pagination_search/routes.py:39:59"
+```python title="routes.py:43:63"
+--8<-- "docs_src/examples/pagination_search/routes.py:43:63"
 ```
 
 **Example request**
@@ -98,6 +104,7 @@ GET /articles/cursor?items_per_page=10&status=published&order_by=created_at&orde
 ```json
 {
   "status": "SUCCESS",
+  "pagination_type": "cursor",
   "data": [
     { "id": "3f47ac69-...", "title": "FastAPI tips", "status": "published", ... }
   ],
@@ -115,6 +122,47 @@ GET /articles/cursor?items_per_page=10&status=published&order_by=created_at&orde
 ```
 
 Pass `next_cursor` as the `cursor` query parameter on the next request to advance to the next page.
+
+### Unified endpoint (both strategies)
+
+!!! info "Added in `v2.3.0`"
+
+[`paginate()`](../module/crud.md#unified-paginate--both-strategies-on-one-endpoint) lets a single endpoint support both strategies via a `pagination_type` query parameter. The `pagination_type` field in the response acts as a discriminator for frontend tooling.
+
+```python title="routes.py:66:90"
+--8<-- "docs_src/examples/pagination_search/routes.py:66:90"
+```
+
+**Offset request** (default)
+
+```
+GET /articles/?pagination_type=offset&page=1&items_per_page=10
+```
+
+```json
+{
+  "status": "SUCCESS",
+  "pagination_type": "offset",
+  "data": ["..."],
+  "pagination": { "total_count": 42, "page": 1, "items_per_page": 10, "has_more": true }
+}
+```
+
+**Cursor request**
+
+```
+GET /articles/?pagination_type=cursor&items_per_page=10
+GET /articles/?pagination_type=cursor&items_per_page=10&cursor=eyJ2YWx1ZSI6...
+```
+
+```json
+{
+  "status": "SUCCESS",
+  "pagination_type": "cursor",
+  "data": ["..."],
+  "pagination": { "next_cursor": "eyJ2YWx1ZSI6...", "prev_cursor": null, "items_per_page": 10, "has_more": true }
+}
+```
 
 ## Search behaviour
 
