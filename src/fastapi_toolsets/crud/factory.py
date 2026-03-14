@@ -1258,37 +1258,45 @@ class AsyncCrud(Generic[ModelType]):
             ``OFFSET``, :class:`.CursorPaginatedResponse` when it is
             ``CURSOR``.
         """
-        if pagination_type is PaginationType.CURSOR:
-            return await cls.cursor_paginate(
-                session,
-                cursor=cursor,
-                filters=filters,
-                joins=joins,
-                outer_join=outer_join,
-                load_options=load_options,
-                order_by=order_by,
-                items_per_page=items_per_page,
-                search=search,
-                search_fields=search_fields,
-                facet_fields=facet_fields,
-                filter_by=filter_by,
-                schema=schema,
-            )
-        return await cls.offset_paginate(
-            session,
-            filters=filters,
-            joins=joins,
-            outer_join=outer_join,
-            load_options=load_options,
-            order_by=order_by,
-            page=page,
-            items_per_page=items_per_page,
-            search=search,
-            search_fields=search_fields,
-            facet_fields=facet_fields,
-            filter_by=filter_by,
-            schema=schema,
-        )
+        if items_per_page < 1:
+            raise ValueError(f"items_per_page must be >= 1, got {items_per_page}")
+        match pagination_type:
+            case PaginationType.CURSOR:
+                return await cls.cursor_paginate(
+                    session,
+                    cursor=cursor,
+                    filters=filters,
+                    joins=joins,
+                    outer_join=outer_join,
+                    load_options=load_options,
+                    order_by=order_by,
+                    items_per_page=items_per_page,
+                    search=search,
+                    search_fields=search_fields,
+                    facet_fields=facet_fields,
+                    filter_by=filter_by,
+                    schema=schema,
+                )
+            case PaginationType.OFFSET:
+                if page < 1:
+                    raise ValueError(f"page must be >= 1, got {page}")
+                return await cls.offset_paginate(
+                    session,
+                    filters=filters,
+                    joins=joins,
+                    outer_join=outer_join,
+                    load_options=load_options,
+                    order_by=order_by,
+                    page=page,
+                    items_per_page=items_per_page,
+                    search=search,
+                    search_fields=search_fields,
+                    facet_fields=facet_fields,
+                    filter_by=filter_by,
+                    schema=schema,
+                )
+            case _:
+                raise ValueError(f"Unknown pagination_type: {pagination_type!r}")
 
 
 def CrudFactory(
