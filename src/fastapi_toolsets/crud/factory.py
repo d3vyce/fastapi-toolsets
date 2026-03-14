@@ -42,14 +42,17 @@ from .search import (
 )
 
 
-def _encode_cursor(value: Any) -> str:
-    """Encode cursor column value as an base64 string."""
-    return base64.b64encode(json.dumps(str(value)).encode()).decode()
+def _encode_cursor(value: Any, *, direction: str = "next") -> str:
+    """Encode a cursor column value and navigation direction as a base64 string."""
+    return base64.b64encode(
+        json.dumps({"val": str(value), "dir": direction}).encode()
+    ).decode()
 
 
-def _decode_cursor(cursor: str) -> str:
-    """Decode cursor base64 string."""
-    return json.loads(base64.b64decode(cursor.encode()).decode())
+def _decode_cursor(cursor: str) -> tuple[str, str]:
+    """Decode a cursor base64 string into ``(raw_value, direction)``."""
+    payload = json.loads(base64.b64decode(cursor.encode()).decode())
+    return payload["val"], payload["dir"]
 
 
 def _apply_joins(q: Any, joins: JoinType | None, outer_join: bool) -> Any:
@@ -1038,8 +1041,9 @@ class AsyncCrud(Generic[ModelType]):
         cursor_column: Any = cls.cursor_column
         cursor_col_name: str = cursor_column.key
 
+        direction = "next"
         if cursor is not None:
-            raw_val = _decode_cursor(cursor)
+            raw_val, direction = _decode_cursor(cursor)
             col_type = cursor_column.property.columns[0].type
             if isinstance(col_type, Integer):
                 cursor_val: Any = int(raw_val)
@@ -1057,7 +1061,10 @@ class AsyncCrud(Generic[ModelType]):
                     "Supported types: Integer, BigInteger, SmallInteger, Uuid, "
                     "DateTime, Date, Float, Numeric."
                 )
-            filters.append(cursor_column > cursor_val)
+            if direction == "prev":
+                filters.append(cursor_column < cursor_val)
+            else:
+                filters.append(cursor_column > cursor_val)
 
         # Build search filters
         if search:
@@ -1084,12 +1091,15 @@ class AsyncCrud(Generic[ModelType]):
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
 
-        # Cursor column is always the primary sort
-        q = q.order_by(cursor_column)
+        # Cursor column is always the primary sort; reverse direction for prev traversal
+        if direction == "prev":
+            q = q.order_by(cursor_column.desc())
+        else:
+            q = q.order_by(cursor_column)
         if order_by is not None:
             q = q.order_by(order_by)
 
-        # Fetch one extra to detect whether a next page exists
+        # Fetch one extra to detect whether another page exists in this direction
         q = q.limit(items_per_page + 1)
         result = await session.execute(q)
         raw_items = cast(list[ModelType], result.unique().scalars().all())
@@ -1097,15 +1107,34 @@ class AsyncCrud(Generic[ModelType]):
         has_more = len(raw_items) > items_per_page
         items_page = raw_items[:items_per_page]
 
-        # next_cursor points past the last item on this page
-        next_cursor: str | None = None
-        if has_more and items_page:
-            next_cursor = _encode_cursor(getattr(items_page[-1], cursor_col_name))
+        # Restore ascending order when traversing backward
+        if direction == "prev":
+            items_page = list(reversed(items_page))
 
-        # prev_cursor points to the first item on this page or None when on the first page
+        # next_cursor: points past the last item in ascending order
+        next_cursor: str | None = None
+        if direction == "next":
+            if has_more and items_page:
+                next_cursor = _encode_cursor(
+                    getattr(items_page[-1], cursor_col_name), direction="next"
+                )
+        else:
+            # Going backward: always provide a next_cursor to allow returning forward
+            if items_page:
+                next_cursor = _encode_cursor(
+                    getattr(items_page[-1], cursor_col_name), direction="next"
+                )
+
+        # prev_cursor: points before the first item in ascending order
         prev_cursor: str | None = None
-        if cursor is not None and items_page:
-            prev_cursor = _encode_cursor(getattr(items_page[0], cursor_col_name))
+        if direction == "next" and cursor is not None and items_page:
+            prev_cursor = _encode_cursor(
+                getattr(items_page[0], cursor_col_name), direction="prev"
+            )
+        elif direction == "prev" and has_more and items_page:
+            prev_cursor = _encode_cursor(
+                getattr(items_page[0], cursor_col_name), direction="prev"
+            )
 
         items: list[Any] = [schema.model_validate(item) for item in items_page]
 
