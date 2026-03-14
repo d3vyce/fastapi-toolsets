@@ -1969,11 +1969,8 @@ class TestCursorPaginatePrevCursor:
         assert page2.pagination.prev_cursor is not None
 
     @pytest.mark.anyio
-    async def test_prev_cursor_points_to_first_item(self, db_session: AsyncSession):
-        """prev_cursor encodes the value of the first item on the current page."""
-        import base64
-        import json
-
+    async def test_prev_cursor_navigates_back(self, db_session: AsyncSession):
+        """prev_cursor on page 2 navigates back to the same items as page 1."""
         for i in range(10):
             await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
 
@@ -1992,12 +1989,83 @@ class TestCursorPaginatePrevCursor:
         assert isinstance(page2.pagination, CursorPagination)
         assert page2.pagination.prev_cursor is not None
 
-        # Decode prev_cursor and compare to first item's id
-        decoded = json.loads(
-            base64.b64decode(page2.pagination.prev_cursor.encode()).decode()
+        # Using prev_cursor should return the same items as page 1
+        back_to_page1 = await RoleCursorCrud.cursor_paginate(
+            db_session,
+            cursor=page2.pagination.prev_cursor,
+            items_per_page=5,
+            schema=RoleRead,
         )
-        first_item_id = str(page2.data[0].id)
-        assert decoded == first_item_id
+        assert isinstance(back_to_page1.pagination, CursorPagination)
+        assert [r.id for r in back_to_page1.data] == [r.id for r in page1.data]
+        assert back_to_page1.pagination.prev_cursor is None
+
+    @pytest.mark.anyio
+    async def test_prev_cursor_empty_result_when_no_items_before(
+        self, db_session: AsyncSession
+    ):
+        """Going backward past the first item returns an empty page."""
+        from fastapi_toolsets.crud.factory import _encode_cursor
+        from fastapi_toolsets.schemas import CursorPagination
+
+        await IntRoleCursorCrud.create(db_session, IntRoleCreate(name="role00"))
+
+        page1 = await IntRoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=5, schema=IntRoleRead
+        )
+        assert isinstance(page1.pagination, CursorPagination)
+
+        # Manually craft a backward cursor before any existing id
+        before_all = _encode_cursor(0, direction="prev")
+        empty = await IntRoleCursorCrud.cursor_paginate(
+            db_session, cursor=before_all, items_per_page=5, schema=IntRoleRead
+        )
+
+        assert isinstance(empty.pagination, CursorPagination)
+        assert empty.data == []
+        assert empty.pagination.next_cursor is None
+        assert empty.pagination.prev_cursor is None
+
+    @pytest.mark.anyio
+    async def test_prev_cursor_set_when_more_pages_behind(
+        self, db_session: AsyncSession
+    ):
+        """Going backward on page 2 (of 3) still exposes a prev_cursor for page 1."""
+        for i in range(9):
+            await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
+
+        from fastapi_toolsets.schemas import CursorPagination
+
+        page1 = await RoleCursorCrud.cursor_paginate(
+            db_session, items_per_page=3, schema=RoleRead
+        )
+        assert isinstance(page1.pagination, CursorPagination)
+        page2 = await RoleCursorCrud.cursor_paginate(
+            db_session,
+            cursor=page1.pagination.next_cursor,
+            items_per_page=3,
+            schema=RoleRead,
+        )
+        assert isinstance(page2.pagination, CursorPagination)
+        page3 = await RoleCursorCrud.cursor_paginate(
+            db_session,
+            cursor=page2.pagination.next_cursor,
+            items_per_page=3,
+            schema=RoleRead,
+        )
+        assert isinstance(page3.pagination, CursorPagination)
+        assert page3.pagination.prev_cursor is not None
+
+        # Going back to page 2 should still have a prev_cursor pointing at page 1
+        back_to_page2 = await RoleCursorCrud.cursor_paginate(
+            db_session,
+            cursor=page3.pagination.prev_cursor,
+            items_per_page=3,
+            schema=RoleRead,
+        )
+        assert isinstance(back_to_page2.pagination, CursorPagination)
+        assert [r.id for r in back_to_page2.data] == [r.id for r in page2.data]
+        assert back_to_page2.pagination.prev_cursor is not None
 
 
 class TestCursorPaginateWithSearch:
