@@ -11,6 +11,7 @@ from fastapi_toolsets.models import (
     CreatedAtMixin,
     TimestampMixin,
     UUIDMixin,
+    UUIDv7Mixin,
     UpdatedAtMixin,
 )
 
@@ -45,6 +46,12 @@ class TimestampModel(MixinBase, TimestampMixin):
     __tablename__ = "mixin_timestamp_models"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(50))
+
+
+class UUIDv7Model(MixinBase, UUIDv7Mixin):
+    __tablename__ = "mixin_uuidv7_models"
+
     name: Mapped[str] = mapped_column(String(50))
 
 
@@ -231,6 +238,50 @@ class TestTimestampMixin:
         col_names = {c.name for c in TimestampModel.__table__.columns}
         assert "created_at" in col_names
         assert "updated_at" in col_names
+
+
+class TestUUIDv7Mixin:
+    @pytest.mark.anyio
+    async def test_uuid7_generated_by_db(self, mixin_session):
+        """UUIDv7 is generated server-side and populated after flush."""
+        obj = UUIDv7Model(name="test")
+        mixin_session.add(obj)
+        await mixin_session.flush()
+
+        assert obj.id is not None
+        assert isinstance(obj.id, uuid.UUID)
+
+    @pytest.mark.anyio
+    async def test_uuid7_is_primary_key(self):
+        """UUIDv7Mixin adds id as primary key column."""
+        pk_cols = [c.name for c in UUIDv7Model.__table__.primary_key]
+        assert pk_cols == ["id"]
+
+    @pytest.mark.anyio
+    async def test_each_row_gets_unique_uuid7(self, mixin_session):
+        """Each inserted row gets a distinct UUIDv7."""
+        a = UUIDv7Model(name="a")
+        b = UUIDv7Model(name="b")
+        mixin_session.add_all([a, b])
+        await mixin_session.flush()
+
+        assert a.id != b.id
+
+    @pytest.mark.anyio
+    async def test_uuid7_version(self, mixin_session):
+        """Generated UUIDs have version 7."""
+        obj = UUIDv7Model(name="test")
+        mixin_session.add(obj)
+        await mixin_session.flush()
+
+        assert obj.id.version == 7
+
+    @pytest.mark.anyio
+    async def test_uuid7_server_default_set(self):
+        """Column has uuidv7() as server default."""
+        col = UUIDv7Model.__table__.c["id"]
+        assert col.server_default is not None
+        assert "uuidv7" in str(col.server_default.arg)
 
 
 class TestFullMixinModel:
