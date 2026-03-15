@@ -150,14 +150,20 @@ class PaginatedResponse(BaseResponse, Generic[DataT]):
     pagination_type: PaginationType | None = None
     filter_attributes: dict[str, list[Any]] | None = None
 
+    _discriminated_union_cache: ClassVar[dict[Any, Any]] = {}
+
     def __class_getitem__(  # type: ignore[invalid-method-override]
         cls, item: type[Any] | tuple[type[Any], ...]
     ) -> type[Any]:
         if cls is PaginatedResponse and not isinstance(item, TypeVar):
-            return Annotated[  # type: ignore[invalid-return-type]
-                Union[CursorPaginatedResponse[item], OffsetPaginatedResponse[item]],  # type: ignore[invalid-type-form]
-                Field(discriminator="pagination_type"),
-            ]
+            cached = cls._discriminated_union_cache.get(item)
+            if cached is None:
+                cached = Annotated[
+                    Union[CursorPaginatedResponse[item], OffsetPaginatedResponse[item]],  # type: ignore[invalid-type-form]
+                    Field(discriminator="pagination_type"),
+                ]
+                cls._discriminated_union_cache[item] = cached
+            return cached  # type: ignore[invalid-return-type]
         return super().__class_getitem__(item)
 
 
