@@ -304,7 +304,7 @@ class TestPaginatedResponse:
             page=1,
             has_more=False,
         )
-        response = PaginatedResponse[dict](
+        response = PaginatedResponse(
             data=[],
             pagination=pagination,
         )
@@ -312,6 +312,26 @@ class TestPaginatedResponse:
         assert isinstance(response.pagination, OffsetPagination)
         assert response.data == []
         assert response.pagination.total_count == 0
+
+    def test_class_getitem_with_concrete_type_returns_discriminated_union(self):
+        """PaginatedResponse[T] with a concrete type returns a discriminated Annotated union."""
+        import typing
+
+        alias = PaginatedResponse[dict]
+        args = typing.get_args(alias)
+        # args[0] is the Union, args[1] is the FieldInfo discriminator
+        union_args = typing.get_args(args[0])
+        assert CursorPaginatedResponse[dict] in union_args
+        assert OffsetPaginatedResponse[dict] in union_args
+
+    def test_class_getitem_with_typevar_returns_generic(self):
+        """PaginatedResponse[TypeVar] falls through to Pydantic generic parametrisation."""
+        from typing import TypeVar
+
+        T = TypeVar("T")
+        alias = PaginatedResponse[T]
+        # Should be a generic alias, not an Annotated union
+        assert not hasattr(alias, "__metadata__")
 
     def test_generic_type_hint(self):
         """PaginatedResponse supports generic type hints."""
