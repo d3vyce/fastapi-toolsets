@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from fastapi_toolsets.crud import CrudFactory, PaginationType
-from fastapi_toolsets.crud.factory import AsyncCrud
+from fastapi_toolsets.crud.factory import AsyncCrud, _CursorDirection
 from fastapi_toolsets.exceptions import NotFoundError
 
 from .conftest import (
@@ -2016,7 +2016,7 @@ class TestCursorPaginatePrevCursor:
         assert isinstance(page1.pagination, CursorPagination)
 
         # Manually craft a backward cursor before any existing id
-        before_all = _encode_cursor(0, direction="prev")
+        before_all = _encode_cursor(0, direction=_CursorDirection.PREV)
         empty = await IntRoleCursorCrud.cursor_paginate(
             db_session, cursor=before_all, items_per_page=5, schema=IntRoleRead
         )

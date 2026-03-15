@@ -324,6 +324,10 @@ class TestPaginatedResponse:
         assert CursorPaginatedResponse[dict] in union_args
         assert OffsetPaginatedResponse[dict] in union_args
 
+    def test_class_getitem_is_cached(self):
+        """Repeated subscripting with the same type returns the identical cached object."""
+        assert PaginatedResponse[dict] is PaginatedResponse[dict]
+
     def test_class_getitem_with_typevar_returns_generic(self):
         """PaginatedResponse[TypeVar] falls through to Pydantic generic parametrisation."""
         from typing import TypeVar
