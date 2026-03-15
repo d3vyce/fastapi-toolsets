@@ -1,9 +1,9 @@
 """Base Pydantic schemas for API responses."""
 
 from enum import Enum
-from typing import Any, ClassVar, Generic, Literal
+from typing import Annotated, Any, ClassVar, Generic, Literal, TypeVar, Union
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .types import DataT
 
@@ -138,15 +138,27 @@ class PaginatedResponse(BaseResponse, Generic[DataT]):
 
     Base class and return type for endpoints that support both pagination
     strategies.  Use :class:`OffsetPaginatedResponse` or
-    :class:`CursorPaginatedResponse` when the strategy is fixed;  use
-    ``PaginatedResponse`` as the return annotation for unified endpoints that
-    dispatch via :meth:`~fastapi_toolsets.crud.factory.AsyncCrud.paginate`.
+    :class:`CursorPaginatedResponse` when the strategy is fixed.
+
+    When used as ``PaginatedResponse[T]`` in a return annotation, subscripting
+    returns ``Annotated[Union[CursorPaginatedResponse[T], OffsetPaginatedResponse[T]], Field(discriminator="pagination_type")]``
+    so FastAPI emits a proper ``oneOf`` + discriminator in the OpenAPI schema.
     """
 
     data: list[DataT]
     pagination: OffsetPagination | CursorPagination
     pagination_type: PaginationType | None = None
     filter_attributes: dict[str, list[Any]] | None = None
+
+    def __class_getitem__(  # type: ignore[invalid-method-override]
+        cls, item: type[Any] | tuple[type[Any], ...]
+    ) -> type[Any]:
+        if cls is PaginatedResponse and not isinstance(item, TypeVar):
+            return Annotated[  # type: ignore[invalid-return-type]
+                Union[CursorPaginatedResponse[item], OffsetPaginatedResponse[item]],  # type: ignore[invalid-type-form]
+                Field(discriminator="pagination_type"),
+            ]
+        return super().__class_getitem__(item)
 
 
 class OffsetPaginatedResponse(PaginatedResponse[DataT]):
