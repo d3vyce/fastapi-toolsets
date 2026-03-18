@@ -3,13 +3,17 @@
 import inspect
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import pytest
 from fastapi.params import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_toolsets.dependencies import BodyDependency, PathDependency
+from fastapi_toolsets.dependencies import (
+    BodyDependency,
+    PathDependency,
+    _unwrap_session_dep,
+)
 
 from .conftest import Role, RoleCreate, RoleCrud, User
 
@@ -17,6 +21,24 @@ from .conftest import Role, RoleCreate, RoleCrud, User
 async def mock_get_db() -> AsyncGenerator[AsyncSession, None]:
     """Mock session dependency for testing."""
     yield None
+
+
+MockSessionDep = Annotated[AsyncSession, Depends(mock_get_db)]
+
+
+class TestUnwrapSessionDep:
+    def test_plain_callable_returned_as_is(self):
+        """Plain callable is returned unchanged."""
+        assert _unwrap_session_dep(mock_get_db) is mock_get_db
+
+    def test_annotated_with_depends_unwrapped(self):
+        """Annotated form with Depends is unwrapped to the plain callable."""
+        assert _unwrap_session_dep(MockSessionDep) is mock_get_db
+
+    def test_annotated_without_depends_returned_as_is(self):
+        """Annotated form with no Depends falls back to returning session_dep as-is."""
+        annotated_no_dep = Annotated[AsyncSession, "not_a_depends"]
+        assert _unwrap_session_dep(annotated_no_dep) is annotated_no_dep
 
 
 class TestPathDependency:
@@ -94,6 +116,39 @@ class TestPathDependency:
 
         assert result.id == role.id
         assert result.name == "test_role"
+
+    def test_annotated_session_dep_returns_depends_instance(self):
+        """PathDependency accepts Annotated[AsyncSession, Depends(...)] form."""
+        dep = PathDependency(Role, Role.id, session_dep=MockSessionDep)
+        assert isinstance(dep, Depends)
+
+    def test_annotated_session_dep_signature(self):
+        """PathDependency with Annotated session_dep produces a valid signature."""
+        dep = cast(Any, PathDependency(Role, Role.id, session_dep=MockSessionDep))
+        sig = inspect.signature(dep.dependency)
+
+        assert "role_id" in sig.parameters
+        assert "session" in sig.parameters
+        assert isinstance(sig.parameters["session"].default, Depends)
+
+    def test_annotated_session_dep_unwraps_callable(self):
+        """PathDependency with Annotated form uses the underlying callable, not the Annotated type."""
+        dep = cast(Any, PathDependency(Role, Role.id, session_dep=MockSessionDep))
+        sig = inspect.signature(dep.dependency)
+
+        inner_dep = sig.parameters["session"].default
+        assert inner_dep.dependency is mock_get_db
+
+    @pytest.mark.anyio
+    async def test_annotated_session_dep_fetches_object(self, db_session):
+        """PathDependency with Annotated session_dep correctly fetches object from database."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="annotated_role"))
+
+        dep = cast(Any, PathDependency(Role, Role.id, session_dep=MockSessionDep))
+        result = await dep.dependency(session=db_session, role_id=role.id)
+
+        assert result.id == role.id
+        assert result.name == "annotated_role"
 
 
 class TestBodyDependency:
@@ -184,3 +239,39 @@ class TestBodyDependency:
 
         assert result.id == role.id
         assert result.name == "body_test_role"
+
+    def test_annotated_session_dep_returns_depends_instance(self):
+        """BodyDependency accepts Annotated[AsyncSession, Depends(...)] form."""
+        dep = BodyDependency(
+            Role, Role.id, session_dep=MockSessionDep, body_field="role_id"
+        )
+        assert isinstance(dep, Depends)
+
+    def test_annotated_session_dep_unwraps_callable(self):
+        """BodyDependency with Annotated form uses the underlying callable, not the Annotated type."""
+        dep = cast(
+            Any,
+            BodyDependency(
+                Role, Role.id, session_dep=MockSessionDep, body_field="role_id"
+            ),
+        )
+        sig = inspect.signature(dep.dependency)
+
+        inner_dep = sig.parameters["session"].default
+        assert inner_dep.dependency is mock_get_db
+
+    @pytest.mark.anyio
+    async def test_annotated_session_dep_fetches_object(self, db_session):
+        """BodyDependency with Annotated session_dep correctly fetches object from database."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="body_annotated_role"))
+
+        dep = cast(
+            Any,
+            BodyDependency(
+                Role, Role.id, session_dep=MockSessionDep, body_field="role_id"
+            ),
+        )
+        result = await dep.dependency(session=db_session, role_id=role.id)
+
+        assert result.id == role.id
+        assert result.name == "body_annotated_role"
