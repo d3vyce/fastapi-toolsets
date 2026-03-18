@@ -78,24 +78,7 @@ _SESSION_FIELD_CHANGES = "_ft_field_changes"
 
 
 def watch_fields(*fields: str) -> Callable[[type[_T]], type[_T]]:
-    """Class decorator to register fields to watch for changes.
-
-    Must be combined with :class:`WatchedFieldsMixin`.
-
-    Example:
-        ```python
-        @watch_fields("status", "role")
-        class User(Base, UUIDMixin, WatchedFieldsMixin):
-            __tablename__ = "users"
-            status: Mapped[str]
-            role: Mapped[str]
-
-            async def on_field_changes(self, changes):
-                print(changes)
-                # On creation:  {"status": {"old": None, "new": "active"}}
-                # On update:    {"status": {"old": "active", "new": "inactive"}}
-        ```
-    """
+    """Class decorator to register fields to watch for changes."""
 
     def decorator(cls: type[_T]) -> type[_T]:
         _WATCHED_FIELDS[cls] = list(fields)

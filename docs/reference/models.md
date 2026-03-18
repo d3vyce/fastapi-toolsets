@@ -11,6 +11,8 @@ from fastapi_toolsets.models import (
     CreatedAtMixin,
     UpdatedAtMixin,
     TimestampMixin,
+    WatchedFieldsMixin,
+    watch_fields,
 )
 ```
 
@@ -23,3 +25,7 @@ from fastapi_toolsets.models import (
 ## ::: fastapi_toolsets.models.UpdatedAtMixin
 
 ## ::: fastapi_toolsets.models.TimestampMixin
+
+## ::: fastapi_toolsets.models.WatchedFieldsMixin
+
+## ::: fastapi_toolsets.models.watch_fields

@@ -117,6 +117,65 @@ class Article(Base, UUIDMixin, TimestampMixin):
     title: Mapped[str]
 ```
 
+### [`WatchedFieldsMixin`](../reference/models.md#fastapi_toolsets.models.WatchedFieldsMixin)
+
+!!! info "Added in `v2.4`"
+
+The `watch_fields` decorator combined with `WatchedFieldsMixin` lets you react to field changes (including on row creation).
+
+
+Apply `@watch_fields` to declare which fields to monitor, and override `on_field_changes` to handle the event:
+
+```python
+from fastapi_toolsets.models import UUIDMixin, WatchedFieldsMixin, watch_fields
+
+@watch_fields("status")
+class Order(Base, UUIDMixin, WatchedFieldsMixin):
+    __tablename__ = "orders"
+
+    status: Mapped[str]
+
+    async def on_field_changes(self, changes: dict) -> None:
+        # Called after every commit that touches a watched field,
+        # including the initial INSERT.
+        if "status" in changes:
+            old = changes["status"]["old"]  # None on creation
+            new = changes["status"]["new"]
+            await notify(self.id, old, new)
+```
+
+The `changes` dict maps each watched field that changed to `{"old": ..., "new": ...}`. On row creation, `old` is always `None`:
+
+```python
+# INSERT  → {"status": {"old": None,       "new": "pending"}}
+# UPDATE  → {"status": {"old": "pending",  "new": "shipped"}}
+```
+
+Server-side defaults (e.g. `id`, `created_at`) are fully populated when `on_field_changes` is called, so `self.id` is safe to use inside the callback.
+
+!!! info "If you flush several times before committing, the changes are merged: the earliest `old` and the latest `new` are preserved, and `on_field_changes` fires only once per commit."
+
+!!! warning "The callback fires only for changes made through the ORM. Rows updated via raw SQL (`UPDATE ... SET ...`) are not detected."
+
+You can also watch multiple fields:
+
+```python
+@watch_fields("status", "assigned_to")
+class Ticket(Base, UUIDMixin, WatchedFieldsMixin):
+    __tablename__ = "tickets"
+
+    status: Mapped[str]
+    assigned_to: Mapped[str | None]
+
+    async def on_field_changes(self, changes: dict) -> None:
+        if "status" in changes:
+            await send_status_email(self.id, changes["status"])
+        if "assigned_to" in changes:
+            await send_assignment_notification(self.id, changes["assigned_to"])
+```
+
+Only fields that actually changed are included in `changes` — if only `status` changed, `assigned_to` will not appear.
+
 ## Composing mixins
 
 All mixins can be combined in any order. The only constraint is that exactly one primary key must be defined — either via `UUIDMixin` or directly on the model.
