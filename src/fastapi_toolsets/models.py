@@ -1,10 +1,17 @@
 """SQLAlchemy model mixins for common column patterns."""
 
+import asyncio
 import uuid
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any, TypeVar
 
-from sqlalchemy import DateTime, Uuid, text
+from sqlalchemy import DateTime, Uuid, event, text
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
+
+from .logger import get_logger
 
 __all__ = [
     "UUIDMixin",
@@ -12,7 +19,12 @@ __all__ = [
     "CreatedAtMixin",
     "UpdatedAtMixin",
     "TimestampMixin",
+    "WatchedFieldsMixin",
+    "watch_fields",
 ]
+
+_logger = get_logger()
+_T = TypeVar("_T")
 
 
 class UUIDMixin:
@@ -56,3 +68,177 @@ class UpdatedAtMixin:
 
 class TimestampMixin(CreatedAtMixin, UpdatedAtMixin):
     """Mixin that combines ``created_at`` and ``updated_at`` timestamp columns."""
+
+
+_WATCHED_FIELDS: dict[type, list[str]] = {}
+
+# Keys used in session.info to pass state between event listeners.
+_SESSION_PENDING_NEW = "_ft_pending_new"
+_SESSION_FIELD_CHANGES = "_ft_field_changes"
+
+
+def watch_fields(*fields: str) -> Callable[[type[_T]], type[_T]]:
+    """Class decorator to register fields to watch for changes.
+
+    Must be combined with :class:`WatchedFieldsMixin`.
+
+    Example:
+        ```python
+        @watch_fields("status", "role")
+        class User(Base, UUIDMixin, WatchedFieldsMixin):
+            __tablename__ = "users"
+            status: Mapped[str]
+            role: Mapped[str]
+
+            async def on_field_changes(self, changes):
+                print(changes)
+                # On creation:  {"status": {"old": None, "new": "active"}}
+                # On update:    {"status": {"old": "active", "new": "inactive"}}
+        ```
+    """
+
+    def decorator(cls: type[_T]) -> type[_T]:
+        _WATCHED_FIELDS[cls] = list(fields)
+        return cls
+
+    return decorator
+
+
+def _upsert_changes(
+    pending: dict[int, tuple[Any, dict[str, dict[str, Any]]]],
+    obj: Any,
+    changes: dict[str, dict[str, Any]],
+) -> None:
+    """Insert or merge *changes* into *pending* for *obj*.
+
+    When the object already has a pending entry, existing ``old`` values are
+    preserved and only ``new`` values are updated (keeping earliest old / latest
+    new across multiple flushes in the same transaction).
+    """
+    key = id(obj)
+    if key in pending:
+        existing = pending[key][1]
+        for field, change in changes.items():
+            if field in existing:
+                existing[field]["new"] = change["new"]
+            else:
+                existing[field] = change
+    else:
+        pending[key] = (obj, changes)
+
+
+@event.listens_for(AsyncSession.sync_session_class, "after_flush")
+def _after_flush(session: Any, flush_context: Any) -> None:
+    if not _WATCHED_FIELDS:
+        return
+
+    # Capture references to new objects while session.new is still populated.
+    # Values are read later in _after_flush_postexec once RETURNING has been
+    # processed and server defaults are populated on the Python objects.
+    new_watched: list[tuple[Any, list[str]]] = []
+    for obj in session.new:
+        watched = _WATCHED_FIELDS.get(type(obj))
+        if watched:
+            new_watched.append((obj, watched))
+    if new_watched:
+        session.info.setdefault(_SESSION_PENDING_NEW, []).extend(new_watched)
+
+    # Dirty objects: read old/new from SQLAlchemy attribute history.
+    pending: dict[int, tuple[Any, dict[str, dict[str, Any]]]] = session.info.setdefault(
+        _SESSION_FIELD_CHANGES, {}
+    )
+    for obj in session.dirty:
+        watched = _WATCHED_FIELDS.get(type(obj))
+        if not watched:
+            continue
+        changes: dict[str, dict[str, Any]] = {}
+        for field in watched:
+            history = sa_inspect(obj).attrs[field].history
+            if history.has_changes() and history.deleted:
+                changes[field] = {
+                    "old": history.deleted[0],
+                    "new": history.added[0] if history.added else None,
+                }
+        if changes:
+            _upsert_changes(pending, obj, changes)
+
+
+@event.listens_for(AsyncSession.sync_session_class, "after_flush_postexec")
+def _after_flush_postexec(session: Any, flush_context: Any) -> None:
+    if not _WATCHED_FIELDS:
+        return
+
+    # New objects are now persistent and RETURNING values have been applied,
+    # so server defaults (id, created_at, …) are available via getattr.
+    new_watched: list[tuple[Any, list[str]]] = session.info.pop(
+        _SESSION_PENDING_NEW, []
+    )
+    if not new_watched:
+        return
+    pending: dict[int, tuple[Any, dict[str, dict[str, Any]]]] = session.info.setdefault(
+        _SESSION_FIELD_CHANGES, {}
+    )
+    for obj, watched in new_watched:
+        changes = {
+            field: {"old": None, "new": getattr(obj, field, None)} for field in watched
+        }
+        _upsert_changes(pending, obj, changes)
+
+
+@event.listens_for(AsyncSession.sync_session_class, "after_rollback")
+def _after_rollback(session: Any) -> None:
+    session.info.pop(_SESSION_FIELD_CHANGES, None)
+    session.info.pop(_SESSION_PENDING_NEW, None)
+
+
+def _task_error_handler(task: asyncio.Task[Any]) -> None:
+    if not task.cancelled() and (exc := task.exception()):
+        _logger.error("on_field_changes raised an unhandled exception", exc_info=exc)
+
+
+@event.listens_for(AsyncSession.sync_session_class, "after_commit")
+def _after_commit(session: Any) -> None:
+    if not _WATCHED_FIELDS:
+        return
+    pending: dict[int, tuple[Any, dict[str, dict[str, Any]]]] = session.info.pop(
+        _SESSION_FIELD_CHANGES, {}
+    )
+    if not pending:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    for obj, field_changes in pending.values():
+        task = loop.create_task(obj.on_field_changes(field_changes))
+        task.add_done_callback(_task_error_handler)
+
+
+class WatchedFieldsMixin:
+    """Mixin that enables field-change monitoring via the :func:`watch_fields` decorator.
+
+    Subclasses should override :meth:`on_field_changes` to react to changes.
+    The callback fires after commit — both on row creation (``old=None``) and
+    on updates, with server-default values (e.g. ``id``, ``created_at``)
+    already populated.
+
+    Example:
+        ```python
+        @watch_fields("status")
+        class Order(Base, UUIDMixin, WatchedFieldsMixin):
+            __tablename__ = "orders"
+            status: Mapped[str]
+
+            async def on_field_changes(self, changes):
+                if "status" in changes:
+                    await notify(self.id, changes["status"])
+        ```
+    """
+
+    async def on_field_changes(self, changes: dict[str, dict[str, Any]]) -> None:
+        """Called after commit when watched fields change or a new row is created.
+
+        Args:
+            changes: Mapping of field name to ``{"old": ..., "new": ...}``.
+                ``old`` is ``None`` for newly created rows.
+        """

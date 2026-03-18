@@ -1,7 +1,12 @@
 """Tests for fastapi_toolsets.models mixins."""
 
+import asyncio
 import uuid
+from contextlib import suppress
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import fastapi_toolsets.models as _models_module
 import pytest
 from sqlalchemy import String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -13,6 +18,16 @@ from fastapi_toolsets.models import (
     UUIDMixin,
     UUIDv7Mixin,
     UpdatedAtMixin,
+    WatchedFieldsMixin,
+    _SESSION_FIELD_CHANGES,
+    _SESSION_PENDING_NEW,
+    _after_commit,
+    _after_flush,
+    _after_flush_postexec,
+    _after_rollback,
+    _task_error_handler,
+    _upsert_changes,
+    watch_fields,
 )
 
 from .conftest import DATABASE_URL
@@ -59,6 +74,39 @@ class FullMixinModel(MixinBase, UUIDMixin, UpdatedAtMixin):
     __tablename__ = "mixin_full_models"
 
     name: Mapped[str] = mapped_column(String(50))
+
+
+# --- WatchedFieldsMixin test models ---
+
+_test_calls: list[dict] = []
+
+
+@watch_fields("status")
+class WatchedModel(MixinBase, UUIDMixin, WatchedFieldsMixin):
+    __tablename__ = "mixin_watched_models"
+
+    status: Mapped[str] = mapped_column(String(50))
+    other: Mapped[str] = mapped_column(String(50))
+
+    async def on_field_changes(self, changes: dict) -> None:
+        _test_calls.append({"obj_id": self.id, "changes": changes})
+
+
+class NonWatchedModel(MixinBase):
+    __tablename__ = "mixin_non_watched_models"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    value: Mapped[str] = mapped_column(String(50))
+
+
+@pytest.fixture
+def empty_watched_fields():
+    """Temporarily clear _WATCHED_FIELDS to exercise early-exit guards."""
+    original = dict(_models_module._WATCHED_FIELDS)
+    _models_module._WATCHED_FIELDS.clear()
+    yield
+    _models_module._WATCHED_FIELDS.clear()
+    _models_module._WATCHED_FIELDS.update(original)
 
 
 @pytest.fixture(scope="function")
@@ -296,3 +344,253 @@ class TestFullMixinModel:
         assert isinstance(obj.id, uuid.UUID)
         assert obj.updated_at is not None
         assert obj.updated_at.tzinfo is not None
+
+
+class TestWatchFieldsDecorator:
+    def test_registers_fields(self):
+        """watch_fields stores the field list in _WATCHED_FIELDS keyed by the class."""
+        assert _models_module._WATCHED_FIELDS.get(WatchedModel) == ["status"]
+
+    def test_preserves_class_identity(self):
+        """watch_fields returns the same class unchanged."""
+
+        class _Dummy(WatchedFieldsMixin):
+            pass
+
+        result = watch_fields("x")(_Dummy)
+        assert result is _Dummy
+        del _models_module._WATCHED_FIELDS[_Dummy]
+
+
+class TestUpsertChanges:
+    def test_inserts_new_entry(self):
+        """New key is inserted with the full changes dict."""
+        pending: dict = {}
+        obj = object()
+        changes = {"status": {"old": None, "new": "active"}}
+        _upsert_changes(pending, obj, changes)
+        assert pending[id(obj)] == (obj, changes)
+
+    def test_merges_existing_field_keeps_old_updates_new(self):
+        """When the field already exists, old is preserved and new is overwritten."""
+        obj = object()
+        pending = {
+            id(obj): (obj, {"status": {"old": "initial", "new": "intermediate"}})
+        }
+        _upsert_changes(
+            pending, obj, {"status": {"old": "intermediate", "new": "final"}}
+        )
+        assert pending[id(obj)][1]["status"] == {"old": "initial", "new": "final"}
+
+    def test_adds_new_field_to_existing_entry(self):
+        """A previously unseen field is added alongside existing ones."""
+        obj = object()
+        pending = {id(obj): (obj, {"status": {"old": "a", "new": "b"}})}
+        _upsert_changes(pending, obj, {"role": {"old": "user", "new": "admin"}})
+        fields = pending[id(obj)][1]
+        assert fields["status"] == {"old": "a", "new": "b"}
+        assert fields["role"] == {"old": "user", "new": "admin"}
+
+
+class TestEarlyExitGuards:
+    def test_after_flush_returns_early_when_no_watched_fields(
+        self, empty_watched_fields
+    ):
+        session = SimpleNamespace(new=[], dirty=[], info={})
+        _after_flush(session, None)
+        assert _SESSION_PENDING_NEW not in session.info
+        assert _SESSION_FIELD_CHANGES not in session.info
+
+    def test_after_flush_postexec_returns_early_when_no_watched_fields(
+        self, empty_watched_fields
+    ):
+        session = SimpleNamespace(info={})
+        _after_flush_postexec(session, None)
+        assert _SESSION_FIELD_CHANGES not in session.info
+
+    def test_after_commit_returns_early_when_no_watched_fields(
+        self, empty_watched_fields
+    ):
+        session = SimpleNamespace(info={})
+        _after_commit(session)  # should not raise
+
+
+class TestAfterRollback:
+    def test_clears_both_session_info_keys(self):
+        """_after_rollback removes both pending-new and field-changes from session.info."""
+        session = SimpleNamespace(
+            info={
+                _SESSION_FIELD_CHANGES: {1: ("obj", {"f": {"old": "a", "new": "b"}})},
+                _SESSION_PENDING_NEW: [("obj", ["f"])],
+            }
+        )
+        _after_rollback(session)
+        assert _SESSION_FIELD_CHANGES not in session.info
+        assert _SESSION_PENDING_NEW not in session.info
+
+    def test_tolerates_missing_keys(self):
+        """_after_rollback does not raise when session.info has no pending data."""
+        session = SimpleNamespace(info={})
+        _after_rollback(session)  # must not raise
+
+
+class TestTaskErrorHandler:
+    @pytest.mark.anyio
+    async def test_logs_exception_from_failed_task(self):
+        """_task_error_handler calls _logger.error when the task raised."""
+
+        async def failing() -> None:
+            raise ValueError("boom")
+
+        task = asyncio.create_task(failing())
+        await asyncio.sleep(0)
+
+        with patch.object(_models_module._logger, "error") as mock_error:
+            _task_error_handler(task)
+            mock_error.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_ignores_cancelled_task(self):
+        """_task_error_handler does not log when the task was cancelled."""
+
+        async def slow() -> None:
+            await asyncio.sleep(100)
+
+        task = asyncio.create_task(slow())
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+        with patch.object(_models_module._logger, "error") as mock_error:
+            _task_error_handler(task)
+            mock_error.assert_not_called()
+
+
+class TestAfterCommitNoLoop:
+    def test_no_task_scheduled_when_no_running_loop(self):
+        """_after_commit silently returns when called outside an async context."""
+        called = []
+        obj = SimpleNamespace(on_field_changes=lambda c: called.append(c))
+        session = SimpleNamespace(
+            info={
+                _SESSION_FIELD_CHANGES: {1: (obj, {"status": {"old": "a", "new": "b"}})}
+            }
+        )
+        _after_commit(session)
+        assert called == []
+
+    def test_returns_early_when_pending_empty(self):
+        """_after_commit does nothing when there are no pending changes."""
+        session = SimpleNamespace(info={})
+        _after_commit(session)  # should not raise
+
+
+class TestWatchedFieldsMixin:
+    @pytest.fixture(autouse=True)
+    def clear_calls(self):
+        _test_calls.clear()
+        yield
+        _test_calls.clear()
+
+    @pytest.mark.anyio
+    async def test_creation_fires_callback_with_old_none(self, mixin_session):
+        """on_field_changes is called on INSERT with old=None."""
+        obj = WatchedModel(status="active", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert len(_test_calls) == 1
+        assert _test_calls[0]["changes"]["status"] == {"old": None, "new": "active"}
+
+    @pytest.mark.anyio
+    async def test_server_defaults_available_in_callback(self, mixin_session):
+        """id (server default via RETURNING) is populated before on_field_changes fires."""
+        obj = WatchedModel(status="active", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert _test_calls[0]["obj_id"] is not None
+        assert isinstance(_test_calls[0]["obj_id"], uuid.UUID)
+
+    @pytest.mark.anyio
+    async def test_update_fires_callback_with_old_and_new(self, mixin_session):
+        """on_field_changes reports the correct before/after values on UPDATE."""
+        obj = WatchedModel(status="initial", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)  # flush creation task before clearing
+        _test_calls.clear()
+
+        obj.status = "updated"
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert len(_test_calls) == 1
+        assert _test_calls[0]["changes"]["status"] == {
+            "old": "initial",
+            "new": "updated",
+        }
+
+    @pytest.mark.anyio
+    async def test_unwatched_field_update_no_callback(self, mixin_session):
+        """Changing a field not listed in watch_fields does not trigger a callback."""
+        obj = WatchedModel(status="active", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)  # flush creation task before clearing
+        _test_calls.clear()
+
+        obj.other = "changed"
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert _test_calls == []
+
+    @pytest.mark.anyio
+    async def test_multiple_flushes_merge_earliest_old_latest_new(self, mixin_session):
+        """Two flushes in one transaction produce a single callback with earliest old / latest new."""
+        obj = WatchedModel(status="initial", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)  # flush creation task before clearing
+        _test_calls.clear()
+
+        obj.status = "intermediate"
+        await mixin_session.flush()
+
+        obj.status = "final"
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert len(_test_calls) == 1
+        assert _test_calls[0]["changes"]["status"] == {"old": "initial", "new": "final"}
+
+    @pytest.mark.anyio
+    async def test_rollback_suppresses_callback(self, mixin_session):
+        """on_field_changes is NOT called when the transaction is rolled back."""
+        obj = WatchedModel(status="active", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)  # flush creation task before clearing
+        _test_calls.clear()
+
+        obj.status = "changed"
+        await mixin_session.flush()
+        await mixin_session.rollback()
+        await asyncio.sleep(0)
+
+        assert _test_calls == []
+
+    @pytest.mark.anyio
+    async def test_non_watched_model_dirty_no_callback(self, mixin_session):
+        """Dirty objects whose type is not registered in watch_fields are skipped."""
+        nw = NonWatchedModel(value="x")
+        mixin_session.add(nw)
+        await mixin_session.flush()
+        nw.value = "y"
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert _test_calls == []
