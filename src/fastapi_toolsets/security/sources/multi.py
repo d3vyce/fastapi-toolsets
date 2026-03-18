@@ -55,14 +55,12 @@ class MultiAuth:
     def __init__(self, *sources: AuthSource) -> None:
         self._sources = sources
 
-        _sources = sources
-
         async def _call(
             request: Request,
             security_scopes: SecurityScopes,  # noqa: ARG001
             **kwargs: Any,  # noqa: ARG001  — absorbs scheme values injected by FastAPI
         ) -> Any:
-            for source in _sources:
+            for source in self._sources:
                 credential = await source.extract(request)
                 if credential is not None:
                     return await source.authenticate(credential)

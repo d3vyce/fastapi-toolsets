@@ -66,6 +66,7 @@ manager = "fastapi_toolsets.cli.app:cli"
 dev = [
     {include-group = "tests"},
     {include-group = "docs"},
+    {include-group = "docs-src"},
     "fastapi-toolsets[all]",
     "prek>=0.3.8",
     "ruff>=0.1.0",
@@ -83,6 +84,9 @@ docs = [
     "mike",
     "mkdocstrings-python>=2.0.2",
     "zensical>=0.0.30",
+]
+docs-src = [
+    "bcrypt>=4.0.0",
 ]
 
 [build-system]

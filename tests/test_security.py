@@ -857,6 +857,12 @@ class TestCookieAuthSigned:
         response = client.get("/me", cookies={"session": "nodothere"})
         assert response.status_code == 401
 
+    def test_hmac_without_secret_key_raises(self):
+        """Calling _hmac on an instance without secret_key raises RuntimeError."""
+        auth = CookieAuth("session", cookie_validator)
+        with pytest.raises(RuntimeError, match="secret_key"):
+            auth._hmac("data")
+
     def test_set_cookie_without_secret(self):
         """set_cookie without secret_key writes the raw value."""
         from starlette.responses import Response as StarletteResponse

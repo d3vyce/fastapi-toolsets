@@ -8,7 +8,7 @@ from fastapi.security import APIKeyHeader, SecurityScopes
 
 from fastapi_toolsets.exceptions import UnauthorizedError
 
-from ..abc import AuthSource, _call_validator
+from ..abc import AuthSource, _ensure_async
 
 
 class APIKeyHeaderAuth(AuthSource):
@@ -35,21 +35,17 @@ class APIKeyHeaderAuth(AuthSource):
         **kwargs: Any,
     ) -> None:
         self._name = name
-        self._validator = validator
+        self._validator = _ensure_async(validator)
         self._kwargs = kwargs
         self._scheme = APIKeyHeader(name=name, auto_error=False)
 
-        _scheme = self._scheme
-        _validator = validator
-        _kwargs = kwargs
-
         async def _call(
             security_scopes: SecurityScopes,  # noqa: ARG001
-            api_key: Annotated[str | None, Depends(_scheme)] = None,
+            api_key: Annotated[str | None, Depends(self._scheme)] = None,
         ) -> Any:
             if api_key is None:
                 raise UnauthorizedError()
-            return await _call_validator(_validator, api_key, **_kwargs)
+            return await self._validator(api_key, **self._kwargs)
 
         self._call_fn = _call
         self.__signature__ = inspect.signature(_call)
@@ -60,7 +56,7 @@ class APIKeyHeaderAuth(AuthSource):
 
     async def authenticate(self, credential: str) -> Any:
         """Validate a credential and return the identity."""
-        return await _call_validator(self._validator, credential, **self._kwargs)
+        return await self._validator(credential, **self._kwargs)
 
     def require(self, **kwargs: Any) -> "APIKeyHeaderAuth":
         """Return a new instance with additional (or overriding) validator kwargs."""

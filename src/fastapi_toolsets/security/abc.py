@@ -10,13 +10,15 @@ from fastapi.security import SecurityScopes
 from fastapi_toolsets.exceptions import UnauthorizedError
 
 
-async def _call_validator(
-    validator: Callable[..., Any], *args: Any, **kwargs: Any
-) -> Any:
-    """Call *validator* with *args* and *kwargs*, awaiting it if it is a coroutine function."""
-    if inspect.iscoroutinefunction(validator):
-        return await validator(*args, **kwargs)
-    return validator(*args, **kwargs)
+def _ensure_async(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap *fn* so it can always be awaited, caching the coroutine check at init time."""
+    if inspect.iscoroutinefunction(fn):
+        return fn
+
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 class AuthSource(ABC):

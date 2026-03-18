@@ -9,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, SecurityS
 
 from fastapi_toolsets.exceptions import UnauthorizedError
 
-from ..abc import AuthSource, _call_validator
+from ..abc import AuthSource, _ensure_async
 
 
 class BearerTokenAuth(AuthSource):
@@ -42,31 +42,29 @@ class BearerTokenAuth(AuthSource):
         prefix: str | None = None,
         **kwargs: Any,
     ) -> None:
-        self._validator = validator
+        self._validator = _ensure_async(validator)
         self._prefix = prefix
         self._kwargs = kwargs
         self._scheme = HTTPBearer(auto_error=False)
 
-        _scheme = self._scheme
-        _validator = validator
-        _kwargs = kwargs
-        _prefix = prefix
-
         async def _call(
             security_scopes: SecurityScopes,  # noqa: ARG001
             credentials: Annotated[
-                HTTPAuthorizationCredentials | None, Depends(_scheme)
+                HTTPAuthorizationCredentials | None, Depends(self._scheme)
             ] = None,
         ) -> Any:
             if credentials is None:
                 raise UnauthorizedError()
-            token = credentials.credentials
-            if _prefix is not None and not token.startswith(_prefix):
-                raise UnauthorizedError()
-            return await _call_validator(_validator, token, **_kwargs)
+            return await self._validate(credentials.credentials)
 
         self._call_fn = _call
         self.__signature__ = inspect.signature(_call)
+
+    async def _validate(self, token: str) -> Any:
+        """Check prefix and call the validator."""
+        if self._prefix is not None and not token.startswith(self._prefix):
+            raise UnauthorizedError()
+        return await self._validator(token, **self._kwargs)
 
     async def extract(self, request: Any) -> str | None:
         """Extract the raw credential from the request without validating.
@@ -91,7 +89,7 @@ class BearerTokenAuth(AuthSource):
         Calls ``await validator(credential, **kwargs)`` where ``kwargs`` are
         the extra keyword arguments provided at instantiation.
         """
-        return await _call_validator(self._validator, credential, **self._kwargs)
+        return await self._validate(credential)
 
     def require(self, **kwargs: Any) -> "BearerTokenAuth":
         """Return a new instance with additional (or overriding) validator kwargs."""

@@ -13,7 +13,7 @@ from fastapi.security import APIKeyCookie, SecurityScopes
 
 from fastapi_toolsets.exceptions import UnauthorizedError
 
-from ..abc import AuthSource, _call_validator
+from ..abc import AuthSource, _ensure_async
 
 
 class CookieAuth(AuthSource):
@@ -50,30 +50,27 @@ class CookieAuth(AuthSource):
         **kwargs: Any,
     ) -> None:
         self._name = name
-        self._validator = validator
+        self._validator = _ensure_async(validator)
         self._secret_key = secret_key
         self._ttl = ttl
         self._kwargs = kwargs
         self._scheme = APIKeyCookie(name=name, auto_error=False)
 
-        _scheme = self._scheme
-        _self = self
-        _kwargs = kwargs
-
         async def _call(
             security_scopes: SecurityScopes,  # noqa: ARG001
-            value: Annotated[str | None, Depends(_scheme)] = None,
+            value: Annotated[str | None, Depends(self._scheme)] = None,
         ) -> Any:
             if value is None:
                 raise UnauthorizedError()
-            plain = _self._verify(value)
-            return await _call_validator(_self._validator, plain, **_kwargs)
+            plain = self._verify(value)
+            return await self._validator(plain, **self._kwargs)
 
         self._call_fn = _call
         self.__signature__ = inspect.signature(_call)
 
     def _hmac(self, data: str) -> str:
-        assert self._secret_key is not None
+        if self._secret_key is None:
+            raise RuntimeError("_hmac called without secret_key configured")
         return hmac.new(
             self._secret_key.encode(), data.encode(), hashlib.sha256
         ).hexdigest()
@@ -114,7 +111,7 @@ class CookieAuth(AuthSource):
 
     async def authenticate(self, credential: str) -> Any:
         plain = self._verify(credential)
-        return await _call_validator(self._validator, plain, **self._kwargs)
+        return await self._validator(plain, **self._kwargs)
 
     def require(self, **kwargs: Any) -> "CookieAuth":
         """Return a new instance with additional (or overriding) validator kwargs."""
