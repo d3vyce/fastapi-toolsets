@@ -13,7 +13,12 @@ The `dependencies` module provides two factory functions that create FastAPI dep
 ```python
 from fastapi_toolsets.dependencies import PathDependency
 
+# Plain callable
 UserDep = PathDependency(model=User, field=User.id, session_dep=get_db)
+
+# Annotated
+SessionDep = Annotated[AsyncSession, Depends(get_db)]
+UserDep = PathDependency(model=User, field=User.id, session_dep=SessionDep)
 
 @router.get("/users/{user_id}")
 async def get_user(user: User = UserDep):
@@ -37,7 +42,13 @@ async def get_user(user: User = UserDep):
 ```python
 from fastapi_toolsets.dependencies import BodyDependency
 
+# Plain callable
 RoleDep = BodyDependency(model=Role, field=Role.id, session_dep=get_db, body_field="role_id")
+
+# Annotated
+SessionDep = Annotated[AsyncSession, Depends(get_db)]
+RoleDep = BodyDependency(model=Role, field=Role.id, session_dep=SessionDep, body_field="role_id")
+
 
 @router.post("/users")
 async def create_user(body: UserCreateSchema, role: Role = RoleDep):

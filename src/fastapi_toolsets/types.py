@@ -24,4 +24,4 @@ SearchFieldType = InstrumentedAttribute[Any] | tuple[InstrumentedAttribute[Any],
 FacetFieldType = SearchFieldType
 
 # Dependency type aliases
-SessionDependency = Callable[[], AsyncGenerator[AsyncSession, None]]
+SessionDependency = Callable[[], AsyncGenerator[AsyncSession, None]] | Any
