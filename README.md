@@ -48,7 +48,7 @@ uv add "fastapi-toolsets[all]"
 - **Database**: Session management, transaction helpers, table locking, and polling-based row change detection
 - **Dependencies**: FastAPI dependency factories (`PathDependency`, `BodyDependency`) for automatic DB lookups from path or body parameters
 - **Fixtures**: Fixture system with dependency management, context support, and pytest integration
-- **Model Mixins**: SQLAlchemy mixins for common column patterns (`UUIDMixin`, `UUIDv7Mixin`, `CreatedAtMixin`, `UpdatedAtMixin`, `TimestampMixin`)
+- **Model Mixins**: SQLAlchemy mixins for common column patterns (`UUIDMixin`, `UUIDv7Mixin`, `CreatedAtMixin`, `UpdatedAtMixin`, `TimestampMixin`) and lifecycle callbacks (`WatchedFieldsMixin`, `@watch`) that fire after commit for insert, update, and delete events
 - **Standardized API Responses**: Consistent response format with `Response`, `ErrorResponse`, `PaginatedResponse`, `CursorPaginatedResponse` and `OffsetPaginatedResponse`.
 - **Exception Handling**: Structured error responses with automatic OpenAPI documentation
 - **Logging**: Logging configuration with uvicorn integration via `configure_logging` and `get_logger`
