@@ -121,60 +121,81 @@ class Article(Base, UUIDMixin, TimestampMixin):
 
 !!! info "Added in `v2.4`"
 
-The `watch_fields` decorator combined with `WatchedFieldsMixin` lets you react to field changes (including on row creation).
+`WatchedFieldsMixin` provides lifecycle callbacks that fire **after commit** — meaning the row is durably persisted when your callback runs. If the transaction rolls back, no callback fires.
 
+Three callbacks are available, each corresponding to a [`ModelEvent`](../reference/models.md#fastapi_toolsets.models.ModelEvent) value:
 
-Apply `@watch_fields` to declare which fields to monitor, and override `on_field_changes` to handle the event:
+| Callback | Event | Trigger |
+|---|---|---|
+| `on_create()` | `ModelEvent.CREATE` | After `INSERT` |
+| `on_delete()` | `ModelEvent.DELETE` | After `DELETE` |
+| `on_update(changes)` | `ModelEvent.UPDATE` | After `UPDATE` on a watched field |
+
+Server-side defaults (e.g. `id`, `created_at`) are fully populated in all callbacks. All callbacks support both `async def` and plain `def`. Use `@watch` to restrict which fields trigger `on_update`:
+
+| Decorator | `on_update` behaviour |
+|---|---|
+| `@watch("status", "role")` | Only fires when `status` or `role` changes |
+| *(no decorator)* | Fires when **any** mapped field changes |
+
+#### Option 1 — catch-all with `on_event`
+
+Override `on_event` to handle all event types in one place. The specific methods delegate here by default:
 
 ```python
-from fastapi_toolsets.models import UUIDMixin, WatchedFieldsMixin, watch_fields
+from fastapi_toolsets.models import ModelEvent, UUIDMixin, WatchedFieldsMixin, watch
 
-@watch_fields("status")
+@watch("status")
 class Order(Base, UUIDMixin, WatchedFieldsMixin):
     __tablename__ = "orders"
 
     status: Mapped[str]
 
-    async def on_field_changes(self, changes: dict) -> None:
-        # Called after every commit that touches a watched field,
-        # including the initial INSERT.
-        if "status" in changes:
-            old = changes["status"]["old"]  # None on creation
-            new = changes["status"]["new"]
-            await notify(self.id, old, new)
+    async def on_event(self, event: ModelEvent, changes: dict | None = None) -> None:
+        if event == ModelEvent.CREATE:
+            await notify_new_order(self.id)
+        elif event == ModelEvent.DELETE:
+            await notify_order_cancelled(self.id)
+        elif event == ModelEvent.UPDATE:
+            await notify_status_change(self.id, changes["status"])
 ```
 
-The `changes` dict maps each watched field that changed to `{"old": ..., "new": ...}`. On row creation, `old` is always `None`:
+#### Option 2 — targeted overrides
+
+Override individual methods for more focused logic:
 
 ```python
-# INSERT  → {"status": {"old": None,       "new": "pending"}}
-# UPDATE  → {"status": {"old": "pending",  "new": "shipped"}}
-```
-
-Server-side defaults (e.g. `id`, `created_at`) are fully populated when `on_field_changes` is called, so `self.id` is safe to use inside the callback.
-
-!!! info "If you flush several times before committing, the changes are merged: the earliest `old` and the latest `new` are preserved, and `on_field_changes` fires only once per commit."
-
-!!! warning "The callback fires only for changes made through the ORM. Rows updated via raw SQL (`UPDATE ... SET ...`) are not detected."
-
-You can also watch multiple fields:
-
-```python
-@watch_fields("status", "assigned_to")
-class Ticket(Base, UUIDMixin, WatchedFieldsMixin):
-    __tablename__ = "tickets"
+@watch("status")
+class Order(Base, UUIDMixin, WatchedFieldsMixin):
+    __tablename__ = "orders"
 
     status: Mapped[str]
-    assigned_to: Mapped[str | None]
 
-    async def on_field_changes(self, changes: dict) -> None:
+    async def on_create(self) -> None:
+        await notify_new_order(self.id)
+
+    async def on_delete(self) -> None:
+        await notify_order_cancelled(self.id)
+
+    async def on_update(self, changes: dict) -> None:
         if "status" in changes:
-            await send_status_email(self.id, changes["status"])
-        if "assigned_to" in changes:
-            await send_assignment_notification(self.id, changes["assigned_to"])
+            old = changes["status"]["old"]
+            new = changes["status"]["new"]
+            await notify_status_change(self.id, old, new)
 ```
 
-Only fields that actually changed are included in `changes` — if only `status` changed, `assigned_to` will not appear.
+#### Field changes format
+
+The `changes` dict maps each watched field that changed to `{"old": ..., "new": ...}`. Only fields that actually changed are included:
+
+```python
+# status changed   → {"status": {"old": "pending", "new": "shipped"}}
+# two fields changed → {"status": {...}, "assigned_to": {...}}
+```
+
+!!! info "Multiple flushes in one transaction are merged: the earliest `old` and latest `new` are preserved, and `on_update` fires only once per commit."
+
+!!! warning "Callbacks fire only for ORM-level changes. Rows updated via raw SQL (`UPDATE ... SET ...`) are not detected."
 
 ## Composing mixins
 
