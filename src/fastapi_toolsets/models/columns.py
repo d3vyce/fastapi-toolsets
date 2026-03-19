@@ -1,4 +1,4 @@
-"""SQLAlchemy model mixins for common column patterns."""
+"""SQLAlchemy column mixins for common column patterns."""
 
 import uuid
 from datetime import datetime
