@@ -1,9 +1,10 @@
 """Base Pydantic schemas for API responses."""
 
+import math
 from enum import Enum
 from typing import Annotated, Any, ClassVar, Generic, Literal, TypeVar, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from .types import DataT
 
@@ -103,12 +104,23 @@ class OffsetPagination(PydanticBase):
         items_per_page: Number of items per page
         page: Current page number (1-indexed)
         has_more: Whether there are more pages
+        pages: Total number of pages
     """
 
     total_count: int | None
     items_per_page: int
     page: int
     has_more: bool
+
+    @computed_field
+    @property
+    def pages(self) -> int | None:
+        """Total number of pages, or ``None`` when ``total_count`` is unknown."""
+        if self.total_count is None:
+            return None
+        if self.items_per_page == 0:
+            return 0
+        return math.ceil(self.total_count / self.items_per_page)
 
 
 class CursorPagination(PydanticBase):

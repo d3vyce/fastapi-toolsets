@@ -222,6 +222,67 @@ class TestOffsetPagination:
         data = pagination.model_dump()
         assert data["total_count"] is None
 
+    def test_pages_computed(self):
+        """pages is ceil(total_count / items_per_page)."""
+        pagination = OffsetPagination(
+            total_count=42,
+            items_per_page=10,
+            page=1,
+            has_more=True,
+        )
+        assert pagination.pages == 5
+
+    def test_pages_exact_division(self):
+        """pages is exact when total_count is evenly divisible."""
+        pagination = OffsetPagination(
+            total_count=40,
+            items_per_page=10,
+            page=1,
+            has_more=False,
+        )
+        assert pagination.pages == 4
+
+    def test_pages_zero_total(self):
+        """pages is 0 when total_count is 0."""
+        pagination = OffsetPagination(
+            total_count=0,
+            items_per_page=10,
+            page=1,
+            has_more=False,
+        )
+        assert pagination.pages == 0
+
+    def test_pages_zero_items_per_page(self):
+        """pages is 0 when items_per_page is 0."""
+        pagination = OffsetPagination(
+            total_count=100,
+            items_per_page=0,
+            page=1,
+            has_more=False,
+        )
+        assert pagination.pages == 0
+
+    def test_pages_none_when_total_count_none(self):
+        """pages is None when total_count is None (include_total=False)."""
+        pagination = OffsetPagination(
+            total_count=None,
+            items_per_page=20,
+            page=1,
+            has_more=True,
+        )
+        assert pagination.pages is None
+
+    def test_pages_in_serialization(self):
+        """pages appears in model_dump output."""
+        pagination = OffsetPagination(
+            total_count=25,
+            items_per_page=10,
+            page=1,
+            has_more=True,
+        )
+        data = pagination.model_dump()
+        assert data["pages"] == 3
+
 
 class TestCursorPagination:
     """Tests for CursorPagination schema."""
