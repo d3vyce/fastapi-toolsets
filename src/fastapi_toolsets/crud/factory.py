@@ -58,15 +58,20 @@ class _CursorDirection(str, Enum):
 def _encode_cursor(
     value: Any, *, direction: _CursorDirection = _CursorDirection.NEXT
 ) -> str:
-    """Encode a cursor column value and navigation direction as a base64 string."""
-    return base64.b64encode(
-        json.dumps({"val": str(value), "dir": direction}).encode()
-    ).decode()
+    """Encode a cursor column value and navigation direction as a URL-safe base64 string."""
+    return (
+        base64.urlsafe_b64encode(
+            json.dumps({"val": str(value), "dir": direction}).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
 
 
 def _decode_cursor(cursor: str) -> tuple[str, _CursorDirection]:
-    """Decode a cursor base64 string into ``(raw_value, direction)``."""
-    payload = json.loads(base64.b64decode(cursor.encode()).decode())
+    """Decode a URL-safe base64 cursor string into ``(raw_value, direction)``."""
+    padded = cursor + "=" * (-len(cursor) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded).decode())
     return payload["val"], _CursorDirection(payload["dir"])
 
 
