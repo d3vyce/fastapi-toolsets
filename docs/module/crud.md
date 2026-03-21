@@ -189,6 +189,22 @@ The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.Async
 }
 ```
 
+#### Skipping the COUNT query
+
+!!! info "Added in `v2.4.1`"
+
+By default `offset_paginate` runs two queries: one for the page items and one `COUNT(*)` for `total_count`. On large tables the `COUNT` can be expensive. Pass `include_total=False` to skip it:
+
+```python
+result = await UserCrud.offset_paginate(
+    session=session,
+    page=page,
+    items_per_page=items_per_page,
+    include_total=False,
+    schema=UserRead,
+)
+```
+
 ### Cursor pagination
 
 ```python

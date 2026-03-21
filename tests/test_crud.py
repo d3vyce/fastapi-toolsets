@@ -1759,6 +1759,52 @@ class TestSchemaResponse:
         assert result.data[0].username == "pg_user"
         assert not hasattr(result.data[0], "email")
 
+    @pytest.mark.anyio
+    async def test_include_total_false_skips_count(self, db_session: AsyncSession):
+        """offset_paginate with include_total=False returns total_count=None."""
+        from fastapi_toolsets.schemas import OffsetPagination
+
+        for i in range(5):
+            await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
+
+        result = await RoleCrud.offset_paginate(
+            db_session, items_per_page=10, include_total=False, schema=RoleRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count is None
+        assert len(result.data) == 5
+        assert result.pagination.has_more is False
+
+    @pytest.mark.anyio
+    async def test_include_total_false_has_more_true(self, db_session: AsyncSession):
+        """offset_paginate with include_total=False sets has_more via extra-row probe."""
+        for i in range(15):
+            await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
+
+        result = await RoleCrud.offset_paginate(
+            db_session, items_per_page=10, include_total=False, schema=RoleRead
+        )
+
+        assert result.pagination.total_count is None
+        assert result.pagination.has_more is True
+        assert len(result.data) == 10
+
+    @pytest.mark.anyio
+    async def test_include_total_false_exact_page_boundary(
+        self, db_session: AsyncSession
+    ):
+        """offset_paginate with include_total=False: has_more=False when items == page size."""
+        for i in range(10):
+            await RoleCrud.create(db_session, RoleCreate(name=f"role{i:02d}"))
+
+        result = await RoleCrud.offset_paginate(
+            db_session, items_per_page=10, include_total=False, schema=RoleRead
+        )
+
+        assert result.pagination.has_more is False
+        assert len(result.data) == 10
+
 
 class TestCursorPaginate:
     """Tests for cursor-based pagination via cursor_paginate()."""
@@ -2521,3 +2567,20 @@ class TestPaginate:
                 pagination_type="unknown",
                 schema=RoleRead,
             )  # type: ignore[no-matching-overload]
+
+    @pytest.mark.anyio
+    async def test_offset_include_total_false(self, db_session: AsyncSession):
+        """paginate() passes include_total=False through to offset_paginate."""
+        from fastapi_toolsets.schemas import OffsetPagination
+
+        await RoleCrud.create(db_session, RoleCreate(name="admin"))
+
+        result = await RoleCrud.paginate(
+            db_session,
+            pagination_type=PaginationType.OFFSET,
+            include_total=False,
+            schema=RoleRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count is None

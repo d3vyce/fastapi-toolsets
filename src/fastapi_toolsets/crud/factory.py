@@ -922,6 +922,7 @@ class AsyncCrud(Generic[ModelType]):
         order_by: OrderByClause | None = None,
         page: int = 1,
         items_per_page: int = 20,
+        include_total: bool = True,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
@@ -939,6 +940,8 @@ class AsyncCrud(Generic[ModelType]):
             order_by: Column or list of columns to order by
             page: Page number (1-indexed)
             items_per_page: Number of items per page
+            include_total: When ``False``, skip the ``COUNT`` query;
+                ``pagination.total_count`` will be ``None``.
             search: Search query string or SearchConfig object
             search_fields: Fields to search in (overrides class default)
             facet_fields: Columns to compute distinct values for (overrides class default)
@@ -983,27 +986,38 @@ class AsyncCrud(Generic[ModelType]):
         if order_by is not None:
             q = q.order_by(order_by)
 
-        q = q.offset(offset).limit(items_per_page)
-        result = await session.execute(q)
-        raw_items = cast(list[ModelType], result.unique().scalars().all())
+        if include_total:
+            q = q.offset(offset).limit(items_per_page)
+            result = await session.execute(q)
+            raw_items = cast(list[ModelType], result.unique().scalars().all())
+
+            # Count query (with same joins and filters)
+            pk_col = cls.model.__mapper__.primary_key[0]
+            count_q = select(func.count(func.distinct(getattr(cls.model, pk_col.name))))
+            count_q = count_q.select_from(cls.model)
+
+            # Apply explicit joins to count query
+            count_q = _apply_joins(count_q, joins, outer_join)
+
+            # Apply search joins to count query
+            count_q = _apply_search_joins(count_q, search_joins)
+
+            if filters:
+                count_q = count_q.where(and_(*filters))
+
+            count_result = await session.execute(count_q)
+            total_count: int | None = count_result.scalar_one()
+            has_more = page * items_per_page < total_count
+        else:
+            # Fetch one extra row to detect if a next page exists without COUNT
+            q = q.offset(offset).limit(items_per_page + 1)
+            result = await session.execute(q)
+            raw_items = cast(list[ModelType], result.unique().scalars().all())
+            has_more = len(raw_items) > items_per_page
+            raw_items = raw_items[:items_per_page]
+            total_count = None
+
         items: list[Any] = [schema.model_validate(item) for item in raw_items]
-
-        # Count query (with same joins and filters)
-        pk_col = cls.model.__mapper__.primary_key[0]
-        count_q = select(func.count(func.distinct(getattr(cls.model, pk_col.name))))
-        count_q = count_q.select_from(cls.model)
-
-        # Apply explicit joins to count query
-        count_q = _apply_joins(count_q, joins, outer_join)
-
-        # Apply search joins to count query
-        count_q = _apply_search_joins(count_q, search_joins)
-
-        if filters:
-            count_q = count_q.where(and_(*filters))
-
-        count_result = await session.execute(count_q)
-        total_count = count_result.scalar_one()
 
         filter_attributes = await cls._build_filter_attributes(
             session, facet_fields, filters, search_joins
@@ -1015,7 +1029,7 @@ class AsyncCrud(Generic[ModelType]):
                 total_count=total_count,
                 items_per_page=items_per_page,
                 page=page,
-                has_more=page * items_per_page < total_count,
+                has_more=has_more,
             ),
             filter_attributes=filter_attributes,
         )
@@ -1190,6 +1204,7 @@ class AsyncCrud(Generic[ModelType]):
         page: int = ...,
         cursor: str | None = ...,
         items_per_page: int = ...,
+        include_total: bool = ...,
         search: str | SearchConfig | None = ...,
         search_fields: Sequence[SearchFieldType] | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
@@ -1212,6 +1227,7 @@ class AsyncCrud(Generic[ModelType]):
         page: int = ...,
         cursor: str | None = ...,
         items_per_page: int = ...,
+        include_total: bool = ...,
         search: str | SearchConfig | None = ...,
         search_fields: Sequence[SearchFieldType] | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
@@ -1233,6 +1249,7 @@ class AsyncCrud(Generic[ModelType]):
         page: int = 1,
         cursor: str | None = None,
         items_per_page: int = 20,
+        include_total: bool = True,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
@@ -1258,6 +1275,8 @@ class AsyncCrud(Generic[ModelType]):
                 :class:`.CursorPaginatedResponse`.  Only used when
                 ``pagination_type`` is ``CURSOR``.
             items_per_page: Number of items per page (default 20).
+            include_total: When ``False``, skip the ``COUNT`` query;
+                only applies when ``pagination_type`` is ``OFFSET``.
             search: Search query string or :class:`.SearchConfig` object.
             search_fields: Fields to search in (overrides class default).
             facet_fields: Columns to compute distinct values for (overrides
@@ -1304,6 +1323,7 @@ class AsyncCrud(Generic[ModelType]):
                     order_by=order_by,
                     page=page,
                     items_per_page=items_per_page,
+                    include_total=include_total,
                     search=search,
                     search_fields=search_fields,
                     facet_fields=facet_fields,
