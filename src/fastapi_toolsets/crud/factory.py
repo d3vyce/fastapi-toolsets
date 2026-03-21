@@ -75,6 +75,16 @@ def _decode_cursor(cursor: str) -> tuple[str, _CursorDirection]:
     return payload["val"], _CursorDirection(payload["dir"])
 
 
+def _page_size_query(default: int, max_size: int) -> int:
+    """Return a FastAPI ``Query`` for the ``items_per_page`` parameter."""
+    return Query(
+        default,
+        ge=1,
+        le=max_size,
+        description=f"Number of items per page (max {max_size})",
+    )
+
+
 def _parse_cursor_value(raw_val: str, col_type: Any) -> Any:
     """Parse a raw cursor string value back into the appropriate Python type."""
     if isinstance(col_type, Integer):
@@ -259,6 +269,7 @@ class AsyncCrud(Generic[ModelType]):
         facet_fields: Sequence[FacetFieldType] | None = None,
     ) -> Callable[..., Awaitable[dict[str, list[str]]]]:
         """Return a FastAPI dependency that collects facet filter values from query parameters.
+
         Args:
             facet_fields: Override the facet fields for this dependency. Falls back to the
                 class-level ``facet_fields`` if not provided.
@@ -296,6 +307,121 @@ class AsyncCrud(Generic[ModelType]):
             ]
         )
 
+        return dependency
+
+    @classmethod
+    def offset_params(
+        cls: type[Self],
+        *,
+        default_page_size: int = 20,
+        max_page_size: int = 100,
+        include_total: bool = True,
+    ) -> Callable[..., Awaitable[dict[str, Any]]]:
+        """Return a FastAPI dependency that collects offset pagination params from query params.
+
+        Args:
+            default_page_size: Default value for the ``items_per_page`` query parameter.
+            max_page_size: Maximum allowed value for ``items_per_page`` (enforced via
+                ``le`` on the ``Query``).
+            include_total: Server-side flag forwarded as-is to ``include_total`` in
+                :meth:`offset_paginate`. Not exposed as a query parameter.
+
+        Returns:
+            An async dependency that resolves to a dict with ``page``,
+            ``items_per_page``, and ``include_total`` keys, ready to be
+            unpacked into :meth:`offset_paginate`.
+        """
+
+        async def dependency(
+            page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+            items_per_page: int = _page_size_query(default_page_size, max_page_size),
+        ) -> dict[str, Any]:
+            return {
+                "page": page,
+                "items_per_page": items_per_page,
+                "include_total": include_total,
+            }
+
+        dependency.__name__ = f"{cls.model.__name__}OffsetParams"
+        return dependency
+
+    @classmethod
+    def cursor_params(
+        cls: type[Self],
+        *,
+        default_page_size: int = 20,
+        max_page_size: int = 100,
+    ) -> Callable[..., Awaitable[dict[str, Any]]]:
+        """Return a FastAPI dependency that collects cursor pagination params from query params.
+
+        Args:
+            default_page_size: Default value for the ``items_per_page`` query parameter.
+            max_page_size: Maximum allowed value for ``items_per_page`` (enforced via
+                ``le`` on the ``Query``).
+
+        Returns:
+            An async dependency that resolves to a dict with ``cursor`` and
+            ``items_per_page`` keys, ready to be unpacked into
+            :meth:`cursor_paginate`.
+        """
+
+        async def dependency(
+            cursor: str | None = Query(
+                None, description="Cursor token from a previous response"
+            ),
+            items_per_page: int = _page_size_query(default_page_size, max_page_size),
+        ) -> dict[str, Any]:
+            return {"cursor": cursor, "items_per_page": items_per_page}
+
+        dependency.__name__ = f"{cls.model.__name__}CursorParams"
+        return dependency
+
+    @classmethod
+    def paginate_params(
+        cls: type[Self],
+        *,
+        default_page_size: int = 20,
+        max_page_size: int = 100,
+        default_pagination_type: PaginationType = PaginationType.OFFSET,
+        include_total: bool = True,
+    ) -> Callable[..., Awaitable[dict[str, Any]]]:
+        """Return a FastAPI dependency that collects all pagination params from query params.
+
+        Args:
+            default_page_size: Default value for the ``items_per_page`` query parameter.
+            max_page_size: Maximum allowed value for ``items_per_page`` (enforced via
+                ``le`` on the ``Query``).
+            default_pagination_type: Default pagination strategy.
+            include_total: Server-side flag forwarded as-is to ``include_total`` in
+                :meth:`paginate`. Not exposed as a query parameter.
+
+        Returns:
+            An async dependency that resolves to a dict with ``pagination_type``,
+            ``page``, ``cursor``, ``items_per_page``, and ``include_total`` keys,
+            ready to be unpacked into :meth:`paginate`.
+        """
+
+        async def dependency(
+            pagination_type: PaginationType = Query(
+                default_pagination_type, description="Pagination strategy"
+            ),
+            page: int = Query(
+                1, ge=1, description="Page number (1-indexed, offset only)"
+            ),
+            cursor: str | None = Query(
+                None, description="Cursor token from a previous response (cursor only)"
+            ),
+            items_per_page: int = _page_size_query(default_page_size, max_page_size),
+        ) -> dict[str, Any]:
+            return {
+                "pagination_type": pagination_type,
+                "page": page,
+                "cursor": cursor,
+                "items_per_page": items_per_page,
+                "include_total": include_total,
+            }
+
+        dependency.__name__ = f"{cls.model.__name__}PaginateParams"
         return dependency
 
     @classmethod

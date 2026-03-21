@@ -206,6 +206,24 @@ result = await UserCrud.offset_paginate(
 )
 ```
 
+#### Pagination params dependency
+
+!!! info "Added in `v2.4.1`"
+
+Use [`offset_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_params) to generate a FastAPI dependency that injects `page` and `items_per_page` from query parameters with configurable defaults and a `max_page_size` cap:
+
+```python
+from typing import Annotated
+from fastapi import Depends
+
+@router.get("")
+async def list_users(
+    session: SessionDep,
+    params: Annotated[dict, Depends(UserCrud.offset_params(default_page_size=20, max_page_size=100))],
+) -> OffsetPaginatedResponse[UserRead]:
+    return await UserCrud.offset_paginate(session=session, **params, schema=UserRead)
+```
+
 ### Cursor pagination
 
 ```python
@@ -273,6 +291,24 @@ PostCrud = CrudFactory(model=Post, cursor_column=Post.id)
 PostCrud = CrudFactory(model=Post, cursor_column=Post.created_at)
 ```
 
+#### Pagination params dependency
+
+!!! info "Added in `v2.4.1`"
+
+Use [`cursor_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_params) to inject `cursor` and `items_per_page` from query parameters with a `max_page_size` cap:
+
+```python
+from typing import Annotated
+from fastapi import Depends
+
+@router.get("")
+async def list_users(
+    session: SessionDep,
+    params: Annotated[dict, Depends(UserCrud.cursor_params(default_page_size=20, max_page_size=100))],
+) -> CursorPaginatedResponse[UserRead]:
+    return await UserCrud.cursor_paginate(session=session, **params, schema=UserRead)
+```
+
 ### Unified endpoint (both strategies)
 
 !!! info "Added in `v2.3.0`"
@@ -306,7 +342,24 @@ GET /users?pagination_type=offset&page=2&items_per_page=10
 GET /users?pagination_type=cursor&cursor=eyJ2YWx1ZSI6...&items_per_page=10
 ```
 
-Both `page` and `cursor` are always accepted by the endpoint — unused parameters are silently ignored by `paginate()`.
+#### Pagination params dependency
+
+!!! info "Added in `v2.4.1`"
+
+Use [`paginate_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.paginate_params) to inject all parameters at once with configurable defaults and a `max_page_size` cap:
+
+```python
+from typing import Annotated
+from fastapi import Depends
+from fastapi_toolsets.schemas import PaginatedResponse
+
+@router.get("")
+async def list_users(
+    session: SessionDep,
+    params: Annotated[dict, Depends(UserCrud.paginate_params(default_page_size=20, max_page_size=100))],
+) -> PaginatedResponse[UserRead]:
+    return await UserCrud.paginate(session, **params, schema=UserRead)
+```
 
 ## Search
 
