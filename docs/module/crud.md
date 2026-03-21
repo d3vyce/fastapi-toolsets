@@ -182,6 +182,7 @@ The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.Async
   "data": ["..."],
   "pagination": {
     "total_count": 100,
+    "pages": 5,
     "page": 1,
     "items_per_page": 20,
     "has_more": true

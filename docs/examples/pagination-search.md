@@ -72,6 +72,7 @@ GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published&or
   ],
   "pagination": {
     "total_count": 42,
+    "pages": 5,
     "page": 2,
     "items_per_page": 10,
     "has_more": true
@@ -146,7 +147,7 @@ GET /articles/?pagination_type=offset&page=1&items_per_page=10
   "status": "SUCCESS",
   "pagination_type": "offset",
   "data": ["..."],
-  "pagination": { "total_count": 42, "page": 1, "items_per_page": 10, "has_more": true }
+  "pagination": { "total_count": 42, "pages": 5, "page": 1, "items_per_page": 10, "has_more": true }
 }
 ```
 
