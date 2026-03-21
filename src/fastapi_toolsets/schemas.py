@@ -98,13 +98,14 @@ class OffsetPagination(PydanticBase):
     """Pagination metadata for offset-based list responses.
 
     Attributes:
-        total_count: Total number of items across all pages
+        total_count: Total number of items across all pages.
+            ``None`` when ``include_total=False``.
         items_per_page: Number of items per page
         page: Current page number (1-indexed)
         has_more: Whether there are more pages
     """
 
-    total_count: int
+    total_count: int | None
     items_per_page: int
     page: int
     has_more: bool

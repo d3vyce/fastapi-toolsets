@@ -201,6 +201,27 @@ class TestOffsetPagination:
         assert data["page"] == 2
         assert data["has_more"] is True
 
+    def test_total_count_can_be_none(self):
+        """total_count accepts None (include_total=False mode)."""
+        pagination = OffsetPagination(
+            total_count=None,
+            items_per_page=20,
+            page=1,
+            has_more=True,
+        )
+        assert pagination.total_count is None
+
+    def test_serialization_with_none_total_count(self):
+        """OffsetPagination serializes total_count=None correctly."""
+        pagination = OffsetPagination(
+            total_count=None,
+            items_per_page=20,
+            page=1,
+            has_more=False,
+        )
+        data = pagination.model_dump()
+        assert data["total_count"] is None
+
 
 class TestCursorPagination:
     """Tests for CursorPagination schema."""

@@ -85,6 +85,8 @@ GET /articles/offset?page=2&items_per_page=10&search=fastapi&status=published&or
 
 `filter_attributes` always reflects the values visible **after** applying the active filters. Use it to populate filter dropdowns on the client.
 
+To skip the `COUNT(*)` query for better performance on large tables, pass `include_total=False`. `pagination.total_count` will be `null` in the response, while `has_more` remains accurate.
+
 ### Cursor pagination
 
 Best for feeds, infinite scroll, or any high-throughput API where offset performance degrades.
