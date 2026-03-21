@@ -14,12 +14,14 @@ from fastapi_toolsets.crud import (
     get_searchable_fields,
 )
 from fastapi_toolsets.exceptions import InvalidOrderFieldError
-from fastapi_toolsets.schemas import OffsetPagination
+from fastapi_toolsets.schemas import OffsetPagination, PaginationType
 
 from .conftest import (
     Role,
     RoleCreate,
     RoleCrud,
+    RoleCursorCrud,
+    RoleRead,
     User,
     UserCreate,
     UserCrud,
@@ -1193,3 +1195,245 @@ class TestOrderParamsSchema:
 
         assert results[0].username == "alice"
         assert results[1].username == "charlie"
+
+
+class TestOffsetParamsSchema:
+    """Tests for AsyncCrud.offset_params()."""
+
+    def test_returns_page_and_items_per_page_params(self):
+        """Returned dependency has page and items_per_page params only."""
+        dep = RoleCrud.offset_params()
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"page", "items_per_page"}
+
+    def test_dependency_name_includes_model_name(self):
+        """Dependency function is named after the model."""
+        dep = RoleCrud.offset_params()
+        assert getattr(dep, "__name__") == "RoleOffsetParams"
+
+    def test_default_page_size_reflected_in_items_per_page_default(self):
+        """default_page_size is used as the default for items_per_page."""
+        dep = RoleCrud.offset_params(default_page_size=42)
+        sig = inspect.signature(dep)
+        assert sig.parameters["items_per_page"].default.default == 42
+
+    def test_max_page_size_reflected_in_items_per_page_le(self):
+        """max_page_size is used as le constraint on items_per_page."""
+        dep = RoleCrud.offset_params(max_page_size=50)
+        sig = inspect.signature(dep)
+        le = next(
+            m.le
+            for m in sig.parameters["items_per_page"].default.metadata
+            if hasattr(m, "le")
+        )
+        assert le == 50
+
+    def test_include_total_not_a_query_param(self):
+        """include_total is not exposed as a query parameter."""
+        dep = RoleCrud.offset_params()
+        param_names = set(inspect.signature(dep).parameters)
+        assert "include_total" not in param_names
+
+    @pytest.mark.anyio
+    async def test_include_total_true_forwarded_in_result(self):
+        """include_total=True factory arg appears in the resolved dict."""
+        result = await RoleCrud.offset_params(include_total=True)(
+            page=1, items_per_page=10
+        )
+        assert result["include_total"] is True
+
+    @pytest.mark.anyio
+    async def test_include_total_false_forwarded_in_result(self):
+        """include_total=False factory arg appears in the resolved dict."""
+        result = await RoleCrud.offset_params(include_total=False)(
+            page=1, items_per_page=10
+        )
+        assert result["include_total"] is False
+
+    @pytest.mark.anyio
+    async def test_awaiting_dep_returns_dict(self):
+        """Awaiting the dependency returns a dict with page, items_per_page, include_total."""
+        dep = RoleCrud.offset_params(include_total=False)
+        result = await dep(page=2, items_per_page=10)
+        assert result == {"page": 2, "items_per_page": 10, "include_total": False}
+
+    @pytest.mark.anyio
+    async def test_integrates_with_offset_paginate(self, db_session: AsyncSession):
+        """offset_params output can be unpacked directly into offset_paginate."""
+        await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        dep = RoleCrud.offset_params()
+        params = await dep(page=1, items_per_page=10)
+        result = await RoleCrud.offset_paginate(db_session, **params, schema=RoleRead)
+        assert result.pagination.page == 1
+        assert result.pagination.items_per_page == 10
+
+
+class TestCursorParamsSchema:
+    """Tests for AsyncCrud.cursor_params()."""
+
+    def test_returns_cursor_and_items_per_page_params(self):
+        """Returned dependency has cursor and items_per_page params."""
+        dep = RoleCursorCrud.cursor_params()
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"cursor", "items_per_page"}
+
+    def test_dependency_name_includes_model_name(self):
+        """Dependency function is named after the model."""
+        dep = RoleCursorCrud.cursor_params()
+        assert getattr(dep, "__name__") == "RoleCursorParams"
+
+    def test_default_page_size_reflected_in_items_per_page_default(self):
+        """default_page_size is used as the default for items_per_page."""
+        dep = RoleCursorCrud.cursor_params(default_page_size=15)
+        sig = inspect.signature(dep)
+        assert sig.parameters["items_per_page"].default.default == 15
+
+    def test_max_page_size_reflected_in_items_per_page_le(self):
+        """max_page_size is used as le constraint on items_per_page."""
+        dep = RoleCursorCrud.cursor_params(max_page_size=75)
+        sig = inspect.signature(dep)
+        le = next(
+            m.le
+            for m in sig.parameters["items_per_page"].default.metadata
+            if hasattr(m, "le")
+        )
+        assert le == 75
+
+    def test_cursor_defaults_to_none(self):
+        """cursor defaults to None."""
+        dep = RoleCursorCrud.cursor_params()
+        sig = inspect.signature(dep)
+        assert sig.parameters["cursor"].default.default is None
+
+    @pytest.mark.anyio
+    async def test_awaiting_dep_returns_dict(self):
+        """Awaiting the dependency returns a dict with cursor and items_per_page."""
+        dep = RoleCursorCrud.cursor_params()
+        result = await dep(cursor=None, items_per_page=5)
+        assert result == {"cursor": None, "items_per_page": 5}
+
+    @pytest.mark.anyio
+    async def test_integrates_with_cursor_paginate(self, db_session: AsyncSession):
+        """cursor_params output can be unpacked directly into cursor_paginate."""
+        await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        dep = RoleCursorCrud.cursor_params()
+        params = await dep(cursor=None, items_per_page=10)
+        result = await RoleCursorCrud.cursor_paginate(
+            db_session, **params, schema=RoleRead
+        )
+        assert result.pagination.items_per_page == 10
+
+
+class TestPaginateParamsSchema:
+    """Tests for AsyncCrud.paginate_params()."""
+
+    def test_returns_all_params(self):
+        """Returned dependency has pagination_type, page, cursor, items_per_page (no include_total)."""
+        dep = RoleCursorCrud.paginate_params()
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"pagination_type", "page", "cursor", "items_per_page"}
+
+    def test_dependency_name_includes_model_name(self):
+        """Dependency function is named after the model."""
+        dep = RoleCursorCrud.paginate_params()
+        assert getattr(dep, "__name__") == "RolePaginateParams"
+
+    def test_default_pagination_type(self):
+        """default_pagination_type is reflected in pagination_type default."""
+        from fastapi_toolsets.schemas import PaginationType
+
+        dep = RoleCursorCrud.paginate_params(
+            default_pagination_type=PaginationType.CURSOR
+        )
+        sig = inspect.signature(dep)
+        assert (
+            sig.parameters["pagination_type"].default.default == PaginationType.CURSOR
+        )
+
+    def test_default_page_size(self):
+        """default_page_size is reflected in items_per_page default."""
+        dep = RoleCursorCrud.paginate_params(default_page_size=15)
+        sig = inspect.signature(dep)
+        assert sig.parameters["items_per_page"].default.default == 15
+
+    def test_max_page_size_le_constraint(self):
+        """max_page_size is used as le constraint on items_per_page."""
+        dep = RoleCursorCrud.paginate_params(max_page_size=60)
+        sig = inspect.signature(dep)
+        le = next(
+            m.le
+            for m in sig.parameters["items_per_page"].default.metadata
+            if hasattr(m, "le")
+        )
+        assert le == 60
+
+    def test_include_total_not_a_query_param(self):
+        """include_total is not exposed as a query parameter."""
+        dep = RoleCursorCrud.paginate_params()
+        assert "include_total" not in set(inspect.signature(dep).parameters)
+
+    @pytest.mark.anyio
+    async def test_include_total_forwarded_in_result(self):
+        """include_total factory arg appears in the resolved dict."""
+        result_true = await RoleCursorCrud.paginate_params(include_total=True)(
+            pagination_type=PaginationType.OFFSET,
+            page=1,
+            cursor=None,
+            items_per_page=10,
+        )
+        result_false = await RoleCursorCrud.paginate_params(include_total=False)(
+            pagination_type=PaginationType.OFFSET,
+            page=1,
+            cursor=None,
+            items_per_page=10,
+        )
+        assert result_true["include_total"] is True
+        assert result_false["include_total"] is False
+
+    @pytest.mark.anyio
+    async def test_awaiting_dep_returns_dict(self):
+        """Awaiting the dependency returns a dict with all pagination keys."""
+        dep = RoleCursorCrud.paginate_params()
+        result = await dep(
+            pagination_type=PaginationType.OFFSET,
+            page=2,
+            cursor=None,
+            items_per_page=10,
+        )
+        assert result == {
+            "pagination_type": PaginationType.OFFSET,
+            "page": 2,
+            "cursor": None,
+            "items_per_page": 10,
+            "include_total": True,
+        }
+
+    @pytest.mark.anyio
+    async def test_integrates_with_paginate_offset(self, db_session: AsyncSession):
+        """paginate_params output unpacks into paginate() for offset strategy."""
+        from fastapi_toolsets.schemas import OffsetPagination
+
+        await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        params = await RoleCursorCrud.paginate_params()(
+            pagination_type=PaginationType.OFFSET,
+            page=1,
+            cursor=None,
+            items_per_page=10,
+        )
+        result = await RoleCursorCrud.paginate(db_session, **params, schema=RoleRead)
+        assert isinstance(result.pagination, OffsetPagination)
+
+    @pytest.mark.anyio
+    async def test_integrates_with_paginate_cursor(self, db_session: AsyncSession):
+        """paginate_params output unpacks into paginate() for cursor strategy."""
+        from fastapi_toolsets.schemas import CursorPagination
+
+        await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        params = await RoleCursorCrud.paginate_params()(
+            pagination_type=PaginationType.CURSOR,
+            page=1,
+            cursor=None,
+            items_per_page=10,
+        )
+        result = await RoleCursorCrud.paginate(db_session, **params, schema=RoleRead)
+        assert isinstance(result.pagination, CursorPagination)
