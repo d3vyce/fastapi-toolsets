@@ -586,6 +586,16 @@ class TestAfterRollback:
         session = SimpleNamespace(info={})
         _after_rollback(session)  # must not raise
 
+    def test_skips_clear_on_savepoint_rollback(self):
+        """_after_rollback preserves session.info when inside a nested transaction."""
+        sentinel = object()
+        session = SimpleNamespace(
+            info={_SESSION_CREATES: [sentinel]},
+            get_nested_transaction=lambda: object(),  # non-None → savepoint rollback
+        )
+        _after_rollback(session)
+        assert session.info[_SESSION_CREATES] == [sentinel]
+
 
 class TestTaskErrorHandler:
     @pytest.mark.anyio
@@ -632,6 +642,18 @@ class TestAfterCommitNoLoop:
         """_after_commit does nothing when all pending lists are empty."""
         session = SimpleNamespace(info={})
         _after_commit(session)  # should not raise
+
+    def test_skips_dispatch_on_savepoint_release(self):
+        """_after_commit does not dispatch events for savepoint releases."""
+        called = []
+        obj = SimpleNamespace(on_create=lambda: called.append("create"))
+        session = SimpleNamespace(
+            info={_SESSION_CREATES: [obj]},
+            get_nested_transaction=lambda: object(),  # non-None → savepoint release
+        )
+        _after_commit(session)
+        assert called == []
+        assert session.info[_SESSION_CREATES] == [obj]
 
 
 class TestWatchedFieldsMixin:

@@ -140,6 +140,10 @@ def _after_flush_postexec(session: Any, flush_context: Any) -> None:
 
 @event.listens_for(AsyncSession.sync_session_class, "after_rollback")
 def _after_rollback(session: Any) -> None:
+    get_nested = getattr(session, "get_nested_transaction", None)
+    if get_nested is not None and get_nested() is not None:
+        return
+
     session.info.pop(_SESSION_PENDING_NEW, None)
     session.info.pop(_SESSION_CREATES, None)
     session.info.pop(_SESSION_DELETES, None)
@@ -180,6 +184,10 @@ def _schedule_with_snapshot(
 
 @event.listens_for(AsyncSession.sync_session_class, "after_commit")
 def _after_commit(session: Any) -> None:
+    get_nested = getattr(session, "get_nested_transaction", None)
+    if get_nested is not None and get_nested() is not None:
+        return
+
     creates: list[Any] = session.info.pop(_SESSION_CREATES, [])
     deletes: list[Any] = session.info.pop(_SESSION_DELETES, [])
     field_changes: dict[int, tuple[Any, dict[str, dict[str, Any]]]] = session.info.pop(
