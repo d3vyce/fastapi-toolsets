@@ -138,6 +138,23 @@ Server-side defaults (e.g. `id`, `created_at`) are fully populated in all callba
 | `@watch("status", "role")` | Only fires when `status` or `role` changes |
 | *(no decorator)* | Fires when **any** mapped field changes |
 
+`@watch` is inherited through the class hierarchy. If a subclass does not declare its own `@watch`, it uses the filter from the nearest decorated parent. Applying `@watch` on the subclass overrides the parent's filter:
+
+```python
+@watch("status")
+class Order(Base, UUIDMixin, WatchedFieldsMixin):
+    ...
+
+class UrgentOrder(Order):
+    # inherits @watch("status") — on_update fires only for status changes
+    ...
+
+@watch("priority")
+class PriorityOrder(Order):
+    # overrides parent — on_update fires only for priority changes
+    ...
+```
+
 #### Option 1 — catch-all with `on_event`
 
 Override `on_event` to handle all event types in one place. The specific methods delegate here by default:
@@ -196,6 +213,25 @@ The `changes` dict maps each watched field that changed to `{"old": ..., "new": 
 !!! info "Multiple flushes in one transaction are merged: the earliest `old` and latest `new` are preserved, and `on_update` fires only once per commit."
 
 !!! warning "Callbacks fire only for ORM-level changes. Rows updated via raw SQL (`UPDATE ... SET ...`) are not detected."
+
+!!! warning "Callbacks fire after the **outermost** transaction commits."
+    If you create several related objects using `CrudFactory.create` and need
+    callbacks to see all of them (including associations), wrap the whole
+    operation in a single [`get_transaction`](db.md) block. Without it, each
+    `create` call commits independently and `on_create` fires before the
+    remaining objects exist.
+
+    ```python
+    from fastapi_toolsets.db import get_transaction
+
+    async with get_transaction(session):
+        order = await OrderCrud.create(session, order_data)
+        item  = await ItemCrud.create(session, item_data)
+        await session.refresh(order, attribute_names=["items"])
+        order.items.append(item)
+    # on_create fires here for both order and item,
+    # with the full association already committed.
+    ```
 
 ## Composing mixins
 

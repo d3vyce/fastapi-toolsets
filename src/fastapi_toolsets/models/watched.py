@@ -66,6 +66,14 @@ def _snapshot_column_attrs(obj: Any) -> dict[str, Any]:
     }
 
 
+def _get_watched_fields(cls: type) -> list[str] | None:
+    """Return the watched fields for *cls*, walking the MRO to inherit from parents."""
+    for klass in cls.__mro__:
+        if klass in _WATCHED_FIELDS:
+            return _WATCHED_FIELDS[klass]
+    return None
+
+
 def _upsert_changes(
     pending: dict[int, tuple[Any, dict[str, dict[str, Any]]]],
     obj: Any,
@@ -103,7 +111,7 @@ def _after_flush(session: Any, flush_context: Any) -> None:
             continue
 
         # None = not in dict = watch all fields; list = specific fields only
-        watched = _WATCHED_FIELDS.get(type(obj))
+        watched = _get_watched_fields(type(obj))
         changes: dict[str, dict[str, Any]] = {}
 
         attrs = (
