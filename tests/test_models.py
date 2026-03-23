@@ -6,27 +6,27 @@ from contextlib import suppress
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import fastapi_toolsets.models.watched as _watched_module
 import pytest
 from sqlalchemy import String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+import fastapi_toolsets.models.watched as _watched_module
 from fastapi_toolsets.models import (
     CreatedAtMixin,
     ModelEvent,
     TimestampMixin,
+    UpdatedAtMixin,
     UUIDMixin,
     UUIDv7Mixin,
-    UpdatedAtMixin,
     WatchedFieldsMixin,
     watch,
 )
 from fastapi_toolsets.models.watched import (
     _SESSION_CREATES,
     _SESSION_DELETES,
-    _SESSION_UPDATES,
     _SESSION_PENDING_NEW,
+    _SESSION_UPDATES,
     _after_commit,
     _after_flush,
     _after_flush_postexec,
@@ -80,8 +80,6 @@ class FullMixinModel(MixinBase, UUIDMixin, UpdatedAtMixin):
 
     name: Mapped[str] = mapped_column(String(50))
 
-
-# --- WatchedFieldsMixin test models ---
 
 _test_events: list[dict] = []
 
@@ -143,6 +141,35 @@ class NonWatchedModel(MixinBase):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     value: Mapped[str] = mapped_column(String(50))
+
+
+_poly_events: list[dict] = []
+
+
+class PolyAnimal(MixinBase, UUIDMixin, WatchedFieldsMixin):
+    """Base class for STI polymorphism tests."""
+
+    __tablename__ = "mixin_poly_animals"
+    __mapper_args__ = {"polymorphic_on": "kind", "polymorphic_identity": "animal"}
+
+    kind: Mapped[str] = mapped_column(String(50))
+    name: Mapped[str] = mapped_column(String(50))
+
+    async def on_create(self) -> None:
+        _poly_events.append(
+            {"event": "create", "type": type(self).__name__, "obj_id": self.id}
+        )
+
+    async def on_delete(self) -> None:
+        _poly_events.append(
+            {"event": "delete", "type": type(self).__name__, "obj_id": self.id}
+        )
+
+
+class PolyDog(PolyAnimal):
+    """STI subclass — shares the same table as PolyAnimal."""
+
+    __mapper_args__ = {"polymorphic_identity": "dog"}
 
 
 _attr_access_events: list[dict] = []
@@ -869,6 +896,119 @@ class TestWatchedFieldsMixin:
             "old": "initial",
             "new": "updated",
         }
+
+
+class TestTransientObject:
+    """Create + delete within the same transaction should fire no events."""
+
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _test_events.clear()
+        yield
+        _test_events.clear()
+
+    @pytest.mark.anyio
+    async def test_no_events_when_created_and_deleted_in_same_transaction(
+        self, mixin_session
+    ):
+        """Neither on_create nor on_delete fires when the object never survives a commit."""
+        obj = WatchedModel(status="active", other="x")
+        mixin_session.add(obj)
+        await mixin_session.flush()
+        await mixin_session.delete(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert _test_events == []
+
+    @pytest.mark.anyio
+    async def test_other_objects_unaffected(self, mixin_session):
+        """on_create still fires for objects that are not deleted in the same transaction."""
+        survivor = WatchedModel(status="active", other="x")
+        transient = WatchedModel(status="gone", other="y")
+        mixin_session.add(survivor)
+        mixin_session.add(transient)
+        await mixin_session.flush()
+        await mixin_session.delete(transient)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        deletes = [e for e in _test_events if e["event"] == "delete"]
+        assert len(creates) == 1
+        assert creates[0]["obj_id"] == survivor.id
+        assert deletes == []
+
+    @pytest.mark.anyio
+    async def test_distinct_create_and_delete_both_fire(self, mixin_session):
+        """on_create and on_delete both fire when different objects are created and deleted."""
+        existing = WatchedModel(status="old", other="x")
+        mixin_session.add(existing)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+        _test_events.clear()
+
+        new_obj = WatchedModel(status="new", other="y")
+        mixin_session.add(new_obj)
+        await mixin_session.delete(existing)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        deletes = [e for e in _test_events if e["event"] == "delete"]
+        assert len(creates) == 1
+        assert len(deletes) == 1
+
+
+class TestPolymorphism:
+    """WatchedFieldsMixin with STI (Single Table Inheritance)."""
+
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _poly_events.clear()
+        yield
+        _poly_events.clear()
+
+    @pytest.mark.anyio
+    async def test_on_create_fires_once_for_subclass(self, mixin_session):
+        """on_create fires exactly once for a STI subclass instance."""
+        dog = PolyDog(name="Rex")
+        mixin_session.add(dog)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert len(_poly_events) == 1
+        assert _poly_events[0]["event"] == "create"
+        assert _poly_events[0]["type"] == "PolyDog"
+
+    @pytest.mark.anyio
+    async def test_on_delete_fires_for_subclass(self, mixin_session):
+        """on_delete fires for a STI subclass instance."""
+        dog = PolyDog(name="Rex")
+        mixin_session.add(dog)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+        _poly_events.clear()
+
+        await mixin_session.delete(dog)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert len(_poly_events) == 1
+        assert _poly_events[0]["event"] == "delete"
+        assert _poly_events[0]["type"] == "PolyDog"
+
+    @pytest.mark.anyio
+    async def test_transient_subclass_fires_no_events(self, mixin_session):
+        """Create + delete of a STI subclass in one transaction fires no events."""
+        dog = PolyDog(name="Rex")
+        mixin_session.add(dog)
+        await mixin_session.flush()
+        await mixin_session.delete(dog)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert _poly_events == []
 
 
 class TestWatchAll:
