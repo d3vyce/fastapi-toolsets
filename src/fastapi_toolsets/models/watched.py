@@ -1,6 +1,7 @@
 """Field-change monitoring via SQLAlchemy session events."""
 
 import asyncio
+import inspect
 import weakref
 from collections.abc import Awaitable
 from enum import Enum
@@ -169,7 +170,7 @@ def _schedule_with_snapshot(
             _sa_set_committed_value(obj, key, value)
         try:
             result = fn(*args)
-            if asyncio.iscoroutine(result):
+            if inspect.isawaitable(result):
                 await result
         except Exception as exc:
             _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
