@@ -172,6 +172,37 @@ class PolyDog(PolyAnimal):
     __mapper_args__ = {"polymorphic_identity": "dog"}
 
 
+_watch_inherit_events: list[dict] = []
+
+
+@watch("status")
+class WatchParent(MixinBase, UUIDMixin, WatchedFieldsMixin):
+    """Base class with @watch("status") — subclasses should inherit this filter."""
+
+    __tablename__ = "mixin_watch_parent"
+    __mapper_args__ = {"polymorphic_on": "kind", "polymorphic_identity": "parent"}
+
+    kind: Mapped[str] = mapped_column(String(50))
+    status: Mapped[str] = mapped_column(String(50))
+    other: Mapped[str] = mapped_column(String(50))
+
+    async def on_update(self, changes: dict) -> None:
+        _watch_inherit_events.append({"type": type(self).__name__, "changes": changes})
+
+
+class WatchChild(WatchParent):
+    """STI subclass that does NOT redeclare @watch — should inherit parent's filter."""
+
+    __mapper_args__ = {"polymorphic_identity": "child"}
+
+
+@watch("other")
+class WatchOverride(WatchParent):
+    """STI subclass that overrides @watch with a different field."""
+
+    __mapper_args__ = {"polymorphic_identity": "override"}
+
+
 _attr_access_events: list[dict] = []
 
 
@@ -513,6 +544,67 @@ class TestWatchDecorator:
         """@watch() with no field names raises ValueError."""
         with pytest.raises(ValueError, match="@watch requires at least one field name"):
             watch()
+
+
+class TestWatchInheritance:
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _watch_inherit_events.clear()
+        yield
+        _watch_inherit_events.clear()
+
+    @pytest.mark.anyio
+    async def test_child_inherits_parent_watch_filter(self, mixin_session):
+        """Subclass without @watch inherits the parent's field filter."""
+        obj = WatchChild(status="initial", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        obj.other = "changed"  # not watched by parent's @watch("status")
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert _watch_inherit_events == []
+
+    @pytest.mark.anyio
+    async def test_child_triggers_on_watched_field(self, mixin_session):
+        """Subclass without @watch triggers on_update for the parent's watched field."""
+        obj = WatchChild(status="initial", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        obj.status = "updated"
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert len(_watch_inherit_events) == 1
+        assert _watch_inherit_events[0]["type"] == "WatchChild"
+        assert "status" in _watch_inherit_events[0]["changes"]
+
+    @pytest.mark.anyio
+    async def test_subclass_override_takes_precedence(self, mixin_session):
+        """Subclass @watch overrides the parent's field filter."""
+        obj = WatchOverride(status="initial", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        obj.status = (
+            "changed"  # watched by parent but overridden by child's @watch("other")
+        )
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert _watch_inherit_events == []
+
+        obj.other = "changed"
+        await mixin_session.commit()
+        await asyncio.sleep(0)
+
+        assert len(_watch_inherit_events) == 1
+        assert "other" in _watch_inherit_events[0]["changes"]
 
 
 class TestUpsertChanges:
