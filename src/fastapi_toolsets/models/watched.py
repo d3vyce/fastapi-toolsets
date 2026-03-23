@@ -186,6 +186,15 @@ def _after_commit(session: Any) -> None:
         _SESSION_UPDATES, {}
     )
 
+    if creates and deletes:
+        transient_ids = {id(o) for o in creates} & {id(o) for o in deletes}
+        if transient_ids:
+            creates = [o for o in creates if id(o) not in transient_ids]
+            deletes = [o for o in deletes if id(o) not in transient_ids]
+            field_changes = {
+                k: v for k, v in field_changes.items() if k not in transient_ids
+            }
+
     if not creates and not deletes and not field_changes:
         return
 
