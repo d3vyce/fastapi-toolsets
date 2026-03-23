@@ -199,6 +199,7 @@ class AttrAccessModel(MixinBase, UUIDMixin, WatchedFieldsMixin):
 
 
 _sync_events: list[dict] = []
+_future_events: list[str] = []
 
 
 @watch("status")
@@ -217,6 +218,20 @@ class SyncCallbackModel(MixinBase, UUIDMixin, WatchedFieldsMixin):
 
     def on_update(self, changes: dict) -> None:
         _sync_events.append({"event": "update", "changes": changes})
+
+
+class FutureCallbackModel(MixinBase, UUIDMixin, WatchedFieldsMixin):
+    """Model whose on_create returns an asyncio.Task (awaitable, not a coroutine)."""
+
+    __tablename__ = "mixin_future_callback_models"
+
+    name: Mapped[str] = mapped_column(String(50))
+
+    def on_create(self) -> "asyncio.Task[None]":
+        async def _work() -> None:
+            _future_events.append("created")
+
+        return asyncio.ensure_future(_work())
 
 
 @pytest.fixture(scope="function")
@@ -1106,6 +1121,28 @@ class TestSyncCallbacks:
         updates = [e for e in _sync_events if e["event"] == "update"]
         assert len(updates) == 1
         assert updates[0]["changes"]["status"] == {"old": "initial", "new": "updated"}
+
+
+class TestFutureCallbacks:
+    """Callbacks returning a non-coroutine awaitable (asyncio.Task / Future)."""
+
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _future_events.clear()
+        yield
+        _future_events.clear()
+
+    @pytest.mark.anyio
+    async def test_task_callback_is_awaited(self, mixin_session):
+        """on_create returning an asyncio.Task is awaited and its work completes."""
+        obj = FutureCallbackModel(name="test")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        # Two turns: one for _run() to execute, one for the inner _work() task.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert _future_events == ["created"]
 
 
 class TestAttributeAccessInCallbacks:
