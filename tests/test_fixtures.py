@@ -16,7 +16,7 @@ from fastapi_toolsets.fixtures import (
 
 from fastapi_toolsets.fixtures.utils import _get_primary_key
 
-from .conftest import IntRole, Permission, Role, User
+from .conftest import IntRole, Permission, Role, RoleCrud, User, UserCrud
 
 
 class TestContext:
@@ -447,8 +447,6 @@ class TestLoadFixtures:
         assert "roles" in result
         assert len(result["roles"]) == 2
 
-        from .conftest import RoleCrud
-
         count = await RoleCrud.count(db_session)
         assert count == 2
 
@@ -479,8 +477,6 @@ class TestLoadFixtures:
         assert "roles" in result
         assert "users" in result
 
-        from .conftest import RoleCrud, UserCrud
-
         assert await RoleCrud.count(db_session) == 1
         assert await UserCrud.count(db_session) == 1
 
@@ -496,8 +492,6 @@ class TestLoadFixtures:
 
         await load_fixtures(db_session, registry, "roles", strategy=LoadStrategy.MERGE)
         await load_fixtures(db_session, registry, "roles", strategy=LoadStrategy.MERGE)
-
-        from .conftest import RoleCrud
 
         count = await RoleCrud.count(db_session)
         assert count == 1
@@ -526,8 +520,6 @@ class TestLoadFixtures:
             db_session, registry, "roles", strategy=LoadStrategy.SKIP_EXISTING
         )
 
-        from .conftest import RoleCrud
-
         role = await RoleCrud.first(db_session, [Role.id == role_id])
         assert role is not None
         assert role.name == "original"
@@ -552,8 +544,6 @@ class TestLoadFixtures:
 
         assert "roles" in result
         assert len(result["roles"]) == 2
-
-        from .conftest import RoleCrud
 
         count = await RoleCrud.count(db_session)
         assert count == 2
@@ -593,8 +583,6 @@ class TestLoadFixtures:
 
         assert "roles" in result
         assert "other_roles" in result
-
-        from .conftest import RoleCrud
 
         count = await RoleCrud.count(db_session)
         assert count == 2
@@ -660,8 +648,6 @@ class TestLoadFixturesByContext:
 
         await load_fixtures_by_context(db_session, registry, Context.BASE)
 
-        from .conftest import RoleCrud
-
         count = await RoleCrud.count(db_session)
         assert count == 1
 
@@ -687,8 +673,6 @@ class TestLoadFixturesByContext:
         await load_fixtures_by_context(
             db_session, registry, Context.BASE, Context.TESTING
         )
-
-        from .conftest import RoleCrud
 
         count = await RoleCrud.count(db_session)
         assert count == 2
@@ -716,8 +700,6 @@ class TestLoadFixturesByContext:
             ]
 
         await load_fixtures_by_context(db_session, registry, Context.TESTING)
-
-        from .conftest import RoleCrud, UserCrud
 
         assert await RoleCrud.count(db_session) == 1
         assert await UserCrud.count(db_session) == 1

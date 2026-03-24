@@ -321,30 +321,3 @@ async def db_session(engine):
         # Drop tables after test
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
-
-
-@pytest.fixture
-def sample_role_data() -> RoleCreate:
-    """Sample role creation data."""
-    return RoleCreate(name="admin")
-
-
-@pytest.fixture
-def sample_user_data() -> UserCreate:
-    """Sample user creation data."""
-    return UserCreate(
-        username="testuser",
-        email="test@example.com",
-        is_active=True,
-    )
-
-
-@pytest.fixture
-def sample_post_data() -> PostCreate:
-    """Sample post creation data."""
-    return PostCreate(
-        title="Test Post",
-        content="Test content",
-        is_published=True,
-        author_id=uuid.uuid4(),
-    )
