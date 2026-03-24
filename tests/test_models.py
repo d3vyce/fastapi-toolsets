@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import String
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from fastapi_toolsets.pytest import create_db_session
 
 import fastapi_toolsets.models.watched as _watched_module
 from fastapi_toolsets.models import (
@@ -267,39 +268,17 @@ class FutureCallbackModel(MixinBase, UUIDMixin, WatchedFieldsMixin):
 
 @pytest.fixture(scope="function")
 async def mixin_session():
-    engine = create_async_engine(DATABASE_URL, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(MixinBase.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    session = session_factory()
-
-    try:
+    async with create_db_session(DATABASE_URL, MixinBase) as session:
         yield session
-    finally:
-        await session.close()
-        async with engine.begin() as conn:
-            await conn.run_sync(MixinBase.metadata.drop_all)
-        await engine.dispose()
 
 
 @pytest.fixture(scope="function")
 async def mixin_session_expire():
     """Session with expire_on_commit=True (the default) to exercise attribute access after commit."""
-    engine = create_async_engine(DATABASE_URL, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(MixinBase.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, expire_on_commit=True)
-    session = session_factory()
-
-    try:
+    async with create_db_session(
+        DATABASE_URL, MixinBase, expire_on_commit=True
+    ) as session:
         yield session
-    finally:
-        await session.close()
-        async with engine.begin() as conn:
-            await conn.run_sync(MixinBase.metadata.drop_all)
-        await engine.dispose()
 
 
 class TestUUIDMixin:

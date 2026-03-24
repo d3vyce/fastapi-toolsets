@@ -171,8 +171,15 @@ class TestPytestImportGuard:
 class TestCliImportGuard:
     """Tests for CLI module import guard when typer is missing."""
 
-    def test_import_raises_without_typer(self):
-        """Importing cli.app raises when typer is missing."""
+    @pytest.mark.parametrize(
+        "expected_match",
+        [
+            "typer",
+            r"pip install fastapi-toolsets\[cli\]",
+        ],
+    )
+    def test_import_raises_without_typer(self, expected_match):
+        """Importing cli.app raises when typer is missing, with an informative error message."""
         saved, blocking_import = _reload_without_package(
             "fastapi_toolsets.cli.app", ["typer"]
         )
@@ -186,33 +193,7 @@ class TestCliImportGuard:
 
         try:
             with patch("builtins.__import__", side_effect=blocking_import):
-                with pytest.raises(ImportError, match="typer"):
-                    importlib.import_module("fastapi_toolsets.cli.app")
-        finally:
-            for key in list(sys.modules):
-                if key.startswith("fastapi_toolsets.cli.app") or key.startswith(
-                    "fastapi_toolsets.cli.config"
-                ):
-                    sys.modules.pop(key, None)
-            sys.modules.update(saved)
-
-    def test_error_message_suggests_cli_extra(self):
-        """Error message suggests installing the cli extra."""
-        saved, blocking_import = _reload_without_package(
-            "fastapi_toolsets.cli.app", ["typer"]
-        )
-        config_keys = [
-            k for k in sys.modules if k.startswith("fastapi_toolsets.cli.config")
-        ]
-        for key in config_keys:
-            if key not in saved:
-                saved[key] = sys.modules.pop(key)
-
-        try:
-            with patch("builtins.__import__", side_effect=blocking_import):
-                with pytest.raises(
-                    ImportError, match=r"pip install fastapi-toolsets\[cli\]"
-                ):
+                with pytest.raises(ImportError, match=expected_match):
                     importlib.import_module("fastapi_toolsets.cli.app")
         finally:
             for key in list(sys.modules):

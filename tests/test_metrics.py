@@ -1,6 +1,5 @@
 """Tests for fastapi_toolsets.metrics module."""
 
-import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
@@ -287,6 +286,16 @@ class TestIncludeRegistry:
 class TestInitMetrics:
     """Tests for init_metrics function."""
 
+    @pytest.fixture
+    def metrics_client(self):
+        """Create a FastAPI app with MetricsRegistry and return a TestClient."""
+        app = FastAPI()
+        registry = MetricsRegistry()
+        init_metrics(app, registry)
+        client = TestClient(app)
+        yield client
+        client.close()
+
     def test_returns_app(self):
         """Returns the FastAPI app."""
         app = FastAPI()
@@ -294,26 +303,14 @@ class TestInitMetrics:
         result = init_metrics(app, registry)
         assert result is app
 
-    def test_metrics_endpoint_responds(self):
+    def test_metrics_endpoint_responds(self, metrics_client):
         """The /metrics endpoint returns 200."""
-        app = FastAPI()
-        registry = MetricsRegistry()
-        init_metrics(app, registry)
-
-        client = TestClient(app)
-        response = client.get("/metrics")
-
+        response = metrics_client.get("/metrics")
         assert response.status_code == 200
 
-    def test_metrics_endpoint_content_type(self):
+    def test_metrics_endpoint_content_type(self, metrics_client):
         """The /metrics endpoint returns prometheus content type."""
-        app = FastAPI()
-        registry = MetricsRegistry()
-        init_metrics(app, registry)
-
-        client = TestClient(app)
-        response = client.get("/metrics")
-
+        response = metrics_client.get("/metrics")
         assert "text/plain" in response.headers["content-type"]
 
     def test_custom_path(self):
@@ -445,36 +442,33 @@ class TestInitMetrics:
 class TestMultiProcessMode:
     """Tests for multi-process Prometheus mode."""
 
-    def test_multiprocess_with_env_var(self):
+    def test_multiprocess_with_env_var(self, monkeypatch):
         """Multi-process mode works when PROMETHEUS_MULTIPROC_DIR is set."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ["PROMETHEUS_MULTIPROC_DIR"] = tmpdir
-            try:
-                # Use a separate registry to avoid conflicts with default
-                prom_registry = CollectorRegistry()
-                app = FastAPI()
-                registry = MetricsRegistry()
+            monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", tmpdir)
+            # Use a separate registry to avoid conflicts with default
+            prom_registry = CollectorRegistry()
+            app = FastAPI()
+            registry = MetricsRegistry()
 
-                @registry.register
-                def mp_counter():
-                    return Counter(
-                        "mp_test_counter",
-                        "A multiprocess counter",
-                        registry=prom_registry,
-                    )
+            @registry.register
+            def mp_counter():
+                return Counter(
+                    "mp_test_counter",
+                    "A multiprocess counter",
+                    registry=prom_registry,
+                )
 
-                init_metrics(app, registry)
+            init_metrics(app, registry)
 
-                client = TestClient(app)
-                response = client.get("/metrics")
+            client = TestClient(app)
+            response = client.get("/metrics")
 
-                assert response.status_code == 200
-            finally:
-                del os.environ["PROMETHEUS_MULTIPROC_DIR"]
+            assert response.status_code == 200
 
-    def test_single_process_without_env_var(self):
+    def test_single_process_without_env_var(self, monkeypatch):
         """Single-process mode when PROMETHEUS_MULTIPROC_DIR is not set."""
-        os.environ.pop("PROMETHEUS_MULTIPROC_DIR", None)
+        monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR", raising=False)
 
         app = FastAPI()
         registry = MetricsRegistry()

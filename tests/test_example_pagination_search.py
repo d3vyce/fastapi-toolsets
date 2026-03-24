@@ -10,12 +10,13 @@ import datetime
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from docs_src.examples.pagination_search.db import get_db
 from docs_src.examples.pagination_search.models import Article, Base, Category
 from docs_src.examples.pagination_search.routes import router
 from fastapi_toolsets.exceptions import init_exceptions_handlers
+from fastapi_toolsets.pytest import create_db_session
 
 from .conftest import DATABASE_URL
 
@@ -35,20 +36,8 @@ def build_app(session: AsyncSession) -> FastAPI:
 @pytest.fixture(scope="function")
 async def ex_db_session():
     """Isolated session for the example models (separate tables from conftest)."""
-    engine = create_async_engine(DATABASE_URL, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    session = session_factory()
-
-    try:
+    async with create_db_session(DATABASE_URL, Base) as session:
         yield session
-    finally:
-        await session.close()
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-        await engine.dispose()
 
 
 @pytest.fixture
