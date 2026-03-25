@@ -214,12 +214,12 @@ The `changes` dict maps each watched field that changed to `{"old": ..., "new": 
 
 !!! warning "Callbacks fire only for ORM-level changes. Rows updated via raw SQL (`UPDATE ... SET ...`) are not detected."
 
-!!! warning "Callbacks fire after the **outermost** transaction commits."
+!!! warning "Callbacks fire when the **outermost active context** (savepoint or transaction) commits."
     If you create several related objects using `CrudFactory.create` and need
     callbacks to see all of them (including associations), wrap the whole
-    operation in a single [`get_transaction`](db.md) block. Without it, each
-    `create` call commits independently and `on_create` fires before the
-    remaining objects exist.
+    operation in a single [`get_transaction`](db.md) or [`lock_tables`](db.md)
+    block. Without it, each `create` call commits its own savepoint and
+    `on_create` fires before the remaining objects exist.
 
     ```python
     from fastapi_toolsets.db import get_transaction

@@ -56,6 +56,7 @@ def create_db_dependency(
 
     async def get_db() -> AsyncGenerator[AsyncSession, None]:
         async with session_maker() as session:
+            await session.connection()
             yield session
             if session.in_transaction():
                 await session.commit()
