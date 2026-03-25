@@ -68,6 +68,55 @@ class TestCreateDbDependency:
                 await conn.run_sync(Base.metadata.drop_all)
             await engine.dispose()
 
+    @pytest.mark.anyio
+    async def test_in_transaction_on_yield(self):
+        """Session is already in a transaction when the endpoint body starts."""
+        engine = create_async_engine(DATABASE_URL, echo=False)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        get_db = create_db_dependency(session_factory)
+
+        async for session in get_db():
+            assert session.in_transaction()
+            break
+
+        await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_update_after_lock_tables_is_persisted(self):
+        """Changes made after lock_tables exits (before endpoint returns) are committed.
+
+        Regression: without the auto-begin fix, lock_tables would start and commit a
+        real outer transaction, leaving the session idle. Any modifications after that
+        point were silently dropped.
+        """
+        engine = create_async_engine(DATABASE_URL, echo=False)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        try:
+            get_db = create_db_dependency(session_factory)
+
+            async for session in get_db():
+                async with lock_tables(session, [Role]):
+                    role = Role(name="lock_then_update")
+                    session.add(role)
+                    await session.flush()
+                # lock_tables has exited — outer transaction must still be open
+                assert session.in_transaction()
+                role.name = "updated_after_lock"
+
+            async with session_factory() as verify:
+                result = await RoleCrud.first(
+                    verify, [Role.name == "updated_after_lock"]
+                )
+                assert result is not None
+        finally:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+            await engine.dispose()
+
 
 class TestCreateDbContext:
     """Tests for create_db_context."""
