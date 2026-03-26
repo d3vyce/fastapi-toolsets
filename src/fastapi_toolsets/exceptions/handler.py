@@ -30,7 +30,7 @@ def init_exceptions_handlers(app: FastAPI) -> FastAPI:
     """
     _register_exception_handlers(app)
     _original_openapi = app.openapi
-    app.openapi = lambda: _patched_openapi(app, _original_openapi)  # type: ignore[method-assign]
+    app.openapi = lambda: _patched_openapi(app, _original_openapi)  # type: ignore[method-assign]  # ty:ignore[invalid-assignment]
     return app
 
 

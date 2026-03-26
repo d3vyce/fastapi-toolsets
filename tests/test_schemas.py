@@ -551,7 +551,7 @@ class TestOffsetPaginatedResponse:
                 pagination=OffsetPagination(
                     total_count=0, items_per_page=10, page=1, has_more=False
                 ),
-                pagination_type=PaginationType.CURSOR,  # type: ignore[arg-type]
+                pagination_type=PaginationType.CURSOR,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
             )
 
     def test_filter_attributes_defaults_to_none(self):
@@ -638,7 +638,7 @@ class TestCursorPaginatedResponse:
                 pagination=CursorPagination(
                     next_cursor=None, items_per_page=10, has_more=False
                 ),
-                pagination_type=PaginationType.OFFSET,  # type: ignore[arg-type]
+                pagination_type=PaginationType.OFFSET,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
             )
 
     def test_full_serialization(self):

@@ -20,7 +20,7 @@ from .conftest import Role, RoleCreate, RoleCrud, User
 
 async def mock_get_db() -> AsyncGenerator[AsyncSession, None]:
     """Mock session dependency for testing."""
-    yield None
+    yield None  # type: ignore[misc]  # ty:ignore[invalid-yield]
 
 
 MockSessionDep = Annotated[AsyncSession, Depends(mock_get_db)]

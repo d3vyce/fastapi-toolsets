@@ -101,7 +101,7 @@ class TestMetricsImportGuard:
             with patch("builtins.__import__", side_effect=blocking_import):
                 mod = importlib.import_module("fastapi_toolsets.metrics")
                 with pytest.raises(ImportError, match="prometheus_client"):
-                    mod.init_metrics(None, None)  # type: ignore[arg-type]
+                    mod.init_metrics(None, None)  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
         finally:
             for key in list(sys.modules):
                 if key.startswith("fastapi_toolsets.metrics"):

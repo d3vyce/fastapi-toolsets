@@ -2566,7 +2566,7 @@ class TestPaginate:
                 db_session,
                 pagination_type="unknown",
                 schema=RoleRead,
-            )  # type: ignore[no-matching-overload]
+            )  # type: ignore[no-matching-overload]  # ty:ignore[no-matching-overload]
 
     @pytest.mark.anyio
     async def test_offset_include_total_false(self, db_session: AsyncSession):
