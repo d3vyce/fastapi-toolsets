@@ -412,7 +412,8 @@ class TestCreateDatabase:
             .set(database="test_create_db_general")
             .render_as_string(hide_password=False)
         )
-        expected_db: str = make_url(target_url).database  # type: ignore[assignment]
+        expected_db = make_url(target_url).database
+        assert expected_db is not None
 
         engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
         try:

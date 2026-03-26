@@ -990,7 +990,7 @@ class TestFilterParamsSchema:
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
         dep = UserFacetCrud.filter_params()
 
-        assert dep.__name__ == "UserFilterParams"  # type: ignore[union-attr]
+        assert dep.__name__ == "UserFilterParams"  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
 
     @pytest.mark.anyio
     async def test_integration_with_offset_paginate(self, db_session: AsyncSession):

@@ -129,7 +129,8 @@ async def create_worker_database(
     worker_url = worker_database_url(
         database_url=database_url, default_test_db=default_test_db
     )
-    worker_db_name: str = make_url(worker_url).database  # type: ignore[assignment]
+    worker_db_name = make_url(worker_url).database
+    assert worker_db_name is not None
 
     engine = create_async_engine(database_url, isolation_level="AUTOCOMMIT")
     try:

@@ -66,7 +66,7 @@ def configure_logging(
 _SENTINEL = object()
 
 
-def get_logger(name: str | None = _SENTINEL) -> logging.Logger:  # type: ignore[assignment]
+def get_logger(name: str | None = _SENTINEL) -> logging.Logger:  # type: ignore[assignment]  # ty:ignore[invalid-parameter-default]
     """Return a logger with the given *name*.
 
     A thin convenience wrapper around :func:`logging.getLogger` that keeps

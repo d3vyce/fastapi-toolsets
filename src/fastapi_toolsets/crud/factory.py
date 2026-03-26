@@ -295,7 +295,7 @@ class AsyncCrud(Generic[ModelType]):
             return {k: v for k, v in kwargs.items() if v is not None}
 
         dependency.__name__ = f"{cls.model.__name__}FilterParams"
-        dependency.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+        dependency.__signature__ = inspect.Signature(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
             parameters=[
                 inspect.Parameter(
                     k,
