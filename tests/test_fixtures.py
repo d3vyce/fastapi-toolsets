@@ -1,6 +1,7 @@
 """Tests for fastapi_toolsets.fixtures module."""
 
 import uuid
+from enum import Enum
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,19 @@ from fastapi_toolsets.fixtures import (
 from fastapi_toolsets.fixtures.utils import _get_primary_key
 
 from .conftest import IntRole, Permission, Role, RoleCrud, User, UserCrud
+
+
+class AppContext(str, Enum):
+    """Example user-defined str+Enum context."""
+
+    STAGING = "staging"
+    DEMO = "demo"
+
+
+class PlainEnumContext(Enum):
+    """Example user-defined plain Enum context (no str mixin)."""
+
+    STAGING = "staging"
 
 
 class TestContext:
@@ -37,6 +51,86 @@ class TestContext:
     def test_testing_context(self):
         """TESTING context has correct value."""
         assert Context.TESTING.value == "testing"
+
+
+class TestCustomEnumContext:
+    """Custom Enum types are accepted wherever Context/str are expected."""
+
+    def test_cannot_subclass_context_with_members(self):
+        """Python prohibits extending an Enum that already has members."""
+        with pytest.raises(TypeError):
+
+            class MyContext(Context):  # noqa: F841  # ty: ignore[subclass-of-final-class]
+                STAGING = "staging"
+
+    def test_custom_enum_values_interchangeable_with_context(self):
+        """A custom enum with the same .value as a built-in Context member is
+        treated as the same context — fixtures registered under one are found
+        by the other."""
+
+        class AppContextFull(str, Enum):
+            BASE = "base"
+            STAGING = "staging"
+
+        registry = FixtureRegistry()
+
+        @registry.register(contexts=[Context.BASE])
+        def roles():
+            return []
+
+        # AppContextFull.BASE has value "base" — same as Context.BASE
+        fixtures = registry.get_by_context(AppContextFull.BASE)
+        assert len(fixtures) == 1
+
+    def test_custom_enum_registry_default_contexts(self):
+        """FixtureRegistry(contexts=[...]) accepts a custom Enum."""
+        registry = FixtureRegistry(contexts=[AppContext.STAGING])
+
+        @registry.register
+        def data():
+            return []
+
+        fixture = registry.get("data")
+        assert fixture.contexts == ["staging"]
+
+    def test_custom_enum_resolve_context_dependencies(self):
+        """resolve_context_dependencies accepts a custom Enum context."""
+        registry = FixtureRegistry()
+
+        @registry.register(contexts=[AppContext.STAGING])
+        def staging_roles():
+            return []
+
+        order = registry.resolve_context_dependencies(AppContext.STAGING)
+        assert "staging_roles" in order
+
+    @pytest.mark.anyio
+    async def test_custom_enum_e2e(self, db_session: AsyncSession):
+        """End-to-end: register with custom Enum, load with the same Enum."""
+        registry = FixtureRegistry()
+
+        @registry.register(contexts=[AppContext.STAGING])
+        def staging_roles():
+            return [Role(id=uuid.uuid4(), name="staging-admin")]
+
+        result = await load_fixtures_by_context(
+            db_session, registry, AppContext.STAGING
+        )
+        assert len(result["staging_roles"]) == 1
+
+    @pytest.mark.anyio
+    async def test_plain_enum_e2e(self, db_session: AsyncSession):
+        """End-to-end: register with plain Enum, load with the same Enum."""
+        registry = FixtureRegistry()
+
+        @registry.register(contexts=[PlainEnumContext.STAGING])
+        def staging_roles():
+            return [Role(id=uuid.uuid4(), name="plain-staging-admin")]
+
+        result = await load_fixtures_by_context(
+            db_session, registry, PlainEnumContext.STAGING
+        )
+        assert len(result["staging_roles"]) == 1
 
 
 class TestLoadStrategy:
@@ -406,6 +500,37 @@ class TestDependencyResolution:
 
         with pytest.raises(ValueError, match="Circular dependency"):
             registry.resolve_dependencies("a")
+
+    def test_resolve_raises_for_unknown_dependency(self):
+        """KeyError when depends_on references an unregistered fixture."""
+        registry = FixtureRegistry()
+
+        @registry.register(depends_on=["ghost"])
+        def users():
+            return []
+
+        with pytest.raises(KeyError, match="ghost"):
+            registry.resolve_dependencies("users")
+
+    def test_resolve_deduplicates_shared_depends_on_across_variants(self):
+        """A dep shared by two same-name variants appears only once in the order."""
+        registry = FixtureRegistry()
+
+        @registry.register(contexts=[Context.BASE])
+        def roles():
+            return []
+
+        @registry.register(depends_on=["roles"], contexts=[Context.BASE])
+        def items():
+            return []
+
+        @registry.register(depends_on=["roles"], contexts=[Context.TESTING])
+        def items():  # noqa: F811
+            return []
+
+        order = registry.resolve_dependencies("items")
+        assert order.count("roles") == 1
+        assert order.index("roles") < order.index("items")
 
     def test_resolve_context_dependencies(self):
         """Resolve all fixtures for a context with dependencies."""
@@ -795,3 +920,28 @@ class TestGetPrimaryKey:
         instance = Permission(subject="post")  # action is None
         pk = _get_primary_key(instance)
         assert pk is None
+
+
+class TestRegistryGetVariants:
+    """Tests for FixtureRegistry.get and get_variants edge cases."""
+
+    def test_get_raises_value_error_for_multi_variant(self):
+        """get() raises ValueError when the fixture has multiple context variants."""
+        registry = FixtureRegistry()
+
+        @registry.register(contexts=[Context.BASE])
+        def items():
+            return []
+
+        @registry.register(contexts=[Context.TESTING])
+        def items():  # noqa: F811
+            return []
+
+        with pytest.raises(ValueError, match="get_variants"):
+            registry.get("items")
+
+    def test_get_variants_raises_key_error_for_unknown(self):
+        """get_variants() raises KeyError for an unregistered name."""
+        registry = FixtureRegistry()
+        with pytest.raises(KeyError, match="not found"):
+            registry.get_variants("no_such_fixture")
