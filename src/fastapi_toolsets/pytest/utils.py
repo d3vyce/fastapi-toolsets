@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -15,13 +16,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-from sqlalchemy import text
-
-from ..db import (
-    cleanup_tables as _cleanup_tables,
-    create_database,
-    create_db_context,
-)
+from ..db import cleanup_tables as _cleanup_tables
+from ..db import create_database
 
 
 async def cleanup_tables(
@@ -269,15 +265,12 @@ async def create_db_session(
         async with engine.begin() as conn:
             await conn.run_sync(base.metadata.create_all)
 
-        # Create session using existing db context utility
         session_maker = async_sessionmaker(engine, expire_on_commit=expire_on_commit)
-        get_session = create_db_context(session_maker)
-
-        async with get_session() as session:
+        async with session_maker() as session:
             yield session
 
             if cleanup:
-                await cleanup_tables(session, base)
+                await _cleanup_tables(session=session, base=base)
 
         if drop_tables:
             async with engine.begin() as conn:
