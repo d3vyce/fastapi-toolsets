@@ -1,6 +1,7 @@
 """Fixture loading utilities for database seeding."""
 
 from collections.abc import Callable, Sequence
+from enum import Enum
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,7 @@ from ..db import get_transaction
 from ..logger import get_logger
 from ..types import ModelType
 from .enum import LoadStrategy
-from .registry import Context, FixtureRegistry
+from .registry import FixtureRegistry, _normalize_contexts
 
 logger = get_logger()
 
@@ -20,13 +21,35 @@ async def _load_ordered(
     registry: FixtureRegistry,
     ordered_names: list[str],
     strategy: LoadStrategy,
+    contexts: tuple[str, ...] | None = None,
 ) -> dict[str, list[DeclarativeBase]]:
-    """Load fixtures in order."""
+    """Load fixtures in order.
+
+    When *contexts* is provided only variants whose context set intersects with
+    *contexts* are called for each name; their instances are concatenated.
+    When *contexts* is ``None`` all variants of each name are loaded.
+    """
     results: dict[str, list[DeclarativeBase]] = {}
 
     for name in ordered_names:
-        fixture = registry.get(name)
-        instances = list(fixture.func())
+        variants = (
+            registry.get_variants(name, *contexts)
+            if contexts is not None
+            else registry.get_variants(name)
+        )
+
+        # Cross-context dependency fallback: if we're loading by context but
+        # no variant matches (e.g. a "base"-only fixture required by a
+        # "testing" fixture), load all available variants so the dependency
+        # is satisfied.
+        if contexts is not None and not variants:
+            variants = registry.get_variants(name)
+
+        if not variants:
+            results[name] = []
+            continue
+
+        instances = [inst for v in variants for inst in v.func()]
 
         if not instances:
             results[name] = []
@@ -109,6 +132,8 @@ async def load_fixtures(
 ) -> dict[str, list[DeclarativeBase]]:
     """Load specific fixtures by name with dependencies.
 
+    All context variants of each requested fixture are loaded and merged.
+
     Args:
         session: Database session
         registry: Fixture registry
@@ -125,19 +150,27 @@ async def load_fixtures(
 async def load_fixtures_by_context(
     session: AsyncSession,
     registry: FixtureRegistry,
-    *contexts: str | Context,
+    *contexts: str | Enum,
     strategy: LoadStrategy = LoadStrategy.MERGE,
 ) -> dict[str, list[DeclarativeBase]]:
     """Load all fixtures for specific contexts.
 
+    For each fixture name, only the variants whose context set intersects with
+    *contexts* are loaded.  When a name has variants in multiple of the
+    requested contexts, their instances are merged before being inserted.
+
     Args:
         session: Database session
         registry: Fixture registry
-        *contexts: Contexts to load (e.g., Context.BASE, Context.TESTING)
+        *contexts: Contexts to load (e.g., ``Context.BASE``, ``Context.TESTING``,
+            or plain strings for custom contexts)
         strategy: How to handle existing records
 
     Returns:
         Dict mapping fixture names to loaded instances
     """
+    context_strings = tuple(_normalize_contexts(contexts))
     ordered = registry.resolve_context_dependencies(*contexts)
-    return await _load_ordered(session, registry, ordered, strategy)
+    return await _load_ordered(
+        session, registry, ordered, strategy, contexts=context_strings
+    )
