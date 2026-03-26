@@ -97,7 +97,7 @@ class TestAppSessionDep:
         gen = get_db()
         session = await gen.__anext__()
         assert isinstance(session, AsyncSession)
-        await session.close()
+        await gen.aclose()
 
 
 class TestOffsetPagination:
