@@ -7,9 +7,10 @@ from fastapi import Depends, FastAPI
 from httpx import AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
 
+from fastapi_toolsets.db import get_transaction
 from fastapi_toolsets.fixtures import Context, FixtureRegistry
 from fastapi_toolsets.pytest import (
     create_async_client,
@@ -335,6 +336,55 @@ class TestCreateDbSession:
         async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
             result = await session.execute(select(Role))
             assert result.all() == []
+
+    @pytest.mark.anyio
+    async def test_get_transaction_commits_visible_to_separate_session(self):
+        """Data written via get_transaction() is committed and visible to other sessions."""
+        role_id = uuid.uuid4()
+
+        async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
+            # Simulate what _create_fixture_function does: insert via get_transaction
+            # with no explicit commit afterward.
+            async with get_transaction(session):
+                role = Role(id=role_id, name="visible_to_other_session")
+                session.add(role)
+
+            # The data must have been committed (begin/commit, not a savepoint),
+            # so a separate engine/session can read it.
+            other_engine = create_async_engine(DATABASE_URL, echo=False)
+            try:
+                other_session_maker = async_sessionmaker(
+                    other_engine, expire_on_commit=False
+                )
+                async with other_session_maker() as other:
+                    result = await other.execute(select(Role).where(Role.id == role_id))
+                    fetched = result.scalar_one_or_none()
+                    assert fetched is not None, (
+                        "Fixture data inserted via get_transaction() must be committed "
+                        "and visible to a separate session. If create_db_session uses "
+                        "create_db_context, auto-begin forces get_transaction() into "
+                        "savepoints instead of real commits."
+                    )
+                    assert fetched.name == "visible_to_other_session"
+            finally:
+                await other_engine.dispose()
+
+        # Cleanup
+        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as _:
+            pass
+
+
+class TestDeprecatedCleanupTables:
+    """Tests for the deprecated cleanup_tables re-export in fastapi_toolsets.pytest."""
+
+    @pytest.mark.anyio
+    async def test_emits_deprecation_warning(self):
+        """cleanup_tables imported from fastapi_toolsets.pytest emits DeprecationWarning."""
+        from fastapi_toolsets.pytest.utils import cleanup_tables
+
+        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
+            with pytest.warns(DeprecationWarning, match="fastapi_toolsets.db"):
+                await cleanup_tables(session, Base)
 
 
 class TestGetXdistWorker:
