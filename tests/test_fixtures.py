@@ -15,7 +15,7 @@ from fastapi_toolsets.fixtures import (
     load_fixtures_by_context,
 )
 
-from fastapi_toolsets.fixtures.utils import _get_primary_key
+from fastapi_toolsets.fixtures.utils import _get_primary_key, _instance_to_dict
 
 from .conftest import IntRole, Permission, Role, RoleCrud, User, UserCrud
 
@@ -945,3 +945,57 @@ class TestRegistryGetVariants:
         registry = FixtureRegistry()
         with pytest.raises(KeyError, match="not found"):
             registry.get_variants("no_such_fixture")
+
+
+class TestInstanceToDict:
+    """Unit tests for the _instance_to_dict helper."""
+
+    def test_explicit_values_included(self):
+        """All explicitly set column values appear in the result."""
+        role_id = uuid.uuid4()
+        instance = Role(id=role_id, name="admin")
+        d = _instance_to_dict(instance)
+        assert d["id"] == role_id
+        assert d["name"] == "admin"
+
+    def test_callable_default_none_excluded(self):
+        """A column whose value is None but has a callable Python-side default
+        (e.g. ``default=uuid.uuid4``) is excluded so the DB generates it."""
+        instance = Role(id=None, name="admin")
+        d = _instance_to_dict(instance)
+        assert "id" not in d
+        assert d["name"] == "admin"
+
+    def test_nullable_none_included(self):
+        """None on a nullable column with no default is kept (explicit NULL)."""
+        instance = User(id=uuid.uuid4(), username="u", email="e@e.com", role_id=None)
+        d = _instance_to_dict(instance)
+        assert "role_id" in d
+        assert d["role_id"] is None
+
+
+class TestBatchMergeNonPkColumns:
+    """Batch MERGE on a model with no non-PK columns (PK-only table)."""
+
+    @pytest.mark.anyio
+    async def test_merge_pk_only_model(self, db_session: AsyncSession):
+        """MERGE strategy on a PK-only model uses on_conflict_do_nothing."""
+        registry = FixtureRegistry()
+
+        @registry.register
+        def permissions():
+            return [
+                Permission(subject="post", action="read"),
+                Permission(subject="post", action="write"),
+            ]
+
+        result = await load_fixtures(
+            db_session, registry, "permissions", strategy=LoadStrategy.MERGE
+        )
+        assert len(result["permissions"]) == 2
+
+        # Run again — conflicts are silently ignored.
+        result2 = await load_fixtures(
+            db_session, registry, "permissions", strategy=LoadStrategy.MERGE
+        )
+        assert len(result2["permissions"]) == 2
