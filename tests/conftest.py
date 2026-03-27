@@ -57,6 +57,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(50), unique=True)
     email: Mapped[str] = mapped_column(String(100), unique=True)
     is_active: Mapped[bool] = mapped_column(default=True)
+    notes: Mapped[str | None]
     role_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("roles.id"), nullable=True
     )
