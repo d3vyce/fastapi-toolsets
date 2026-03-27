@@ -182,8 +182,7 @@ class TestOffsetPagination:
         body = resp.json()
         fa = body["filter_attributes"]
         assert set(fa["status"]) == {"draft", "published"}
-        # "name" is unique across all facet fields — no prefix needed
-        assert set(fa["name"]) == {"backend", "python"}
+        assert set(fa["category__name"]) == {"backend", "python"}
 
     @pytest.mark.anyio
     async def test_filter_attributes_scoped_to_filter(

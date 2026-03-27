@@ -646,7 +646,7 @@ class TestFacetsRelationship:
         result = await UserRelFacetCrud.offset_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is not None
-        assert set(result.filter_attributes["name"]) == {"admin", "editor"}
+        assert set(result.filter_attributes["role__name"]) == {"admin", "editor"}
 
     @pytest.mark.anyio
     async def test_relationship_facet_none_excluded(self, db_session: AsyncSession):
@@ -661,7 +661,7 @@ class TestFacetsRelationship:
         result = await UserRelFacetCrud.offset_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is not None
-        assert result.filter_attributes["name"] == []
+        assert result.filter_attributes["role__name"] == []
 
     @pytest.mark.anyio
     async def test_relationship_facet_deduplicates_join_with_search(
@@ -689,7 +689,7 @@ class TestFacetsRelationship:
         )
 
         assert result.filter_attributes is not None
-        assert result.filter_attributes["name"] == ["admin"]
+        assert result.filter_attributes["role__name"] == ["admin"]
 
 
 class TestFilterBy:
@@ -755,7 +755,7 @@ class TestFilterBy:
         )
 
         result = await UserRelFacetCrud.offset_paginate(
-            db_session, filter_by={"name": "admin"}, schema=UserRead
+            db_session, filter_by={"role__name": "admin"}, schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -824,7 +824,7 @@ class TestFilterBy:
 
         result = await UserRoleFacetCrud.offset_paginate(
             db_session,
-            filter_by={"name": "admin", "id": str(admin.id)},
+            filter_by={"role__name": "admin", "role__id": str(admin.id)},
             schema=UserRead,
         )
 
@@ -916,15 +916,15 @@ class TestFilterParamsSchema:
         param_names = set(inspect.signature(dep).parameters)
         assert param_names == {"username", "email"}
 
-    def test_relationship_facet_uses_column_key(self):
-        """Relationship tuple uses the terminal column's key."""
+    def test_relationship_facet_uses_full_chain_key(self):
+        """Relationship tuple uses the full chain joined by __ as the key."""
         import inspect
 
         UserRoleCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
         dep = UserRoleCrud.filter_params()
 
         param_names = set(inspect.signature(dep).parameters)
-        assert param_names == {"name"}
+        assert param_names == {"role__name"}
 
     def test_raises_when_no_facet_fields(self):
         """ValueError raised when no facet_fields are configured or provided."""
@@ -977,6 +977,22 @@ class TestFilterParamsSchema:
 
         keys = facet_keys([(rel_a, col_a), (rel_b, col_b)])
         assert keys == ["project__name", "os__name"]
+
+    def test_deep_chain_joins_all_segments(self):
+        """Three-element tuple produces all relation segments joined by __."""
+        from unittest.mock import MagicMock
+
+        from fastapi_toolsets.crud.search import facet_keys
+
+        rel_a = MagicMock()
+        rel_a.key = "role"
+        rel_b = MagicMock()
+        rel_b.key = "permission"
+        col = MagicMock()
+        col.key = "name"
+
+        keys = facet_keys([(rel_a, rel_b, col)])
+        assert keys == ["role__permission__name"]
 
     def test_unique_column_keys_kept_plain(self):
         """Fields with unique column keys are not prefixed."""
