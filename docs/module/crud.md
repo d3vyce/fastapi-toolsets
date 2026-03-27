@@ -36,7 +36,7 @@ class UserCrud(AsyncCrud[User]):
     default_load_options = [selectinload(User.role)]
 ```
 
-Subclassing [`AsyncCrud`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud) directly is the preferred style when you need to add custom methods or when the configuration is complex enough to benefit from a named class body. 
+Subclassing [`AsyncCrud`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud) directly is the preferred style when you need to add custom methods or when the configuration is complex enough to benefit from a named class body.
 
 ### Adding custom methods
 
@@ -474,7 +474,7 @@ The distinct values are returned in the `filter_attributes` field of [`Paginated
   "filter_attributes": {
     "status": ["active", "inactive"],
     "country": ["DE", "FR", "US"],
-    "name": ["admin", "editor", "viewer"]
+    "role__name": ["admin", "editor", "viewer"]
   }
 }
 ```
@@ -482,7 +482,7 @@ The distinct values are returned in the `filter_attributes` field of [`Paginated
 Use `filter_by` to pass the client's chosen filter values directly — no need to build SQLAlchemy conditions by hand. Any unknown key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError).
 
 !!! info "The keys in `filter_by` are the same keys the client received in `filter_attributes`."
-    Keys are normally the terminal `column.key` (e.g. `"name"` for `Role.name`). When two facet fields share the same column key (e.g. `(Build.project, Project.name)` and `(Build.os, Os.name)`), the relationship name is prepended automatically: `"project__name"` and `"os__name"`.
+    Keys use `__` as a separator for the full relationship chain. A direct column `User.status` produces `"status"`. A relationship tuple `(User.role, Role.name)` produces `"role__name"`. A deeper chain `(User.role, Role.permission, Permission.name)` produces `"role__permission__name"`.
 
 `filter_by` and `filters` can be combined — both are applied with AND logic.
 
@@ -515,9 +515,9 @@ async def list_users(
 Both single-value and multi-value query parameters work:
 
 ```
-GET /users?status=active              → filter_by={"status": ["active"]}
-GET /users?status=active&country=FR   → filter_by={"status": ["active"], "country": ["FR"]}
-GET /users?role=admin&role=editor     → filter_by={"role": ["admin", "editor"]}  (IN clause)
+GET /users?status=active                      → filter_by={"status": ["active"]}
+GET /users?status=active&country=FR           → filter_by={"status": ["active"], "country": ["FR"]}
+GET /users?role__name=admin&role__name=editor → filter_by={"role__name": ["admin", "editor"]}  (IN clause)
 ```
 
 ## Sorting

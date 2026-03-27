@@ -2,7 +2,6 @@
 
 import asyncio
 import functools
-from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -151,7 +150,7 @@ def build_search_filters(
 
 
 def facet_keys(facet_fields: Sequence[FacetFieldType]) -> list[str]:
-    """Return a key for each facet field, disambiguating duplicate column keys.
+    """Return a key for each facet field.
 
     Args:
         facet_fields: Sequence of facet fields — either direct columns or
@@ -160,22 +159,12 @@ def facet_keys(facet_fields: Sequence[FacetFieldType]) -> list[str]:
     Returns:
         A list of string keys, one per facet field, in the same order.
     """
-    raw: list[tuple[str, str | None]] = []
+    keys: list[str] = []
     for field in facet_fields:
         if isinstance(field, tuple):
-            rel = field[-2]
-            column = field[-1]
-            raw.append((column.key, rel.key))
+            keys.append("__".join(el.key for el in field))
         else:
-            raw.append((field.key, None))
-
-    counts = Counter(col_key for col_key, _ in raw)
-    keys: list[str] = []
-    for col_key, rel_key in raw:
-        if counts[col_key] > 1 and rel_key is not None:
-            keys.append(f"{rel_key}__{col_key}")
-        else:
-            keys.append(col_key)
+            keys.append(field.key)
     return keys
 
 
