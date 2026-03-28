@@ -27,6 +27,7 @@ _SESSION_CREATES = "_ft_creates"
 _SESSION_DELETES = "_ft_deletes"
 _SESSION_UPDATES = "_ft_updates"
 _SESSION_SAVEPOINT_DEPTH = "_ft_sp_depth"
+_DEFERRED_STRATEGY_KEY = (("deferred", True), ("instrument", True))
 
 
 class ModelEvent(str, Enum):
@@ -60,11 +61,22 @@ def _snapshot_column_attrs(obj: Any) -> dict[str, Any]:
     """Read currently-loaded column values into a plain dict."""
     state = sa_inspect(obj)  # InstanceState
     state_dict = state.dict
-    return {
-        prop.key: state_dict[prop.key]
-        for prop in state.mapper.column_attrs
-        if prop.key in state_dict
-    }
+    snapshot: dict[str, Any] = {}
+    for prop in state.mapper.column_attrs:
+        if prop.key in state_dict:
+            snapshot[prop.key] = state_dict[prop.key]
+        elif (
+            not state.expired
+            and prop.strategy_key != _DEFERRED_STRATEGY_KEY
+            and all(
+                col.nullable
+                and col.server_default is None
+                and col.server_onupdate is None
+                for col in prop.columns
+            )
+        ):
+            snapshot[prop.key] = None
+    return snapshot
 
 
 def _get_watched_fields(cls: type) -> list[str] | None:
