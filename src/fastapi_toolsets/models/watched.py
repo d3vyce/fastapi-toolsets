@@ -13,11 +13,6 @@ from sqlalchemy.orm.attributes import set_committed_value as _sa_set_committed_v
 from ..logger import get_logger
 
 _logger = get_logger()
-_CALLBACK_ERROR_MSG = "Event callback raised an unhandled exception"
-_SESSION_CREATES = "_ft_creates"
-_SESSION_DELETES = "_ft_deletes"
-_SESSION_UPDATES = "_ft_updates"
-_DEFERRED_STRATEGY_KEY = (("deferred", True), ("instrument", True))
 
 
 class ModelEvent(str, Enum):
@@ -28,8 +23,21 @@ class ModelEvent(str, Enum):
     UPDATE = "update"
 
 
+_CALLBACK_ERROR_MSG = "Event callback raised an unhandled exception"
+_SESSION_CREATES = "_ft_creates"
+_SESSION_DELETES = "_ft_deletes"
+_SESSION_UPDATES = "_ft_updates"
+_DEFERRED_STRATEGY_KEY = (("deferred", True), ("instrument", True))
 _EVENT_HANDLERS: dict[tuple[type, ModelEvent], list[Callable[..., Any]]] = {}
 _WATCHED_MODELS: set[type] = set()
+_WATCHED_CACHE: dict[type, bool] = {}
+_HANDLER_CACHE: dict[tuple[type, ModelEvent], list[Callable[..., Any]]] = {}
+
+
+def _invalidate_caches() -> None:
+    """Clear lookup caches after handler registration."""
+    _WATCHED_CACHE.clear()
+    _HANDLER_CACHE.clear()
 
 
 def listens_for(
@@ -48,6 +56,7 @@ def listens_for(
         for ev in evs:
             _EVENT_HANDLERS.setdefault((model_class, ev), []).append(fn)
         _WATCHED_MODELS.add(model_class)
+        _invalidate_caches()
         return fn
 
     return decorator
@@ -55,15 +64,26 @@ def listens_for(
 
 def _is_watched(obj: Any) -> bool:
     """Return True if *obj*'s type (or any ancestor) has registered handlers."""
-    return any(klass in _WATCHED_MODELS for klass in type(obj).__mro__)
+    cls = type(obj)
+    try:
+        return _WATCHED_CACHE[cls]
+    except KeyError:
+        result = any(klass in _WATCHED_MODELS for klass in cls.__mro__)
+        _WATCHED_CACHE[cls] = result
+        return result
 
 
 def _get_handlers(cls: type, ev: ModelEvent) -> list[Callable[..., Any]]:
     """Return registered handlers for *cls* and *ev*, walking the MRO."""
-    handlers: list[Callable[..., Any]] = []
-    for klass in cls.__mro__:
-        handlers.extend(_EVENT_HANDLERS.get((klass, ev), []))
-    return handlers
+    key = (cls, ev)
+    try:
+        return _HANDLER_CACHE[key]
+    except KeyError:
+        handlers: list[Callable[..., Any]] = []
+        for klass in cls.__mro__:
+            handlers.extend(_EVENT_HANDLERS.get((klass, ev), []))
+        _HANDLER_CACHE[key] = handlers
+        return handlers
 
 
 def _snapshot_column_attrs(obj: Any) -> dict[str, Any]:
@@ -132,10 +152,11 @@ def _after_flush(session: Any, flush_context: Any) -> None:
         watched = _get_watched_fields(type(obj))
         changes: dict[str, dict[str, Any]] = {}
 
+        inst_attrs = sa_inspect(obj).attrs
         attrs = (
-            ((field, sa_inspect(obj).attrs[field]) for field in watched)
+            ((field, inst_attrs[field]) for field in watched)
             if watched is not None
-            else ((s.key, s) for s in sa_inspect(obj).attrs)
+            else ((s.key, s) for s in inst_attrs)
         )
         for field, attr_state in attrs:
             history = attr_state.history

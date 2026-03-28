@@ -28,6 +28,7 @@ from fastapi_toolsets.models.watched import (
     _after_flush,
     _after_rollback,
     _get_watched_fields,
+    _invalidate_caches,
     _is_watched,
     _snapshot_column_attrs,
     _upsert_changes,
@@ -1320,6 +1321,7 @@ class TestListensFor:
             if key[0] is ListenerModel:
                 del _EVENT_HANDLERS[key]
         _WATCHED_MODELS.discard(ListenerModel)
+        _invalidate_caches()
 
     @pytest.mark.anyio
     async def test_create_handler_fires(self, mixin_session):
