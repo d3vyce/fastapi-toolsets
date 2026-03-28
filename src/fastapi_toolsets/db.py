@@ -24,9 +24,12 @@ __all__ = [
 ]
 
 
+_SessionT = TypeVar("_SessionT", bound=AsyncSession)
+
+
 def create_db_dependency(
-    session_maker: async_sessionmaker[AsyncSession],
-) -> Callable[[], AsyncGenerator[AsyncSession, None]]:
+    session_maker: async_sessionmaker[_SessionT],
+) -> Callable[[], AsyncGenerator[_SessionT, None]]:
     """Create a FastAPI dependency for database sessions.
 
     Creates a dependency function that yields a session and auto-commits
@@ -54,7 +57,7 @@ def create_db_dependency(
         ```
     """
 
-    async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async def get_db() -> AsyncGenerator[_SessionT, None]:
         async with session_maker() as session:
             await session.connection()
             yield session
@@ -65,8 +68,8 @@ def create_db_dependency(
 
 
 def create_db_context(
-    session_maker: async_sessionmaker[AsyncSession],
-) -> Callable[[], AbstractAsyncContextManager[AsyncSession]]:
+    session_maker: async_sessionmaker[_SessionT],
+) -> Callable[[], AbstractAsyncContextManager[_SessionT]]:
     """Create a context manager for database sessions.
 
     Creates a context manager for use outside of FastAPI request handlers,

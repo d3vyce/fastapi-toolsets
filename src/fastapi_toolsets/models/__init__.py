@@ -7,15 +7,15 @@ from .columns import (
     UUIDv7Mixin,
     UpdatedAtMixin,
 )
-from .watched import ModelEvent, WatchedFieldsMixin, watch
+from .watched import EventSession, ModelEvent, listens_for
 
 __all__ = [
+    "EventSession",
     "ModelEvent",
     "UUIDMixin",
     "UUIDv7Mixin",
     "CreatedAtMixin",
     "UpdatedAtMixin",
     "TimestampMixin",
-    "WatchedFieldsMixin",
-    "watch",
+    "listens_for",
 ]
