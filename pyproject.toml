@@ -80,8 +80,9 @@ tests = [
     "pytest>=8.0.0",
 ]
 docs = [
+    "mike",
     "mkdocstrings-python>=2.0.2",
-    "zensical>=0.0.23",
+    "zensical>=0.0.30",
 ]
 
 [build-system]
@@ -104,3 +105,6 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
 ]
+
+[tool.uv.sources]
+mike = { git = "https://github.com/squidfunk/mike.git", tag = "2.2.0+zensical-0.1.0" }

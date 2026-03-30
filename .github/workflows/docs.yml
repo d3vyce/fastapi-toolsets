@@ -5,20 +5,15 @@ on:
     types: [published]
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 jobs:
   deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/configure-pages@v5
-
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -28,11 +23,40 @@ jobs:
 
       - run: uv sync --group dev
 
-      - run: uv run zensical build --clean
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
+      - name: Deploy documentation
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          DEPLOY_VERSION="v$(echo "$VERSION" | cut -d. -f1-2)"
 
-      - uses: actions/deploy-pages@v5
-        id: deployment
+          # On new major: consolidate previous major's feature versions into vX
+          PREV_MAJOR=$((MAJOR - 1))
+          OLD_FEATURE_VERSIONS=$(uv run mike list 2>/dev/null | grep -oE "^v${PREV_MAJOR}\.[0-9]+" || true)
+
+          if [ -n "$OLD_FEATURE_VERSIONS" ]; then
+            LATEST_PREV_TAG=$(git tag -l "v${PREV_MAJOR}.*" | sort -V | tail -1)
+
+            if [ -n "$LATEST_PREV_TAG" ]; then
+              git checkout "$LATEST_PREV_TAG" -- docs/ src/ zensical.toml
+              if ! grep -q '\[project\.extra\.version\]' zensical.toml; then
+                printf '\n[project.extra.version]\nprovider = "mike"\ndefault = "stable"\nalias = true\n' >> zensical.toml
+              fi
+              uv run mike deploy "v${PREV_MAJOR}"
+              git checkout HEAD -- docs/ src/ zensical.toml
+            fi
+
+            # Delete old feature versions
+            echo "$OLD_FEATURE_VERSIONS" | while read -r OLD_V; do
+              echo "Deleting $OLD_V"
+              uv run mike delete "$OLD_V"
+            done
+          fi
+
+          uv run mike deploy --update-aliases "$DEPLOY_VERSION" stable
+          uv run mike set-default stable
+          git push origin gh-pages
