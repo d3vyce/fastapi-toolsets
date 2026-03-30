@@ -41,16 +41,17 @@ def _invalidate_caches() -> None:
 
 
 def listens_for(
-    model_class: type, *event_types: ModelEvent | str
+    model_class: type,
+    event_types: list[ModelEvent] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a callback for one or more model lifecycle events.
 
     Args:
         model_class: The SQLAlchemy model class to listen on.
-        *event_types: One or more :class:`ModelEvent` values (or their string
-            equivalents).
+        event_types: List of :class:`ModelEvent` values to listen for.
+            Defaults to all event types.
     """
-    evs = [ModelEvent(et) for et in event_types]
+    evs = event_types if event_types is not None else list(ModelEvent)
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         for ev in evs:
@@ -110,7 +111,15 @@ def _snapshot_column_attrs(obj: Any) -> dict[str, Any]:
 
 def _get_watched_fields(cls: type) -> tuple[str, ...] | None:
     """Return the watched fields for *cls*."""
-    return getattr(cls, "__watched_fields__", None)
+    fields = getattr(cls, "__watched_fields__", None)
+    if fields is not None and (
+        not isinstance(fields, tuple) or not all(isinstance(f, str) for f in fields)
+    ):
+        raise TypeError(
+            f"{cls.__name__}.__watched_fields__ must be a tuple[str, ...], "
+            f"got {type(fields).__name__}"
+        )
+    return fields
 
 
 def _upsert_changes(
@@ -183,9 +192,14 @@ def _after_rollback(session: Any) -> None:
     session.info.pop(_SESSION_UPDATES, None)
 
 
-async def _invoke_callback(fn: Any, *args: Any) -> None:
+async def _invoke_callback(
+    fn: Callable[..., Any],
+    obj: Any,
+    event_type: ModelEvent,
+    changes: dict[str, dict[str, Any]] | None,
+) -> None:
     """Call *fn* and await the result if it is awaitable."""
-    result = fn(*args)
+    result = fn(obj, event_type, changes)
     if inspect.isawaitable(result):
         await result
 
@@ -234,7 +248,7 @@ class EventSession(AsyncSession):
                     continue
                 await self.refresh(obj)
                 for handler in _get_handlers(type(obj), ModelEvent.CREATE):
-                    await _invoke_callback(handler, obj)
+                    await _invoke_callback(handler, obj, ModelEvent.CREATE, None)
             except Exception as exc:
                 _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
 
@@ -244,7 +258,7 @@ class EventSession(AsyncSession):
                 for key, value in snapshot.items():
                     _sa_set_committed_value(obj, key, value)
                 for handler in _get_handlers(type(obj), ModelEvent.DELETE):
-                    await _invoke_callback(handler, obj)
+                    await _invoke_callback(handler, obj, ModelEvent.DELETE, None)
             except Exception as exc:
                 _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
 
@@ -258,7 +272,7 @@ class EventSession(AsyncSession):
                     continue
                 await self.refresh(obj)
                 for handler in _get_handlers(type(obj), ModelEvent.UPDATE):
-                    await _invoke_callback(handler, obj, changes)
+                    await _invoke_callback(handler, obj, ModelEvent.UPDATE, changes)
             except Exception as exc:
                 _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
 

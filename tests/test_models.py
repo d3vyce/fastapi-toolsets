@@ -92,18 +92,18 @@ class WatchedModel(MixinBase, UUIDMixin):
     other: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(WatchedModel, ModelEvent.CREATE)
-async def _watched_on_create(obj):
+@listens_for(WatchedModel, [ModelEvent.CREATE])
+async def _watched_on_create(obj, event_type, changes):
     _test_events.append({"event": "create", "obj_id": obj.id})
 
 
-@listens_for(WatchedModel, ModelEvent.DELETE)
-async def _watched_on_delete(obj):
+@listens_for(WatchedModel, [ModelEvent.DELETE])
+async def _watched_on_delete(obj, event_type, changes):
     _test_events.append({"event": "delete", "obj_id": obj.id})
 
 
-@listens_for(WatchedModel, ModelEvent.UPDATE)
-async def _watched_on_update(obj, changes):
+@listens_for(WatchedModel, [ModelEvent.UPDATE])
+async def _watched_on_update(obj, event_type, changes):
     _test_events.append({"event": "update", "obj_id": obj.id, "changes": changes})
 
 
@@ -116,8 +116,8 @@ class WatchAllModel(MixinBase, UUIDMixin):
     other: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(WatchAllModel, ModelEvent.UPDATE)
-async def _watch_all_on_update(obj, changes):
+@listens_for(WatchAllModel, [ModelEvent.UPDATE])
+async def _watch_all_on_update(obj, event_type, changes):
     _test_events.append({"event": "update", "obj_id": obj.id, "changes": changes})
 
 
@@ -129,18 +129,18 @@ class FailingCallbackModel(MixinBase, UUIDMixin):
     name: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(FailingCallbackModel, ModelEvent.CREATE)
-async def _failing_on_create(obj):
+@listens_for(FailingCallbackModel, [ModelEvent.CREATE])
+async def _failing_on_create(obj, event_type, changes):
     raise RuntimeError("callback intentionally failed")
 
 
-@listens_for(FailingCallbackModel, ModelEvent.DELETE)
-async def _failing_on_delete(obj):
+@listens_for(FailingCallbackModel, [ModelEvent.DELETE])
+async def _failing_on_delete(obj, event_type, changes):
     raise RuntimeError("delete callback intentionally failed")
 
 
-@listens_for(FailingCallbackModel, ModelEvent.UPDATE)
-async def _failing_on_update(obj, changes):
+@listens_for(FailingCallbackModel, [ModelEvent.UPDATE])
+async def _failing_on_update(obj, event_type, changes):
     raise RuntimeError("update callback intentionally failed")
 
 
@@ -164,15 +164,15 @@ class PolyAnimal(MixinBase, UUIDMixin):
     name: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(PolyAnimal, ModelEvent.CREATE)
-async def _poly_on_create(obj):
+@listens_for(PolyAnimal, [ModelEvent.CREATE])
+async def _poly_on_create(obj, event_type, changes):
     _poly_events.append(
         {"event": "create", "type": type(obj).__name__, "obj_id": obj.id}
     )
 
 
-@listens_for(PolyAnimal, ModelEvent.DELETE)
-async def _poly_on_delete(obj):
+@listens_for(PolyAnimal, [ModelEvent.DELETE])
+async def _poly_on_delete(obj, event_type, changes):
     _poly_events.append(
         {"event": "delete", "type": type(obj).__name__, "obj_id": obj.id}
     )
@@ -199,8 +199,8 @@ class WatchParent(MixinBase, UUIDMixin):
     other: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(WatchParent, ModelEvent.UPDATE)
-async def _watch_parent_on_update(obj, changes):
+@listens_for(WatchParent, [ModelEvent.UPDATE])
+async def _watch_parent_on_update(obj, event_type, changes):
     _watch_inherit_events.append({"type": type(obj).__name__, "changes": changes})
 
 
@@ -230,8 +230,8 @@ class AttrAccessModel(MixinBase, UUIDMixin):
     callback_url: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
-@listens_for(AttrAccessModel, ModelEvent.CREATE)
-async def _attr_on_create(obj):
+@listens_for(AttrAccessModel, [ModelEvent.CREATE])
+async def _attr_on_create(obj, event_type, changes):
     _attr_access_events.append(
         {
             "event": "create",
@@ -242,8 +242,8 @@ async def _attr_on_create(obj):
     )
 
 
-@listens_for(AttrAccessModel, ModelEvent.DELETE)
-async def _attr_on_delete(obj):
+@listens_for(AttrAccessModel, [ModelEvent.DELETE])
+async def _attr_on_delete(obj, event_type, changes):
     _attr_access_events.append(
         {
             "event": "delete",
@@ -254,8 +254,8 @@ async def _attr_on_delete(obj):
     )
 
 
-@listens_for(AttrAccessModel, ModelEvent.UPDATE)
-async def _attr_on_update(obj, changes):
+@listens_for(AttrAccessModel, [ModelEvent.UPDATE])
+async def _attr_on_update(obj, event_type, changes):
     _attr_access_events.append(
         {
             "event": "update",
@@ -279,18 +279,18 @@ class SyncCallbackModel(MixinBase, UUIDMixin):
     status: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(SyncCallbackModel, ModelEvent.CREATE)
-def _sync_on_create(obj):
+@listens_for(SyncCallbackModel, [ModelEvent.CREATE])
+def _sync_on_create(obj, event_type, changes):
     _sync_events.append({"event": "create", "obj_id": obj.id})
 
 
-@listens_for(SyncCallbackModel, ModelEvent.DELETE)
-def _sync_on_delete(obj):
+@listens_for(SyncCallbackModel, [ModelEvent.DELETE])
+def _sync_on_delete(obj, event_type, changes):
     _sync_events.append({"event": "delete", "obj_id": obj.id})
 
 
-@listens_for(SyncCallbackModel, ModelEvent.UPDATE)
-def _sync_on_update(obj, changes):
+@listens_for(SyncCallbackModel, [ModelEvent.UPDATE])
+def _sync_on_update(obj, event_type, changes):
     _sync_events.append({"event": "update", "changes": changes})
 
 
@@ -302,8 +302,8 @@ class FutureCallbackModel(MixinBase, UUIDMixin):
     name: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(FutureCallbackModel, ModelEvent.CREATE)
-def _future_on_create(obj):
+@listens_for(FutureCallbackModel, [ModelEvent.CREATE])
+def _future_on_create(obj, event_type, changes):
     async def _work():
         _future_events.append("created")
 
@@ -573,6 +573,18 @@ class TestWatchedFields:
     def test_override_takes_precedence(self):
         """Subclass __watched_fields__ overrides parent's value."""
         assert WatchOverride.__watched_fields__ == ("other",)
+
+    def test_invalid_watched_fields_raises_type_error(self):
+        """__watched_fields__ must be a tuple of strings."""
+
+        class BadModel(MixinBase, UUIDMixin):
+            __tablename__ = "mixin_bad_watched_fields"
+            __watched_fields__ = ["status"]  # list, not tuple
+
+            status: Mapped[str] = mapped_column(String(50))
+
+        with pytest.raises(TypeError, match="must be a tuple"):
+            _get_watched_fields(BadModel)
 
 
 class TestWatchInheritance:
@@ -1327,8 +1339,8 @@ class TestListensFor:
     async def test_create_handler_fires(self, mixin_session):
         """Registered CREATE handler is called after INSERT commit."""
 
-        @listens_for(ListenerModel, ModelEvent.CREATE)
-        async def _on_create(obj):
+        @listens_for(ListenerModel, [ModelEvent.CREATE])
+        async def _on_create(obj, event_type, changes):
             _listener_events.append({"event": "create", "id": obj.id})
 
         obj = ListenerModel(status="active", other="x")
@@ -1343,8 +1355,8 @@ class TestListensFor:
     async def test_delete_handler_fires(self, mixin_session):
         """Registered DELETE handler is called after DELETE commit."""
 
-        @listens_for(ListenerModel, ModelEvent.DELETE)
-        async def _on_delete(obj):
+        @listens_for(ListenerModel, [ModelEvent.DELETE])
+        async def _on_delete(obj, event_type, changes):
             _listener_events.append({"event": "delete", "id": obj.id})
 
         obj = ListenerModel(status="active", other="x")
@@ -1363,8 +1375,8 @@ class TestListensFor:
     async def test_update_handler_receives_changes(self, mixin_session):
         """Registered UPDATE handler receives the object and changes dict."""
 
-        @listens_for(ListenerModel, ModelEvent.UPDATE)
-        async def _on_update(obj, changes):
+        @listens_for(ListenerModel, [ModelEvent.UPDATE])
+        async def _on_update(obj, event_type, changes):
             _listener_events.append(
                 {"event": "update", "id": obj.id, "changes": changes}
             )
@@ -1384,29 +1396,35 @@ class TestListensFor:
         }
 
     @pytest.mark.anyio
-    async def test_string_event_type_works(self, mixin_session):
-        """listens_for accepts string event type."""
+    async def test_default_all_event_types(self, mixin_session):
+        """listens_for defaults to all event types when none specified."""
 
-        @listens_for(ListenerModel, "create")
-        async def _on_create(obj):
-            _listener_events.append({"event": "create"})
+        @listens_for(ListenerModel)
+        async def _on_any(obj, event_type, changes):
+            _listener_events.append({"event": "any"})
 
         obj = ListenerModel(status="active", other="x")
         mixin_session.add(obj)
         await mixin_session.commit()
 
-        assert len(_listener_events) == 1
+        obj.status = "updated"
+        await mixin_session.commit()
+
+        await mixin_session.delete(obj)
+        await mixin_session.commit()
+
+        assert len(_listener_events) == 3
 
     @pytest.mark.anyio
     async def test_multiple_handlers_all_fire(self, mixin_session):
         """Multiple handlers registered for the same event all fire."""
 
-        @listens_for(ListenerModel, ModelEvent.CREATE)
-        async def _handler_a(obj):
+        @listens_for(ListenerModel, [ModelEvent.CREATE])
+        async def _handler_a(obj, event_type, changes):
             _listener_events.append({"handler": "a"})
 
-        @listens_for(ListenerModel, ModelEvent.CREATE)
-        async def _handler_b(obj):
+        @listens_for(ListenerModel, [ModelEvent.CREATE])
+        async def _handler_b(obj, event_type, changes):
             _listener_events.append({"handler": "b"})
 
         obj = ListenerModel(status="active", other="x")
@@ -1421,8 +1439,8 @@ class TestListensFor:
     async def test_sync_handler_works(self, mixin_session):
         """Sync (non-async) registered handler is called."""
 
-        @listens_for(ListenerModel, ModelEvent.CREATE)
-        def _on_create(obj):
+        @listens_for(ListenerModel, [ModelEvent.CREATE])
+        def _on_create(obj, event_type, changes):
             _listener_events.append({"event": "create", "id": obj.id})
 
         obj = ListenerModel(status="active", other="x")
@@ -1435,8 +1453,8 @@ class TestListensFor:
     async def test_multiple_event_types(self, mixin_session):
         """listens_for accepts multiple event types and registers for all of them."""
 
-        @listens_for(ListenerModel, ModelEvent.CREATE, ModelEvent.UPDATE)
-        async def _on_change(obj, *args):
+        @listens_for(ListenerModel, [ModelEvent.CREATE, ModelEvent.UPDATE])
+        async def _on_change(obj, event_type, changes):
             _listener_events.append({"event": "change", "id": obj.id})
 
         obj = ListenerModel(status="initial", other="x")

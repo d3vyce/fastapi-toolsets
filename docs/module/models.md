@@ -152,7 +152,7 @@ Three event types are available, each corresponding to a [`ModelEvent`](../refer
 
 ### Watched fields
 
-Set `__watched_fields__` on the model to restrict which field changes trigger `UPDATE` events:
+Set `__watched_fields__` on the model to restrict which field changes trigger `UPDATE` events. It must be a `tuple[str, ...]` — any other type raises `TypeError`:
 
 | Class attribute | `UPDATE` behaviour |
 |---|---|
@@ -178,7 +178,7 @@ class PriorityOrder(Order):
 
 ### Registering handlers
 
-Register handlers with the [`listens_for`](../reference/models.md#fastapi_toolsets.models.listens_for) decorator:
+Register handlers with the [`listens_for`](../reference/models.md#fastapi_toolsets.models.listens_for) decorator. Every callback receives three arguments: the model instance, the [`ModelEvent`](../reference/models.md#fastapi_toolsets.models.ModelEvent) that triggered it, and a `changes` dict (`None` for `CREATE` and `DELETE`):
 
 ```python
 from fastapi_toolsets.models import ModelEvent, UUIDMixin, listens_for
@@ -189,35 +189,40 @@ class Order(Base, UUIDMixin):
 
     status: Mapped[str]
 
-@listens_for(Order, ModelEvent.CREATE)
-async def on_order_created(order: Order):
+@listens_for(Order, [ModelEvent.CREATE])
+async def on_order_created(order: Order, event_type: ModelEvent, changes: None):
     await notify_new_order(order.id)
 
-@listens_for(Order, ModelEvent.DELETE)
-async def on_order_deleted(order: Order):
+@listens_for(Order, [ModelEvent.DELETE])
+async def on_order_deleted(order: Order, event_type: ModelEvent, changes: None):
     await notify_order_cancelled(order.id)
 
-@listens_for(Order, ModelEvent.UPDATE)
-async def on_order_updated(order: Order, changes: dict):
+@listens_for(Order, [ModelEvent.UPDATE])
+async def on_order_updated(order: Order, event_type: ModelEvent, changes: dict):
     if "status" in changes:
         await notify_status_change(order.id, changes["status"])
 ```
 
 Multiple handlers can be registered for the same model and event. Handlers registered on a parent class also fire for subclass instances.
 
-A single handler can listen for multiple events at once:
+A single handler can listen for multiple events at once. When `event_types` is omitted, the handler fires for all events:
 
 ```python
-@listens_for(Order, ModelEvent.CREATE, ModelEvent.UPDATE)
-async def on_order_changed(order: Order, *args):
+@listens_for(Order, [ModelEvent.CREATE, ModelEvent.UPDATE])
+async def on_order_changed(order: Order, event_type: ModelEvent, changes: dict | None):
     await invalidate_cache(order.id)
+
+@listens_for(Order)  # all events
+async def on_any_order_event(order: Order, event_type: ModelEvent, changes: dict | None):
+    await audit_log(order.id, event_type)
 ```
 
 ### Field changes format
 
-The `changes` dict maps each watched field that changed to `{"old": ..., "new": ...}`. Only fields that actually changed are included:
+The `changes` dict maps each watched field that changed to `{"old": ..., "new": ...}`. Only fields that actually changed are included. For `CREATE` and `DELETE` events, `changes` is `None`:
 
 ```python
+# CREATE / DELETE → changes is None
 # status changed   → {"status": {"old": "pending", "new": "shipped"}}
 # two fields changed → {"status": {...}, "assigned_to": {...}}
 ```
