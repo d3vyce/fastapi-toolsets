@@ -79,9 +79,6 @@ The examples above are already compatible with parallel test execution with `pyt
 
 ## Cleaning up tables
 
-!!! warning
-    Since `V2.1.0` `cleanup_tables` now live in `fastapi_toolsets.db`. For backward compatibility the function is still available in `fastapi_toolsets.pytest`, but this will be remove in `V3.0.0`.
-
 If you want to manually clean up a database you can use [`cleanup_tables`](../reference/db.md#fastapi_toolsets.db.cleanup_tables), this will truncate all tables between tests for fast isolation:
 
 ```python
