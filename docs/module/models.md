@@ -117,138 +117,117 @@ class Article(Base, UUIDMixin, TimestampMixin):
     title: Mapped[str]
 ```
 
-### [`WatchedFieldsMixin`](../reference/models.md#fastapi_toolsets.models.WatchedFieldsMixin)
+## Lifecycle events
 
-!!! info "Added in `v2.4`"
+The event system provides lifecycle callbacks that fire **after commit**. If the transaction rolls back, no callback fires.
 
-`WatchedFieldsMixin` provides lifecycle callbacks that fire **after commit** — meaning the row is durably persisted when your callback runs. If the transaction rolls back, no callback fires.
+### Setup
 
-Three callbacks are available, each corresponding to a [`ModelEvent`](../reference/models.md#fastapi_toolsets.models.ModelEvent) value:
-
-| Callback | Event | Trigger |
-|---|---|---|
-| `on_create()` | `ModelEvent.CREATE` | After `INSERT` |
-| `on_delete()` | `ModelEvent.DELETE` | After `DELETE` |
-| `on_update(changes)` | `ModelEvent.UPDATE` | After `UPDATE` on a watched field |
-
-Server-side defaults (e.g. `id`, `created_at`) are fully populated in all callbacks. All callbacks support both `async def` and plain `def`. Use `@watch` to restrict which fields trigger `on_update`:
-
-| Decorator | `on_update` behaviour |
-|---|---|
-| `@watch("status", "role")` | Only fires when `status` or `role` changes |
-| *(no decorator)* | Fires when **any** mapped field changes |
-
-`@watch` is inherited through the class hierarchy. If a subclass does not declare its own `@watch`, it uses the filter from the nearest decorated parent. Applying `@watch` on the subclass overrides the parent's filter:
+Event dispatch requires [`EventSession`](../reference/models.md#fastapi_toolsets.models.EventSession). Pass it as the session class when creating your session factory:
 
 ```python
-@watch("status")
-class Order(Base, UUIDMixin, WatchedFieldsMixin):
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from fastapi_toolsets.models import EventSession
+
+engine = create_async_engine("postgresql+asyncpg://...")
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=EventSession)
+```
+
+!!! info "Callbacks fire on `session.commit()` only — not on savepoints."
+    Savepoints created by [`get_transaction`](db.md) or `begin_nested()` do **not**
+    trigger callbacks. All events accumulated across flushes are dispatched once
+    when the outermost `commit()` is called.
+
+### Events
+
+Three event types are available, each corresponding to a [`ModelEvent`](../reference/models.md#fastapi_toolsets.models.ModelEvent) value:
+
+| Event | Trigger |
+|---|---|
+| `ModelEvent.CREATE` | After `INSERT` commit |
+| `ModelEvent.DELETE` | After `DELETE` commit |
+| `ModelEvent.UPDATE` | After `UPDATE` commit on a watched field |
+
+!!! warning "Callbacks fire only for ORM-level changes. Rows updated via raw SQL (`UPDATE ... SET ...`) are not detected."
+
+### Watched fields
+
+Set `__watched_fields__` on the model to restrict which field changes trigger `UPDATE` events. It must be a `tuple[str, ...]` — any other type raises `TypeError`:
+
+| Class attribute | `UPDATE` behaviour |
+|---|---|
+| `__watched_fields__ = ("status", "role")` | Only fires when `status` or `role` changes |
+| *(not set)* | Fires when **any** mapped field changes |
+
+`__watched_fields__` is inherited through the class hierarchy via normal Python MRO. A subclass can override it:
+
+```python
+class Order(Base, UUIDMixin):
+    __watched_fields__ = ("status",)
     ...
 
 class UrgentOrder(Order):
-    # inherits @watch("status") — on_update fires only for status changes
+    # inherits __watched_fields__ = ("status",)
     ...
 
-@watch("priority")
 class PriorityOrder(Order):
-    # overrides parent — on_update fires only for priority changes
+    __watched_fields__ = ("priority",)
+    # overrides parent — UPDATE fires only for priority changes
     ...
 ```
 
-#### Option 1 — catch-all with `on_event`
+### Registering handlers
 
-Override `on_event` to handle all event types in one place. The specific methods delegate here by default:
+Register handlers with the [`listens_for`](../reference/models.md#fastapi_toolsets.models.listens_for) decorator. Every callback receives three arguments: the model instance, the [`ModelEvent`](../reference/models.md#fastapi_toolsets.models.ModelEvent) that triggered it, and a `changes` dict (`None` for `CREATE` and `DELETE`):
 
 ```python
-from fastapi_toolsets.models import ModelEvent, UUIDMixin, WatchedFieldsMixin, watch
+from fastapi_toolsets.models import ModelEvent, UUIDMixin, listens_for
 
-@watch("status")
-class Order(Base, UUIDMixin, WatchedFieldsMixin):
+class Order(Base, UUIDMixin):
     __tablename__ = "orders"
+    __watched_fields__ = ("status",)
 
     status: Mapped[str]
 
-    async def on_event(self, event: ModelEvent, changes: dict | None = None) -> None:
-        if event == ModelEvent.CREATE:
-            await notify_new_order(self.id)
-        elif event == ModelEvent.DELETE:
-            await notify_order_cancelled(self.id)
-        elif event == ModelEvent.UPDATE:
-            await notify_status_change(self.id, changes["status"])
+@listens_for(Order, [ModelEvent.CREATE])
+async def on_order_created(order: Order, event_type: ModelEvent, changes: None):
+    await notify_new_order(order.id)
+
+@listens_for(Order, [ModelEvent.DELETE])
+async def on_order_deleted(order: Order, event_type: ModelEvent, changes: None):
+    await notify_order_cancelled(order.id)
+
+@listens_for(Order, [ModelEvent.UPDATE])
+async def on_order_updated(order: Order, event_type: ModelEvent, changes: dict):
+    if "status" in changes:
+        await notify_status_change(order.id, changes["status"])
 ```
 
-#### Option 2 — targeted overrides
+Multiple handlers can be registered for the same model and event. Handlers registered on a parent class also fire for subclass instances.
 
-Override individual methods for more focused logic:
+A single handler can listen for multiple events at once. When `event_types` is omitted, the handler fires for all events:
 
 ```python
-@watch("status")
-class Order(Base, UUIDMixin, WatchedFieldsMixin):
-    __tablename__ = "orders"
+@listens_for(Order, [ModelEvent.CREATE, ModelEvent.UPDATE])
+async def on_order_changed(order: Order, event_type: ModelEvent, changes: dict | None):
+    await invalidate_cache(order.id)
 
-    status: Mapped[str]
-
-    async def on_create(self) -> None:
-        await notify_new_order(self.id)
-
-    async def on_delete(self) -> None:
-        await notify_order_cancelled(self.id)
-
-    async def on_update(self, changes: dict) -> None:
-        if "status" in changes:
-            old = changes["status"]["old"]
-            new = changes["status"]["new"]
-            await notify_status_change(self.id, old, new)
+@listens_for(Order)  # all events
+async def on_any_order_event(order: Order, event_type: ModelEvent, changes: dict | None):
+    await audit_log(order.id, event_type)
 ```
 
-#### Field changes format
+### Field changes format
 
-The `changes` dict maps each watched field that changed to `{"old": ..., "new": ...}`. Only fields that actually changed are included:
+The `changes` dict maps each watched field that changed to `{"old": ..., "new": ...}`. Only fields that actually changed are included. For `CREATE` and `DELETE` events, `changes` is `None`:
 
 ```python
+# CREATE / DELETE → changes is None
 # status changed   → {"status": {"old": "pending", "new": "shipped"}}
 # two fields changed → {"status": {...}, "assigned_to": {...}}
 ```
 
 !!! info "Multiple flushes in one transaction are merged: the earliest `old` and latest `new` are preserved, and `on_update` fires only once per commit."
-
-!!! warning "Callbacks fire only for ORM-level changes. Rows updated via raw SQL (`UPDATE ... SET ...`) are not detected."
-
-!!! warning "Callbacks fire when the **outermost active context** (savepoint or transaction) commits."
-    If you create several related objects using `CrudFactory.create` and need
-    callbacks to see all of them (including associations), wrap the whole
-    operation in a single [`get_transaction`](db.md) or [`lock_tables`](db.md)
-    block. Without it, each `create` call commits its own savepoint and
-    `on_create` fires before the remaining objects exist.
-
-    ```python
-    from fastapi_toolsets.db import get_transaction
-
-    async with get_transaction(session):
-        order = await OrderCrud.create(session, order_data)
-        item  = await ItemCrud.create(session, item_data)
-        await session.refresh(order, attribute_names=["items"])
-        order.items.append(item)
-    # on_create fires here for both order and item,
-    # with the full association already committed.
-    ```
-
-## Composing mixins
-
-All mixins can be combined in any order. The only constraint is that exactly one primary key must be defined — either via `UUIDMixin` or directly on the model.
-
-```python
-from fastapi_toolsets.models import UUIDMixin, TimestampMixin
-
-class Event(Base, UUIDMixin, TimestampMixin):
-    __tablename__ = "events"
-    name: Mapped[str]
-
-class Counter(Base, UpdatedAtMixin):
-    __tablename__ = "counters"
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    value: Mapped[int]
-```
 
 ---
 

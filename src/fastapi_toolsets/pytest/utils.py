@@ -18,6 +18,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from ..db import cleanup_tables as _cleanup_tables
 from ..db import create_database
+from ..models.watched import EventSession
 
 
 async def cleanup_tables(
@@ -265,7 +266,9 @@ async def create_db_session(
         async with engine.begin() as conn:
             await conn.run_sync(base.metadata.create_all)
 
-        session_maker = async_sessionmaker(engine, expire_on_commit=expire_on_commit)
+        session_maker = async_sessionmaker(
+            engine, expire_on_commit=expire_on_commit, class_=EventSession
+        )
         async with session_maker() as session:
             yield session
 

@@ -6,16 +6,18 @@ You can import them directly from `fastapi_toolsets.models`:
 
 ```python
 from fastapi_toolsets.models import (
+    EventSession,
     ModelEvent,
     UUIDMixin,
     UUIDv7Mixin,
     CreatedAtMixin,
     UpdatedAtMixin,
     TimestampMixin,
-    WatchedFieldsMixin,
-    watch,
+    listens_for,
 )
 ```
+
+## ::: fastapi_toolsets.models.EventSession
 
 ## ::: fastapi_toolsets.models.ModelEvent
 
@@ -29,6 +31,4 @@ from fastapi_toolsets.models import (
 
 ## ::: fastapi_toolsets.models.TimestampMixin
 
-## ::: fastapi_toolsets.models.WatchedFieldsMixin
-
-## ::: fastapi_toolsets.models.watch
+## ::: fastapi_toolsets.models.listens_for
