@@ -24,6 +24,7 @@ from sqlalchemy.types import (
 
 from ..exceptions import (
     InvalidFacetFilterError,
+    InvalidSearchColumnError,
     NoSearchableFieldsError,
     UnsupportedFacetTypeError,
 )
@@ -96,6 +97,7 @@ def build_search_filters(
     search: str | SearchConfig,
     search_fields: Sequence[SearchFieldType] | None = None,
     default_fields: Sequence[SearchFieldType] | None = None,
+    search_column: str | None = None,
 ) -> tuple[list["ColumnElement[bool]"], list[InstrumentedAttribute[Any]]]:
     """Build SQLAlchemy filter conditions for search.
 
@@ -104,6 +106,8 @@ def build_search_filters(
         search: Search string or SearchConfig
         search_fields: Fields specified per-call (takes priority)
         default_fields: Default fields (from ClassVar)
+        search_column: Optional key to narrow search to a single field.
+            Must match one of the resolved search field keys.
 
     Returns:
         Tuple of (filter_conditions, joins_needed)
@@ -129,6 +133,14 @@ def build_search_filters(
 
     if not fields:
         raise NoSearchableFieldsError(model)
+
+    # Narrow to a single column when search_column is specified
+    if search_column is not None:
+        keys = search_field_keys(fields)
+        index = {k: f for k, f in zip(keys, fields)}
+        if search_column not in index:
+            raise InvalidSearchColumnError(search_column, sorted(index))
+        fields = [index[search_column]]
 
     query = config.query.strip()
     filters: list[ColumnElement[bool]] = []
@@ -162,6 +174,11 @@ def build_search_filters(
         return [or_(*filters)], joins
     else:
         return filters, joins
+
+
+def search_field_keys(fields: Sequence[SearchFieldType]) -> list[str]:
+    """Return a human-readable key for each search field."""
+    return facet_keys(fields)
 
 
 def facet_keys(facet_fields: Sequence[FacetFieldType]) -> list[str]:

@@ -2,6 +2,7 @@
 
 from ..exceptions import (
     InvalidFacetFilterError,
+    InvalidSearchColumnError,
     NoSearchableFieldsError,
     UnsupportedFacetTypeError,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "FacetFieldType",
     "get_searchable_fields",
     "InvalidFacetFilterError",
+    "InvalidSearchColumnError",
     "JoinType",
     "M2MFieldType",
     "NoSearchableFieldsError",

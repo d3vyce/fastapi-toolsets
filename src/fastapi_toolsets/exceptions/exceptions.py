@@ -172,6 +172,33 @@ class UnsupportedFacetTypeError(ApiException):
         )
 
 
+class InvalidSearchColumnError(ApiException):
+    """Raised when search_column is not one of the configured searchable fields."""
+
+    api_error = ApiError(
+        code=400,
+        msg="Invalid Search Column",
+        desc="The requested search column is not a configured searchable field.",
+        err_code="SEARCH-COL-400",
+    )
+
+    def __init__(self, column: str, valid_columns: list[str]) -> None:
+        """Initialize the exception.
+
+        Args:
+            column: The unknown search column provided by the caller.
+            valid_columns: List of valid search column keys.
+        """
+        self.column = column
+        self.valid_columns = valid_columns
+        super().__init__(
+            desc=(
+                f"'{column}' is not a searchable column. "
+                f"Valid columns: {valid_columns}."
+            )
+        )
+
+
 class InvalidOrderFieldError(ApiException):
     """Raised when order_by contains a field not in the allowed order fields."""
 
