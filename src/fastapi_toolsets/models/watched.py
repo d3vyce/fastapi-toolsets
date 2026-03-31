@@ -231,6 +231,13 @@ class EventSession(AsyncSession):
                     k: v for k, v in field_changes.items() if k not in transient_ids
                 }
 
+        # Suppress updates for deleted objects (row is gone, refresh would fail).
+        if deletes and field_changes:
+            deleted_ids = {id(o) for o, _ in deletes}
+            field_changes = {
+                k: v for k, v in field_changes.items() if k not in deleted_ids
+            }
+
         # Suppress updates for newly created objects (CREATE-only semantics).
         if creates and field_changes:
             create_ids = {id(o) for o in creates}
