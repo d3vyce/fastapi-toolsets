@@ -1,6 +1,6 @@
 """Prometheus metrics endpoint for FastAPI applications."""
 
-import asyncio
+import inspect
 import os
 
 from fastapi import FastAPI
@@ -55,10 +55,10 @@ def init_metrics(
 
     # Partition collectors and cache env check at startup — both are stable for the app lifetime.
     async_collectors = [
-        c for c in registry.get_collectors() if asyncio.iscoroutinefunction(c.func)
+        c for c in registry.get_collectors() if inspect.iscoroutinefunction(c.func)
     ]
     sync_collectors = [
-        c for c in registry.get_collectors() if not asyncio.iscoroutinefunction(c.func)
+        c for c in registry.get_collectors() if not inspect.iscoroutinefunction(c.func)
     ]
     multiprocess_mode = _is_multiprocess()
 
