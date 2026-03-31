@@ -11,12 +11,17 @@ from fastapi_toolsets.crud import (
     CrudFactory,
     InvalidFacetFilterError,
     SearchConfig,
+    UnsupportedFacetTypeError,
     get_searchable_fields,
 )
 from fastapi_toolsets.exceptions import InvalidOrderFieldError
 from fastapi_toolsets.schemas import OffsetPagination, PaginationType
 
 from .conftest import (
+    Article,
+    ArticleCreate,
+    ArticleCrud,
+    ArticleRead,
     Role,
     RoleCreate,
     RoleCrud,
@@ -901,6 +906,128 @@ class TestFilterBy:
 
         assert len(result.data) == 1
         assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_bool_filter_false(self, db_session: AsyncSession):
+        """filter_by with a boolean False value correctly filters rows."""
+        UserBoolCrud = CrudFactory(User, facet_fields=[User.is_active])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
+        )
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="bob", email="b@test.com", is_active=False),
+        )
+
+        result = await UserBoolCrud.offset_paginate(
+            db_session, filter_by={"is_active": False}, schema=UserRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "bob"
+
+    @pytest.mark.anyio
+    async def test_bool_filter_true(self, db_session: AsyncSession):
+        """filter_by with a boolean True value correctly filters rows."""
+        UserBoolCrud = CrudFactory(User, facet_fields=[User.is_active])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
+        )
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="bob", email="b@test.com", is_active=False),
+        )
+
+        result = await UserBoolCrud.offset_paginate(
+            db_session, filter_by={"is_active": True}, schema=UserRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_bool_filter_list(self, db_session: AsyncSession):
+        """filter_by with a list of booleans produces an IN clause."""
+        UserBoolCrud = CrudFactory(User, facet_fields=[User.is_active])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
+        )
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="bob", email="b@test.com", is_active=False),
+        )
+
+        result = await UserBoolCrud.offset_paginate(
+            db_session, filter_by={"is_active": [True, False]}, schema=UserRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+
+    @pytest.mark.anyio
+    async def test_array_contains_single_value(self, db_session: AsyncSession):
+        """filter_by on an ARRAY column with a scalar checks containment."""
+        ArticleFacetCrud = CrudFactory(Article, facet_fields=[Article.labels])
+        await ArticleCrud.create(
+            db_session, ArticleCreate(title="Post 1", labels=["python", "fastapi"])
+        )
+        await ArticleCrud.create(
+            db_session, ArticleCreate(title="Post 2", labels=["rust", "axum"])
+        )
+        await ArticleCrud.create(
+            db_session, ArticleCreate(title="Post 3", labels=["python", "django"])
+        )
+
+        result = await ArticleFacetCrud.offset_paginate(
+            db_session, filter_by={"labels": "python"}, schema=ArticleRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+        titles = {a.title for a in result.data}
+        assert titles == {"Post 1", "Post 3"}
+        # facet returns individual unnested values, not whole arrays
+        assert result.filter_attributes == {"labels": ["django", "fastapi", "python"]}
+
+    @pytest.mark.anyio
+    async def test_array_overlap_list_value(self, db_session: AsyncSession):
+        """filter_by on an ARRAY column with a list checks overlap."""
+        ArticleFacetCrud = CrudFactory(Article, facet_fields=[Article.labels])
+        await ArticleCrud.create(
+            db_session, ArticleCreate(title="Post 1", labels=["python", "fastapi"])
+        )
+        await ArticleCrud.create(
+            db_session, ArticleCreate(title="Post 2", labels=["rust", "axum"])
+        )
+        await ArticleCrud.create(
+            db_session, ArticleCreate(title="Post 3", labels=["python", "django"])
+        )
+
+        result = await ArticleFacetCrud.offset_paginate(
+            db_session, filter_by={"labels": ["rust", "django"]}, schema=ArticleRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+        titles = {a.title for a in result.data}
+        assert titles == {"Post 2", "Post 3"}
+
+    @pytest.mark.anyio
+    async def test_unsupported_column_type_raises(self, db_session: AsyncSession):
+        """filter_by on a JSON column raises UnsupportedFacetTypeError."""
+        ArticleJsonCrud = CrudFactory(Article, facet_fields=[Article.metadata_])
+
+        with pytest.raises(UnsupportedFacetTypeError) as exc_info:
+            await ArticleJsonCrud.offset_paginate(
+                db_session,
+                filter_by={"metadata_": {"key": "value"}},
+                schema=ArticleRead,
+            )
+
+        assert exc_info.value.key == "metadata_"
+        assert "JSON" in exc_info.value.col_type
 
 
 class TestFilterParamsSchema:

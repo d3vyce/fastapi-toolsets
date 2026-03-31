@@ -10,6 +10,7 @@ from .exceptions import (
     NoSearchableFieldsError,
     NotFoundError,
     UnauthorizedError,
+    UnsupportedFacetTypeError,
     generate_error_responses,
 )
 from .handler import init_exceptions_handlers
@@ -26,4 +27,5 @@ __all__ = [
     "NoSearchableFieldsError",
     "NotFoundError",
     "UnauthorizedError",
+    "UnsupportedFacetTypeError",
 ]
