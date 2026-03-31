@@ -1041,6 +1041,25 @@ class TestTransientObject:
         assert len(creates) == 1
         assert len(deletes) == 1
 
+    @pytest.mark.anyio
+    async def test_update_then_delete_suppresses_update_callback(self, mixin_session):
+        """UPDATE callback is suppressed when the object is also deleted in the same transaction."""
+        obj = WatchedModel(status="initial", other="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+
+        _test_events.clear()
+
+        obj.status = "changed"
+        await mixin_session.flush()
+        await mixin_session.delete(obj)
+        await mixin_session.commit()
+
+        updates = [e for e in _test_events if e["event"] == "update"]
+        deletes = [e for e in _test_events if e["event"] == "delete"]
+        assert updates == []
+        assert len(deletes) == 1
+
 
 class TestPolymorphism:
     """Event dispatch with STI (Single Table Inheritance)."""
