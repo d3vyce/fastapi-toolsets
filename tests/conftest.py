@@ -14,11 +14,13 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     Numeric,
     String,
     Table,
     Uuid,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -135,6 +137,17 @@ class Post(Base):
     author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
 
     tags: Mapped[list[Tag]] = relationship(secondary=post_tags)
+
+
+class Article(Base):
+    """Test article model with ARRAY and JSON columns."""
+
+    __tablename__ = "articles"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(200))
+    labels: Mapped[list[str]] = mapped_column(ARRAY(String))
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
 
 
 class RoleCreate(BaseModel):
@@ -271,6 +284,23 @@ class ProductCreate(BaseModel):
     price: decimal.Decimal
 
 
+class ArticleCreate(BaseModel):
+    """Schema for creating an article."""
+
+    id: uuid.UUID | None = None
+    title: str
+    labels: list[str] = []
+
+
+class ArticleRead(PydanticBase):
+    """Schema for reading an article."""
+
+    id: uuid.UUID
+    title: str
+    labels: list[str]
+
+
+ArticleCrud = CrudFactory(Article)
 RoleCrud = CrudFactory(Role)
 RoleCursorCrud = CrudFactory(Role, cursor_column=Role.id)
 IntRoleCursorCrud = CrudFactory(IntRole, cursor_column=IntRole.id)

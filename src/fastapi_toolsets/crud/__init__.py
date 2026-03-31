@@ -1,6 +1,10 @@
 """Generic async CRUD operations for SQLAlchemy models."""
 
-from ..exceptions import InvalidFacetFilterError, NoSearchableFieldsError
+from ..exceptions import (
+    InvalidFacetFilterError,
+    NoSearchableFieldsError,
+    UnsupportedFacetTypeError,
+)
 from ..schemas import PaginationType
 from ..types import (
     FacetFieldType,
@@ -25,4 +29,5 @@ __all__ = [
     "PaginationType",
     "SearchConfig",
     "SearchFieldType",
+    "UnsupportedFacetTypeError",
 ]

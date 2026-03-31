@@ -144,6 +144,34 @@ class InvalidFacetFilterError(ApiException):
         )
 
 
+class UnsupportedFacetTypeError(ApiException):
+    """Raised when a facet field has a column type not supported by filter_by."""
+
+    api_error = ApiError(
+        code=400,
+        msg="Unsupported Facet Type",
+        desc="The column type is not supported for facet filtering.",
+        err_code="FACET-TYPE-400",
+    )
+
+    def __init__(self, key: str, col_type: str) -> None:
+        """Initialize the exception.
+
+        Args:
+            key: The facet field key.
+            col_type: The unsupported column type name.
+        """
+        self.key = key
+        self.col_type = col_type
+        super().__init__(
+            desc=(
+                f"Facet field '{key}' has unsupported column type '{col_type}'. "
+                f"Supported types: String, Integer, Numeric, Boolean, "
+                f"Date, DateTime, Time, Enum, Uuid, ARRAY."
+            )
+        )
+
+
 class InvalidOrderFieldError(ApiException):
     """Raised when order_by contains a field not in the allowed order fields."""
 
