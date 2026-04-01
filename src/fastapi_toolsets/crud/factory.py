@@ -47,6 +47,7 @@ from .search import (
     build_filter_by,
     build_search_filters,
     facet_keys,
+    search_field_keys,
 )
 
 
@@ -308,6 +309,69 @@ class AsyncCrud(Generic[ModelType]):
         )
 
         return dependency
+
+    @classmethod
+    def search_params(
+        cls: type[Self],
+        *,
+        search_fields: Sequence[SearchFieldType] | None = None,
+    ) -> Callable[..., Awaitable[dict[str, Any]]]:
+        """Return a FastAPI dependency that collects search params from query parameters.
+
+        Args:
+            search_fields: Override search fields for this dependency.
+                Falls back to the class-level ``searchable_fields``.
+
+        Returns:
+            An async dependency function named ``{Model}SearchParams`` that
+            resolves to a ``dict`` with ``search`` and ``search_column`` keys
+            (absent keys are excluded).
+        """
+        fields = search_fields if search_fields is not None else cls.searchable_fields
+        if not fields:
+            raise ValueError(
+                f"{cls.__name__} has no searchable_fields configured. "
+                "Pass search_fields= or set them on CrudFactory."
+            )
+        keys = search_field_keys(fields)
+
+        async def dependency(**kwargs: Any) -> dict[str, Any]:
+            return {k: v for k, v in kwargs.items() if v is not None}
+
+        dependency.__name__ = f"{cls.model.__name__}SearchParams"
+        dependency.__signature__ = inspect.Signature(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
+            parameters=[
+                inspect.Parameter(
+                    "search",
+                    inspect.Parameter.KEYWORD_ONLY,
+                    annotation=str | None,
+                    default=Query(default=None, description="Search query string"),
+                ),
+                inspect.Parameter(
+                    "search_column",
+                    inspect.Parameter.KEYWORD_ONLY,
+                    annotation=str | None,
+                    default=Query(
+                        default=None,
+                        description="Restrict search to a single column",
+                        enum=keys,
+                    ),
+                ),
+            ]
+        )
+
+        return dependency
+
+    @classmethod
+    def _resolve_search_columns(
+        cls: type[Self],
+        search_fields: Sequence[SearchFieldType] | None,
+    ) -> list[str] | None:
+        """Return search column keys, or None if no searchable fields configured."""
+        fields = search_fields if search_fields is not None else cls.searchable_fields
+        if not fields:
+            return None
+        return search_field_keys(fields)
 
     @classmethod
     def offset_params(
@@ -1056,6 +1120,7 @@ class AsyncCrud(Generic[ModelType]):
         include_total: bool = True,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        search_column: str | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1075,6 +1140,7 @@ class AsyncCrud(Generic[ModelType]):
                 ``pagination.total_count`` will be ``None``.
             search: Search query string or SearchConfig object
             search_fields: Fields to search in (overrides class default)
+            search_column: Restrict search to a single column key.
             facet_fields: Columns to compute distinct values for (overrides class default)
             filter_by: Dict of {column_key: value} to filter by declared facet fields.
                 Keys must match the column.key of a facet field. Scalar → equality,
@@ -1097,6 +1163,7 @@ class AsyncCrud(Generic[ModelType]):
                 search,
                 search_fields=search_fields,
                 default_fields=cls.searchable_fields,
+                search_column=search_column,
             )
             filters.extend(search_filters)
             search_joins.extend(new_search_joins)
@@ -1153,6 +1220,7 @@ class AsyncCrud(Generic[ModelType]):
         filter_attributes = await cls._build_filter_attributes(
             session, facet_fields, filters, search_joins
         )
+        search_columns = cls._resolve_search_columns(search_fields)
 
         return OffsetPaginatedResponse(
             data=items,
@@ -1163,6 +1231,7 @@ class AsyncCrud(Generic[ModelType]):
                 has_more=has_more,
             ),
             filter_attributes=filter_attributes,
+            search_columns=search_columns,
         )
 
     @classmethod
@@ -1179,6 +1248,7 @@ class AsyncCrud(Generic[ModelType]):
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        search_column: str | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1199,6 +1269,7 @@ class AsyncCrud(Generic[ModelType]):
             items_per_page: Number of items per page (default 20).
             search: Search query string or SearchConfig object.
             search_fields: Fields to search in (overrides class default).
+            search_column: Restrict search to a single column key.
             facet_fields: Columns to compute distinct values for (overrides class default).
             filter_by: Dict of {column_key: value} to filter by declared facet fields.
                 Keys must match the column.key of a facet field. Scalar → equality,
@@ -1238,6 +1309,7 @@ class AsyncCrud(Generic[ModelType]):
                 search,
                 search_fields=search_fields,
                 default_fields=cls.searchable_fields,
+                search_column=search_column,
             )
             filters.extend(search_filters)
             search_joins.extend(new_search_joins)
@@ -1308,6 +1380,7 @@ class AsyncCrud(Generic[ModelType]):
         filter_attributes = await cls._build_filter_attributes(
             session, facet_fields, filters, search_joins
         )
+        search_columns = cls._resolve_search_columns(search_fields)
 
         return CursorPaginatedResponse(
             data=items,
@@ -1318,6 +1391,7 @@ class AsyncCrud(Generic[ModelType]):
                 has_more=has_more,
             ),
             filter_attributes=filter_attributes,
+            search_columns=search_columns,
         )
 
     @overload
@@ -1338,6 +1412,7 @@ class AsyncCrud(Generic[ModelType]):
         include_total: bool = ...,
         search: str | SearchConfig | None = ...,
         search_fields: Sequence[SearchFieldType] | None = ...,
+        search_column: str | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
         filter_by: dict[str, Any] | BaseModel | None = ...,
         schema: type[BaseModel],
@@ -1361,6 +1436,7 @@ class AsyncCrud(Generic[ModelType]):
         include_total: bool = ...,
         search: str | SearchConfig | None = ...,
         search_fields: Sequence[SearchFieldType] | None = ...,
+        search_column: str | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
         filter_by: dict[str, Any] | BaseModel | None = ...,
         schema: type[BaseModel],
@@ -1383,6 +1459,7 @@ class AsyncCrud(Generic[ModelType]):
         include_total: bool = True,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
+        search_column: str | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1410,6 +1487,7 @@ class AsyncCrud(Generic[ModelType]):
                 only applies when ``pagination_type`` is ``OFFSET``.
             search: Search query string or :class:`.SearchConfig` object.
             search_fields: Fields to search in (overrides class default).
+            search_column: Restrict search to a single column key.
             facet_fields: Columns to compute distinct values for (overrides
                 class default).
             filter_by: Dict of ``{column_key: value}`` to filter by declared
@@ -1438,6 +1516,7 @@ class AsyncCrud(Generic[ModelType]):
                     items_per_page=items_per_page,
                     search=search,
                     search_fields=search_fields,
+                    search_column=search_column,
                     facet_fields=facet_fields,
                     filter_by=filter_by,
                     schema=schema,
@@ -1457,6 +1536,7 @@ class AsyncCrud(Generic[ModelType]):
                     include_total=include_total,
                     search=search,
                     search_fields=search_fields,
+                    search_column=search_column,
                     facet_fields=facet_fields,
                     filter_by=filter_by,
                     schema=schema,

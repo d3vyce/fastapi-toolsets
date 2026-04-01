@@ -211,6 +211,38 @@ class TestResolveLoadOptions:
         assert crud._resolve_load_options([]) == []
 
 
+class TestResolveSearchColumns:
+    """Tests for _resolve_search_columns logic."""
+
+    def test_returns_none_when_no_searchable_fields(self):
+        """Returns None when cls.searchable_fields is None and no search_fields passed."""
+
+        class AbstractCrud(AsyncCrud[User]):
+            pass
+
+        assert AbstractCrud._resolve_search_columns(None) is None
+
+    def test_returns_none_when_empty_search_fields_passed(self):
+        """Returns None when an empty list is passed explicitly."""
+        crud = CrudFactory(User)
+        assert crud._resolve_search_columns([]) is None
+
+    def test_returns_keys_from_class_searchable_fields(self):
+        """Returns column keys from cls.searchable_fields when no override passed."""
+        crud = CrudFactory(User, searchable_fields=[User.username])
+        result = crud._resolve_search_columns(None)
+        assert result is not None
+        assert "username" in result
+
+    def test_search_fields_override_takes_priority(self):
+        """Explicit search_fields override cls.searchable_fields."""
+        crud = CrudFactory(User, searchable_fields=[User.username])
+        result = crud._resolve_search_columns([User.email])
+        assert result is not None
+        assert "email" in result
+        assert "username" not in result
+
+
 class TestDefaultLoadOptionsIntegration:
     """Integration tests for default_load_options with real DB queries."""
 

@@ -10,6 +10,7 @@ from sqlalchemy.sql.elements import ColumnElement, UnaryExpression
 from fastapi_toolsets.crud import (
     CrudFactory,
     InvalidFacetFilterError,
+    InvalidSearchColumnError,
     SearchConfig,
     UnsupportedFacetTypeError,
     get_searchable_fields,
@@ -1197,6 +1198,208 @@ class TestFilterParamsSchema:
 
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
+
+
+class TestSearchParamsSchema:
+    """Tests for AsyncCrud.search_params()."""
+
+    def test_generates_search_and_search_column_params(self):
+        """Returned dependency has search and search_column query params."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+        dep = UserSearchCrud.search_params()
+
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"search", "search_column"}
+
+    def test_dependency_name_includes_model_name(self):
+        """Dependency function is named {Model}SearchParams."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+        dep = UserSearchCrud.search_params()
+        assert dep.__name__ == "UserSearchParams"  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
+
+    def test_raises_when_no_searchable_fields(self):
+        """ValueError raised when overriding with empty search_fields."""
+        UserSearchCrud = CrudFactory(User, searchable_fields=[User.username])
+        with pytest.raises(ValueError, match="no searchable_fields"):
+            UserSearchCrud.search_params(search_fields=[])
+
+    @pytest.mark.anyio
+    async def test_awaiting_dep_with_search_only(self):
+        """Awaiting the dependency with only search returns a dict with search key."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+        dep = UserSearchCrud.search_params()
+
+        result = await dep(search="alice")
+        assert result == {"search": "alice"}
+
+    @pytest.mark.anyio
+    async def test_awaiting_dep_with_search_and_column(self):
+        """Awaiting the dependency with both params returns both keys."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+        dep = UserSearchCrud.search_params()
+
+        result = await dep(search="alice", search_column="username")
+        assert result == {"search": "alice", "search_column": "username"}
+
+    @pytest.mark.anyio
+    async def test_awaiting_dep_with_no_values(self):
+        """Awaiting the dependency with no values returns an empty dict."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+        dep = UserSearchCrud.search_params()
+
+        result = await dep()
+        assert result == {}
+
+    def test_relationship_search_field_key(self):
+        """Relationship tuple search fields use __ joined keys."""
+        UserRelSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, (User.role, Role.name)]
+        )
+        dep = UserRelSearchCrud.search_params()
+
+        params = inspect.signature(dep).parameters
+        search_column_param = params["search_column"]
+        assert search_column_param.default.json_schema_extra.get("enum") == [
+            "id",
+            "username",
+            "role__name",
+        ]
+
+
+class TestSearchColumns:
+    """Tests for search_columns in paginated responses."""
+
+    @pytest.mark.anyio
+    async def test_search_columns_returned_in_offset_paginate(
+        self, db_session: AsyncSession
+    ):
+        """offset_paginate response includes search_columns."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserSearchCrud.offset_paginate(db_session, schema=UserRead)
+
+        assert result.search_columns is not None
+        assert "username" in result.search_columns
+        assert "email" in result.search_columns
+
+    @pytest.mark.anyio
+    async def test_search_columns_returned_in_cursor_paginate(
+        self, db_session: AsyncSession
+    ):
+        """cursor_paginate response includes search_columns."""
+        UserSearchCursorCrud = CrudFactory(
+            User,
+            cursor_column=User.id,
+            searchable_fields=[User.username, User.email],
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserSearchCursorCrud.cursor_paginate(db_session, schema=UserRead)
+
+        assert result.search_columns is not None
+        assert "username" in result.search_columns
+        assert "email" in result.search_columns
+
+    @pytest.mark.anyio
+    async def test_search_column_narrows_search(self, db_session: AsyncSession):
+        """search_column restricts search to a single field."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="bob@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="alice@test.com")
+        )
+
+        # Search "alice" in username only — should return only alice
+        result = await UserSearchCrud.offset_paginate(
+            db_session, search="alice", search_column="username", schema=UserRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].username == "alice"
+
+    @pytest.mark.anyio
+    async def test_search_column_invalid_raises(self, db_session: AsyncSession):
+        """search_column with an invalid key raises InvalidSearchColumnError."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+
+        with pytest.raises(InvalidSearchColumnError) as exc_info:
+            await UserSearchCrud.offset_paginate(
+                db_session,
+                search="alice",
+                search_column="nonexistent",
+                schema=UserRead,
+            )
+
+        assert exc_info.value.column == "nonexistent"
+
+    @pytest.mark.anyio
+    async def test_search_without_search_column_searches_all(
+        self, db_session: AsyncSession
+    ):
+        """search without search_column searches across all configured fields."""
+        UserSearchCrud = CrudFactory(
+            User, searchable_fields=[User.username, User.email]
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="bob@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="alice@test.com")
+        )
+
+        # Search "alice" across all fields — should return both
+        result = await UserSearchCrud.offset_paginate(
+            db_session, search="alice", schema=UserRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+
+    @pytest.mark.anyio
+    async def test_search_column_with_cursor_paginate(self, db_session: AsyncSession):
+        """search_column works with cursor_paginate."""
+        UserSearchCursorCrud = CrudFactory(
+            User,
+            cursor_column=User.id,
+            searchable_fields=[User.username, User.email],
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="bob@test.com")
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="alice@test.com")
+        )
+
+        result = await UserSearchCursorCrud.cursor_paginate(
+            db_session, search="alice", search_column="email", schema=UserRead
+        )
+
+        assert len(result.data) == 1
+        assert result.data[0].username == "bob"
 
 
 class TestOrderParamsSchema:
