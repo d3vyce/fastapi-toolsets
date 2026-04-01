@@ -159,18 +159,15 @@ Three pagination methods are available.  All return a typed response whose `pagi
 ### Offset pagination
 
 ```python
+from typing import Annotated
+from fastapi import Depends
+
 @router.get("")
 async def get_users(
     session: SessionDep,
-    items_per_page: int = 50,
-    page: int = 1,
+    params: Annotated[dict, Depends(UserCrud.offset_paginate_params())],
 ) -> OffsetPaginatedResponse[UserRead]:
-    return await UserCrud.offset_paginate(
-        session=session,
-        items_per_page=items_per_page,
-        page=page,
-        schema=UserRead,
-    )
+    return await UserCrud.offset_paginate(session=session, **params, schema=UserRead)
 ```
 
 The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) method returns an [`OffsetPaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.OffsetPaginatedResponse):
@@ -194,32 +191,13 @@ The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.Async
 
 !!! info "Added in `v2.4.1`"
 
-By default `offset_paginate` runs two queries: one for the page items and one `COUNT(*)` for `total_count`. On large tables the `COUNT` can be expensive. Pass `include_total=False` to skip it:
+By default `offset_paginate` runs two queries: one for the page items and one `COUNT(*)` for `total_count`. On large tables the `COUNT` can be expensive. Pass `include_total=False` to `offset_paginate_params()` to skip it:
 
 ```python
-result = await UserCrud.offset_paginate(
-    session=session,
-    page=page,
-    items_per_page=items_per_page,
-    include_total=False,
-    schema=UserRead,
-)
-```
-
-#### Pagination params dependency
-
-!!! info "Added in `v2.4.1`"
-
-Use [`offset_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_params) to generate a FastAPI dependency that injects `page` and `items_per_page` from query parameters with configurable defaults and a `max_page_size` cap:
-
-```python
-from typing import Annotated
-from fastapi import Depends
-
 @router.get("")
-async def list_users(
+async def get_users(
     session: SessionDep,
-    params: Annotated[dict, Depends(UserCrud.offset_params(default_page_size=20, max_page_size=100))],
+    params: Annotated[dict, Depends(UserCrud.offset_paginate_params(include_total=False))],
 ) -> OffsetPaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(session=session, **params, schema=UserRead)
 ```
@@ -230,15 +208,9 @@ async def list_users(
 @router.get("")
 async def list_users(
     session: SessionDep,
-    cursor: str | None = None,
-    items_per_page: int = 20,
+    params: Annotated[dict, Depends(UserCrud.cursor_paginate_params())],
 ) -> CursorPaginatedResponse[UserRead]:
-    return await UserCrud.cursor_paginate(
-        session=session,
-        cursor=cursor,
-        items_per_page=items_per_page,
-        schema=UserRead,
-    )
+    return await UserCrud.cursor_paginate(session=session, **params, schema=UserRead)
 ```
 
 The [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate) method returns a [`CursorPaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.CursorPaginatedResponse):
@@ -291,24 +263,6 @@ PostCrud = CrudFactory(model=Post, cursor_column=Post.id)
 PostCrud = CrudFactory(model=Post, cursor_column=Post.created_at)
 ```
 
-#### Pagination params dependency
-
-!!! info "Added in `v2.4.1`"
-
-Use [`cursor_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_params) to inject `cursor` and `items_per_page` from query parameters with a `max_page_size` cap:
-
-```python
-from typing import Annotated
-from fastapi import Depends
-
-@router.get("")
-async def list_users(
-    session: SessionDep,
-    params: Annotated[dict, Depends(UserCrud.cursor_params(default_page_size=20, max_page_size=100))],
-) -> CursorPaginatedResponse[UserRead]:
-    return await UserCrud.cursor_paginate(session=session, **params, schema=UserRead)
-```
-
 ### Unified endpoint (both strategies)
 
 !!! info "Added in `v2.3.0`"
@@ -316,49 +270,19 @@ async def list_users(
 [`paginate()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.paginate) dispatches to `offset_paginate` or `cursor_paginate` based on a `pagination_type` query parameter, letting you expose **one endpoint** that supports both strategies.  The `pagination_type` field in the response tells clients which strategy was used, enabling frontend discriminated-union typing.
 
 ```python
-from fastapi_toolsets.crud import PaginationType
 from fastapi_toolsets.schemas import PaginatedResponse
 
 @router.get("")
 async def list_users(
     session: SessionDep,
-    pagination_type: PaginationType = PaginationType.OFFSET,
-    page: int = Query(1, ge=1, description="Current page (offset only)"),
-    cursor: str | None = Query(None, description="Cursor token (cursor only)"),
-    items_per_page: int = Query(20, ge=1, le=100),
+    params: Annotated[dict, Depends(UserCrud.paginate_params())],
 ) -> PaginatedResponse[UserRead]:
-    return await UserCrud.paginate(
-        session,
-        pagination_type=pagination_type,
-        page=page,
-        cursor=cursor,
-        items_per_page=items_per_page,
-        schema=UserRead,
-    )
+    return await UserCrud.paginate(session, **params, schema=UserRead)
 ```
 
 ```
 GET /users?pagination_type=offset&page=2&items_per_page=10
 GET /users?pagination_type=cursor&cursor=eyJ2YWx1ZSI6...&items_per_page=10
-```
-
-#### Pagination params dependency
-
-!!! info "Added in `v2.4.1`"
-
-Use [`paginate_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.paginate_params) to inject all parameters at once with configurable defaults and a `max_page_size` cap:
-
-```python
-from typing import Annotated
-from fastapi import Depends
-from fastapi_toolsets.schemas import PaginatedResponse
-
-@router.get("")
-async def list_users(
-    session: SessionDep,
-    params: Annotated[dict, Depends(UserCrud.paginate_params(default_page_size=20, max_page_size=100))],
-) -> PaginatedResponse[UserRead]:
-    return await UserCrud.paginate(session, **params, schema=UserRead)
 ```
 
 ## Search
@@ -406,34 +330,18 @@ This allows searching with both [`offset_paginate`](../reference/crud.md#fastapi
 @router.get("")
 async def get_users(
     session: SessionDep,
-    items_per_page: int = 50,
-    page: int = 1,
-    search: str | None = None,
+    params: Annotated[dict, Depends(UserCrud.offset_paginate_params())],
 ) -> OffsetPaginatedResponse[UserRead]:
-    return await UserCrud.offset_paginate(
-        session=session,
-        items_per_page=items_per_page,
-        page=page,
-        search=search,
-        schema=UserRead,
-    )
+    return await UserCrud.offset_paginate(session=session, **params, schema=UserRead)
 ```
 
 ```python
 @router.get("")
 async def get_users(
     session: SessionDep,
-    cursor: str | None = None,
-    items_per_page: int = 50,
-    search: str | None = None,
+    params: Annotated[dict, Depends(UserCrud.cursor_paginate_params())],
 ) -> CursorPaginatedResponse[UserRead]:
-    return await UserCrud.cursor_paginate(
-        session=session,
-        items_per_page=items_per_page,
-        cursor=cursor,
-        search=search,
-        schema=UserRead,
-    )
+    return await UserCrud.cursor_paginate(session=session, **params, schema=UserRead)
 ```
 
 ### Faceted search
@@ -486,7 +394,7 @@ Use `filter_by` to pass the client's chosen filter values directly — no need t
 
 `filter_by` and `filters` can be combined — both are applied with AND logic.
 
-Use [`filter_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.filter_params) to generate a dict with the facet filter values from the query parameters:
+Facet filtering is built into the consolidated params dependencies. When `filter=True` (the default), facet fields are exposed as query parameters and collected into `filter_by` automatically:
 
 ```python
 from typing import Annotated
@@ -501,13 +409,11 @@ UserCrud = CrudFactory(
 @router.get("", response_model_exclude_none=True)
 async def list_users(
     session: SessionDep,
-    page: int = 1,
-    filter_by: Annotated[dict[str, list[str]], Depends(UserCrud.filter_params())],
+    params: Annotated[dict, Depends(UserCrud.offset_paginate_params())],
 ) -> OffsetPaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(
         session=session,
-        page=page,
-        filter_by=filter_by,
+        **params,
         schema=UserRead,
     )
 ```
@@ -536,20 +442,21 @@ UserCrud = CrudFactory(
 )
 ```
 
-Call [`order_params()`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.order_params) to generate a FastAPI dependency that maps the query parameters to an [`OrderByClause`](../reference/crud.md#fastapi_toolsets.crud.factory.OrderByClause) expression:
+Ordering is built into the consolidated params dependencies. When `order=True` (the default), `order_by` and `order` query parameters are exposed and resolved into an `OrderByClause` automatically:
 
 ```python
 from typing import Annotated
 
 from fastapi import Depends
-from fastapi_toolsets.crud import OrderByClause
 
 @router.get("")
 async def list_users(
     session: SessionDep,
-    order_by: Annotated[OrderByClause | None, Depends(UserCrud.order_params())],
+    params: Annotated[dict, Depends(UserCrud.offset_paginate_params(
+        default_order_field=User.created_at,
+    ))],
 ) -> OffsetPaginatedResponse[UserRead]:
-    return await UserCrud.offset_paginate(session=session, order_by=order_by, schema=UserRead)
+    return await UserCrud.offset_paginate(session=session, **params, schema=UserRead)
 ```
 
 The dependency adds two query parameters to the endpoint:
@@ -566,10 +473,10 @@ GET /users?order_by=name&order=desc  → ORDER BY users.name DESC
 
 An unknown `order_by` value raises [`InvalidOrderFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError) (HTTP 422).
 
-You can also pass `order_fields` directly to `order_params()` to override the class-level defaults without modifying them:
+You can also pass `order_fields` directly to override the class-level defaults:
 
 ```python
-UserOrderParams = UserCrud.order_params(order_fields=[User.name])
+params = UserCrud.offset_paginate_params(order_fields=[User.name])
 ```
 
 ## Relationship loading
@@ -656,12 +563,11 @@ async def get_user(session: SessionDep, uuid: UUID) -> Response[UserRead]:
     )
 
 @router.get("")
-async def list_users(session: SessionDep, page: int = 1) -> OffsetPaginatedResponse[UserRead]:
-    return await crud.UserCrud.offset_paginate(
-        session=session,
-        page=page,
-        schema=UserRead,
-    )
+async def list_users(
+    session: SessionDep,
+    params: Annotated[dict, Depends(crud.UserCrud.offset_paginate_params())],
+) -> OffsetPaginatedResponse[UserRead]:
+    return await crud.UserCrud.offset_paginate(session=session, **params, schema=UserRead)
 ```
 
 The schema must have `from_attributes=True` (or inherit from [`PydanticBase`](../reference/schemas.md#fastapi_toolsets.schemas.PydanticBase)) so it can be built from SQLAlchemy model instances.

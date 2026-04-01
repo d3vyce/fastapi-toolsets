@@ -2,7 +2,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from fastapi_toolsets.crud import OrderByClause
 from fastapi_toolsets.schemas import (
     CursorPaginatedResponse,
     OffsetPaginatedResponse,
@@ -22,21 +21,18 @@ async def list_articles_offset(
     session: SessionDep,
     params: Annotated[
         dict,
-        Depends(ArticleCrud.offset_params(default_page_size=20, max_page_size=100)),
+        Depends(
+            ArticleCrud.offset_paginate_params(
+                default_page_size=20,
+                max_page_size=100,
+                default_order_field=Article.created_at,
+            )
+        ),
     ],
-    filter_by: Annotated[dict[str, list[str]], Depends(ArticleCrud.filter_params())],
-    order_by: Annotated[
-        OrderByClause | None,
-        Depends(ArticleCrud.order_params(default_field=Article.created_at)),
-    ],
-    search: str | None = None,
 ) -> OffsetPaginatedResponse[ArticleRead]:
     return await ArticleCrud.offset_paginate(
         session=session,
         **params,
-        search=search,
-        filter_by=filter_by or None,
-        order_by=order_by,
         schema=ArticleRead,
     )
 
@@ -46,21 +42,18 @@ async def list_articles_cursor(
     session: SessionDep,
     params: Annotated[
         dict,
-        Depends(ArticleCrud.cursor_params(default_page_size=20, max_page_size=100)),
+        Depends(
+            ArticleCrud.cursor_paginate_params(
+                default_page_size=20,
+                max_page_size=100,
+                default_order_field=Article.created_at,
+            )
+        ),
     ],
-    filter_by: Annotated[dict[str, list[str]], Depends(ArticleCrud.filter_params())],
-    order_by: Annotated[
-        OrderByClause | None,
-        Depends(ArticleCrud.order_params(default_field=Article.created_at)),
-    ],
-    search: str | None = None,
 ) -> CursorPaginatedResponse[ArticleRead]:
     return await ArticleCrud.cursor_paginate(
         session=session,
         **params,
-        search=search,
-        filter_by=filter_by or None,
-        order_by=order_by,
         schema=ArticleRead,
     )
 
@@ -70,20 +63,17 @@ async def list_articles(
     session: SessionDep,
     params: Annotated[
         dict,
-        Depends(ArticleCrud.paginate_params(default_page_size=20, max_page_size=100)),
+        Depends(
+            ArticleCrud.paginate_params(
+                default_page_size=20,
+                max_page_size=100,
+                default_order_field=Article.created_at,
+            )
+        ),
     ],
-    filter_by: Annotated[dict[str, list[str]], Depends(ArticleCrud.filter_params())],
-    order_by: Annotated[
-        OrderByClause | None,
-        Depends(ArticleCrud.order_params(default_field=Article.created_at)),
-    ],
-    search: str | None = None,
 ) -> PaginatedResponse[ArticleRead]:
     return await ArticleCrud.paginate(
         session,
         **params,
-        search=search,
-        filter_by=filter_by or None,
-        order_by=order_by,
         schema=ArticleRead,
     )

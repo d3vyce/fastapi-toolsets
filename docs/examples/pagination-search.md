@@ -43,16 +43,16 @@ Declare `searchable_fields`, `facet_fields`, and `order_fields` once on [`CrudFa
 
 ## Routes
 
-```python title="routes.py:1:17"
---8<-- "docs_src/examples/pagination_search/routes.py:1:17"
+```python title="routes.py:1:16"
+--8<-- "docs_src/examples/pagination_search/routes.py:1:16"
 ```
 
 ### Offset pagination
 
 Best for admin panels or any UI that needs a total item count and numbered pages.
 
-```python title="routes.py:20:40"
---8<-- "docs_src/examples/pagination_search/routes.py:20:40"
+```python title="routes.py:19:37"
+--8<-- "docs_src/examples/pagination_search/routes.py:19:37"
 ```
 
 **Example request**
@@ -92,8 +92,8 @@ To skip the `COUNT(*)` query for better performance on large tables, pass `inclu
 
 Best for feeds, infinite scroll, or any high-throughput API where offset performance degrades.
 
-```python title="routes.py:43:63"
---8<-- "docs_src/examples/pagination_search/routes.py:43:63"
+```python title="routes.py:40:58"
+--8<-- "docs_src/examples/pagination_search/routes.py:40:58"
 ```
 
 **Example request**
@@ -132,8 +132,8 @@ Pass `next_cursor` as the `cursor` query parameter on the next request to advanc
 
 [`paginate()`](../module/crud.md#unified-paginate--both-strategies-on-one-endpoint) lets a single endpoint support both strategies via a `pagination_type` query parameter. The `pagination_type` field in the response acts as a discriminator for frontend tooling.
 
-```python title="routes.py:66:90"
---8<-- "docs_src/examples/pagination_search/routes.py:66:90"
+```python title="routes.py:61:79"
+--8<-- "docs_src/examples/pagination_search/routes.py:61:79"
 ```
 
 **Offset request** (default)
