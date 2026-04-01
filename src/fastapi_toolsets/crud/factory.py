@@ -264,105 +264,6 @@ class AsyncCrud(Generic[ModelType]):
         )
 
     @classmethod
-    def filter_params(
-        cls: type[Self],
-        *,
-        facet_fields: Sequence[FacetFieldType] | None = None,
-    ) -> Callable[..., Awaitable[dict[str, list[str]]]]:
-        """Return a FastAPI dependency that collects facet filter values from query parameters.
-
-        Args:
-            facet_fields: Override the facet fields for this dependency. Falls back to the
-                class-level ``facet_fields`` if not provided.
-
-        Returns:
-            An async dependency function named ``{Model}FilterParams`` that resolves to a
-            ``dict[str, list[str]]`` containing only the keys that were supplied in the
-            request (absent/``None`` parameters are excluded).
-
-        Raises:
-            ValueError: If no facet fields are configured on this CRUD class and none are
-                provided via ``facet_fields``.
-        """
-        fields = cls._resolve_facet_fields(facet_fields)
-        if not fields:
-            raise ValueError(
-                f"{cls.__name__} has no facet_fields configured. "
-                "Pass facet_fields= or set them on CrudFactory."
-            )
-        keys = facet_keys(fields)
-
-        async def dependency(**kwargs: Any) -> dict[str, list[str]]:
-            return {k: v for k, v in kwargs.items() if v is not None}
-
-        dependency.__name__ = f"{cls.model.__name__}FilterParams"
-        dependency.__signature__ = inspect.Signature(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
-            parameters=[
-                inspect.Parameter(
-                    k,
-                    inspect.Parameter.KEYWORD_ONLY,
-                    annotation=list[str] | None,
-                    default=Query(default=None),
-                )
-                for k in keys
-            ]
-        )
-
-        return dependency
-
-    @classmethod
-    def search_params(
-        cls: type[Self],
-        *,
-        search_fields: Sequence[SearchFieldType] | None = None,
-    ) -> Callable[..., Awaitable[dict[str, Any]]]:
-        """Return a FastAPI dependency that collects search params from query parameters.
-
-        Args:
-            search_fields: Override search fields for this dependency.
-                Falls back to the class-level ``searchable_fields``.
-
-        Returns:
-            An async dependency function named ``{Model}SearchParams`` that
-            resolves to a ``dict`` with ``search`` and ``search_column`` keys
-            (absent keys are excluded).
-        """
-        fields = search_fields if search_fields is not None else cls.searchable_fields
-        if not fields:
-            raise ValueError(
-                f"{cls.__name__} has no searchable_fields configured. "
-                "Pass search_fields= or set them on CrudFactory."
-            )
-        keys = search_field_keys(fields)
-
-        async def dependency(**kwargs: Any) -> dict[str, Any]:
-            return {k: v for k, v in kwargs.items() if v is not None}
-
-        dependency.__name__ = f"{cls.model.__name__}SearchParams"
-        dependency.__signature__ = inspect.Signature(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
-            parameters=[
-                inspect.Parameter(
-                    "search",
-                    inspect.Parameter.KEYWORD_ONLY,
-                    annotation=str | None,
-                    default=Query(default=None, description="Search query string"),
-                ),
-                inspect.Parameter(
-                    "search_column",
-                    inspect.Parameter.KEYWORD_ONLY,
-                    annotation=str | None,
-                    default=Query(
-                        default=None,
-                        description="Restrict search to a single column",
-                        enum=keys,
-                    ),
-                ),
-            ]
-        )
-
-        return dependency
-
-    @classmethod
     def _resolve_search_columns(
         cls: type[Self],
         search_fields: Sequence[SearchFieldType] | None,
@@ -374,71 +275,274 @@ class AsyncCrud(Generic[ModelType]):
         return search_field_keys(fields)
 
     @classmethod
-    def offset_params(
+    def _build_paginate_params(
+        cls: type[Self],
+        *,
+        pagination_params: list[inspect.Parameter],
+        pagination_fixed: dict[str, Any],
+        dep_name: str,
+        search: bool,
+        filter: bool,
+        order: bool,
+        search_fields: Sequence[SearchFieldType] | None,
+        facet_fields: Sequence[FacetFieldType] | None,
+        order_fields: Sequence[QueryableAttribute[Any]] | None,
+        default_order_field: QueryableAttribute[Any] | None,
+        default_order: Literal["asc", "desc"],
+    ) -> Callable[..., Awaitable[dict[str, Any]]]:
+        """Build a consolidated FastAPI dependency that merges pagination, search, filter, and order params."""
+        all_params: list[inspect.Parameter] = list(pagination_params)
+        pagination_param_names = tuple(p.name for p in pagination_params)
+        reserved_names: set[str] = set(pagination_param_names)
+
+        search_keys: list[str] | None = None
+        if search:
+            search_keys = cls._resolve_search_columns(search_fields)
+            if search_keys:
+                all_params.extend(
+                    [
+                        inspect.Parameter(
+                            "search",
+                            inspect.Parameter.KEYWORD_ONLY,
+                            annotation=str | None,
+                            default=Query(
+                                default=None, description="Search query string"
+                            ),
+                        ),
+                        inspect.Parameter(
+                            "search_column",
+                            inspect.Parameter.KEYWORD_ONLY,
+                            annotation=str | None,
+                            default=Query(
+                                default=None,
+                                description="Restrict search to a single column",
+                                enum=search_keys,
+                            ),
+                        ),
+                    ]
+                )
+                reserved_names.update({"search", "search_column"})
+
+        filter_keys: list[str] | None = None
+        if filter:
+            resolved_facets = cls._resolve_facet_fields(facet_fields)
+            if resolved_facets:
+                filter_keys = facet_keys(resolved_facets)
+                for k in filter_keys:
+                    if k in reserved_names:
+                        raise ValueError(
+                            f"Facet field key {k!r} conflicts with a reserved "
+                            f"parameter name. Reserved names: {sorted(reserved_names)}"
+                        )
+                all_params.extend(
+                    inspect.Parameter(
+                        k,
+                        inspect.Parameter.KEYWORD_ONLY,
+                        annotation=list[str] | None,
+                        default=Query(default=None),
+                    )
+                    for k in filter_keys
+                )
+                reserved_names.update(filter_keys)
+
+        order_field_map: dict[str, QueryableAttribute[Any]] | None = None
+        order_valid_keys: list[str] | None = None
+        if order:
+            resolved_order = (
+                order_fields if order_fields is not None else cls.order_fields
+            )
+            if resolved_order:
+                order_field_map = {f.key: f for f in resolved_order}
+                order_valid_keys = sorted(order_field_map.keys())
+                all_params.extend(
+                    [
+                        inspect.Parameter(
+                            "order_by",
+                            inspect.Parameter.KEYWORD_ONLY,
+                            annotation=str | None,
+                            default=Query(
+                                None,
+                                description=f"Field to order by. Valid values: {order_valid_keys}",
+                                enum=order_valid_keys,
+                            ),
+                        ),
+                        inspect.Parameter(
+                            "order",
+                            inspect.Parameter.KEYWORD_ONLY,
+                            annotation=Literal["asc", "desc"],
+                            default=Query(default_order, description="Sort direction"),
+                        ),
+                    ]
+                )
+
+        async def dependency(**kwargs: Any) -> dict[str, Any]:
+            result: dict[str, Any] = dict(pagination_fixed)
+            for name in pagination_param_names:
+                result[name] = kwargs[name]
+
+            if search_keys is not None:
+                search_val = kwargs.get("search")
+                if search_val is not None:
+                    result["search"] = search_val
+                search_col_val = kwargs.get("search_column")
+                if search_col_val is not None:
+                    result["search_column"] = search_col_val
+
+            if filter_keys is not None:
+                filter_by = {
+                    k: kwargs[k] for k in filter_keys if kwargs.get(k) is not None
+                }
+                result["filter_by"] = filter_by or None
+
+            if order_field_map is not None:
+                order_by_val = kwargs.get("order_by")
+                order_dir = kwargs.get("order", default_order)
+                if order_by_val is None:
+                    field = default_order_field
+                elif order_by_val not in order_field_map:
+                    raise InvalidOrderFieldError(order_by_val, order_valid_keys or [])
+                else:
+                    field = order_field_map[order_by_val]
+                if field is not None:
+                    result["order_by"] = (
+                        field.asc() if order_dir == "asc" else field.desc()
+                    )
+                else:
+                    result["order_by"] = None
+
+            return result
+
+        dependency.__name__ = dep_name
+        dependency.__signature__ = inspect.Signature(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
+            parameters=all_params,
+        )
+        return dependency
+
+    @classmethod
+    def offset_paginate_params(
         cls: type[Self],
         *,
         default_page_size: int = 20,
         max_page_size: int = 100,
         include_total: bool = True,
+        search: bool = True,
+        filter: bool = True,
+        order: bool = True,
+        search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        default_order_field: QueryableAttribute[Any] | None = None,
+        default_order: Literal["asc", "desc"] = "asc",
     ) -> Callable[..., Awaitable[dict[str, Any]]]:
-        """Return a FastAPI dependency that collects offset pagination params from query params.
+        """Return a FastAPI dependency that collects all params for :meth:`offset_paginate`.
 
         Args:
-            default_page_size: Default value for the ``items_per_page`` query parameter.
-            max_page_size: Maximum allowed value for ``items_per_page`` (enforced via
-                ``le`` on the ``Query``).
-            include_total: Server-side flag forwarded as-is to ``include_total`` in
-                :meth:`offset_paginate`. Not exposed as a query parameter.
+            default_page_size: Default ``items_per_page`` value.
+            max_page_size: Maximum ``items_per_page`` value.
+            include_total: Whether to include total count (not a query param).
+            search: Enable search query parameters.
+            filter: Enable facet filter query parameters.
+            order: Enable order query parameters.
+            search_fields: Override searchable fields.
+            facet_fields: Override facet fields.
+            order_fields: Override order fields.
+            default_order_field: Default field to order by when ``order_by`` is absent.
+            default_order: Default sort direction.
 
         Returns:
-            An async dependency that resolves to a dict with ``page``,
-            ``items_per_page``, and ``include_total`` keys, ready to be
-            unpacked into :meth:`offset_paginate`.
+            An async dependency that resolves to a dict ready to be unpacked
+            into :meth:`offset_paginate`.
         """
-
-        async def dependency(
-            page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-            items_per_page: int = _page_size_query(default_page_size, max_page_size),
-        ) -> dict[str, Any]:
-            return {
-                "page": page,
-                "items_per_page": items_per_page,
-                "include_total": include_total,
-            }
-
-        dependency.__name__ = f"{cls.model.__name__}OffsetParams"
-        return dependency
+        pagination_params = [
+            inspect.Parameter(
+                "page",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=int,
+                default=Query(1, ge=1, description="Page number (1-indexed)"),
+            ),
+            inspect.Parameter(
+                "items_per_page",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=int,
+                default=_page_size_query(default_page_size, max_page_size),
+            ),
+        ]
+        return cls._build_paginate_params(
+            pagination_params=pagination_params,
+            pagination_fixed={"include_total": include_total},
+            dep_name=f"{cls.model.__name__}OffsetPaginateParams",
+            search=search,
+            filter=filter,
+            order=order,
+            search_fields=search_fields,
+            facet_fields=facet_fields,
+            order_fields=order_fields,
+            default_order_field=default_order_field,
+            default_order=default_order,
+        )
 
     @classmethod
-    def cursor_params(
+    def cursor_paginate_params(
         cls: type[Self],
         *,
         default_page_size: int = 20,
         max_page_size: int = 100,
+        search: bool = True,
+        filter: bool = True,
+        order: bool = True,
+        search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        default_order_field: QueryableAttribute[Any] | None = None,
+        default_order: Literal["asc", "desc"] = "asc",
     ) -> Callable[..., Awaitable[dict[str, Any]]]:
-        """Return a FastAPI dependency that collects cursor pagination params from query params.
+        """Return a FastAPI dependency that collects all params for :meth:`cursor_paginate`.
 
         Args:
-            default_page_size: Default value for the ``items_per_page`` query parameter.
-            max_page_size: Maximum allowed value for ``items_per_page`` (enforced via
-                ``le`` on the ``Query``).
+            default_page_size: Default ``items_per_page`` value.
+            max_page_size: Maximum ``items_per_page`` value.
+            search: Enable search query parameters.
+            filter: Enable facet filter query parameters.
+            order: Enable order query parameters.
+            search_fields: Override searchable fields.
+            facet_fields: Override facet fields.
+            order_fields: Override order fields.
+            default_order_field: Default field to order by when ``order_by`` is absent.
+            default_order: Default sort direction.
 
         Returns:
-            An async dependency that resolves to a dict with ``cursor`` and
-            ``items_per_page`` keys, ready to be unpacked into
-            :meth:`cursor_paginate`.
+            An async dependency that resolves to a dict ready to be unpacked
+            into :meth:`cursor_paginate`.
         """
-
-        async def dependency(
-            cursor: str | None = Query(
-                None, description="Cursor token from a previous response"
+        pagination_params = [
+            inspect.Parameter(
+                "cursor",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=str | None,
+                default=Query(
+                    None, description="Cursor token from a previous response"
+                ),
             ),
-            items_per_page: int = _page_size_query(default_page_size, max_page_size),
-        ) -> dict[str, Any]:
-            return {"cursor": cursor, "items_per_page": items_per_page}
-
-        dependency.__name__ = f"{cls.model.__name__}CursorParams"
-        return dependency
+            inspect.Parameter(
+                "items_per_page",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=int,
+                default=_page_size_query(default_page_size, max_page_size),
+            ),
+        ]
+        return cls._build_paginate_params(
+            pagination_params=pagination_params,
+            pagination_fixed={},
+            dep_name=f"{cls.model.__name__}CursorPaginateParams",
+            search=search,
+            filter=filter,
+            order=order,
+            search_fields=search_fields,
+            facet_fields=facet_fields,
+            order_fields=order_fields,
+            default_order_field=default_order_field,
+            default_order=default_order,
+        )
 
     @classmethod
     def paginate_params(
@@ -448,102 +552,81 @@ class AsyncCrud(Generic[ModelType]):
         max_page_size: int = 100,
         default_pagination_type: PaginationType = PaginationType.OFFSET,
         include_total: bool = True,
-    ) -> Callable[..., Awaitable[dict[str, Any]]]:
-        """Return a FastAPI dependency that collects all pagination params from query params.
-
-        Args:
-            default_page_size: Default value for the ``items_per_page`` query parameter.
-            max_page_size: Maximum allowed value for ``items_per_page`` (enforced via
-                ``le`` on the ``Query``).
-            default_pagination_type: Default pagination strategy.
-            include_total: Server-side flag forwarded as-is to ``include_total`` in
-                :meth:`paginate`. Not exposed as a query parameter.
-
-        Returns:
-            An async dependency that resolves to a dict with ``pagination_type``,
-            ``page``, ``cursor``, ``items_per_page``, and ``include_total`` keys,
-            ready to be unpacked into :meth:`paginate`.
-        """
-
-        async def dependency(
-            pagination_type: PaginationType = Query(
-                default_pagination_type, description="Pagination strategy"
-            ),
-            page: int = Query(
-                1, ge=1, description="Page number (1-indexed, offset only)"
-            ),
-            cursor: str | None = Query(
-                None, description="Cursor token from a previous response (cursor only)"
-            ),
-            items_per_page: int = _page_size_query(default_page_size, max_page_size),
-        ) -> dict[str, Any]:
-            return {
-                "pagination_type": pagination_type,
-                "page": page,
-                "cursor": cursor,
-                "items_per_page": items_per_page,
-                "include_total": include_total,
-            }
-
-        dependency.__name__ = f"{cls.model.__name__}PaginateParams"
-        return dependency
-
-    @classmethod
-    def order_params(
-        cls: type[Self],
-        *,
+        search: bool = True,
+        filter: bool = True,
+        order: bool = True,
+        search_fields: Sequence[SearchFieldType] | None = None,
+        facet_fields: Sequence[FacetFieldType] | None = None,
         order_fields: Sequence[QueryableAttribute[Any]] | None = None,
-        default_field: QueryableAttribute[Any] | None = None,
+        default_order_field: QueryableAttribute[Any] | None = None,
         default_order: Literal["asc", "desc"] = "asc",
-    ) -> Callable[..., Awaitable[OrderByClause | None]]:
-        """Return a FastAPI dependency that resolves order query params into an order_by clause.
+    ) -> Callable[..., Awaitable[dict[str, Any]]]:
+        """Return a FastAPI dependency that collects all params for :meth:`paginate`.
 
         Args:
-            order_fields: Override the allowed order fields. Falls back to the class-level
-                ``order_fields`` if not provided.
-            default_field: Field to order by when ``order_by`` query param is absent.
-                If ``None`` and no ``order_by`` is provided, no ordering is applied.
-            default_order: Default order direction when ``order`` is absent
-                (``"asc"`` or ``"desc"``).
+            default_page_size: Default ``items_per_page`` value.
+            max_page_size: Maximum ``items_per_page`` value.
+            default_pagination_type: Default pagination strategy.
+            include_total: Whether to include total count (not a query param).
+            search: Enable search query parameters.
+            filter: Enable facet filter query parameters.
+            order: Enable order query parameters.
+            search_fields: Override searchable fields.
+            facet_fields: Override facet fields.
+            order_fields: Override order fields.
+            default_order_field: Default field to order by when ``order_by`` is absent.
+            default_order: Default sort direction.
 
         Returns:
-            An async dependency function named ``{Model}OrderParams`` that resolves to an
-            ``OrderByClause`` (or ``None``). Pass it to ``Depends()`` in your route.
-
-        Raises:
-            ValueError: If no order fields are configured on this CRUD class and none are
-                provided via ``order_fields``.
-            InvalidOrderFieldError: When the request provides an unknown ``order_by`` value.
+            An async dependency that resolves to a dict ready to be unpacked
+            into :meth:`paginate`.
         """
-        fields = order_fields if order_fields is not None else cls.order_fields
-        if not fields:
-            raise ValueError(
-                f"{cls.__name__} has no order_fields configured. "
-                "Pass order_fields= or set them on CrudFactory."
-            )
-        field_map: dict[str, QueryableAttribute[Any]] = {f.key: f for f in fields}
-        valid_keys = sorted(field_map.keys())
-
-        async def dependency(
-            order_by: str | None = Query(
-                None, description=f"Field to order by. Valid values: {valid_keys}"
+        pagination_params = [
+            inspect.Parameter(
+                "pagination_type",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=PaginationType,
+                default=Query(
+                    default_pagination_type, description="Pagination strategy"
+                ),
             ),
-            order: Literal["asc", "desc"] = Query(
-                default_order, description="Sort direction"
+            inspect.Parameter(
+                "page",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=int,
+                default=Query(
+                    1, ge=1, description="Page number (1-indexed, offset only)"
+                ),
             ),
-        ) -> OrderByClause | None:
-            if order_by is None:
-                if default_field is None:
-                    return None
-                field = default_field
-            elif order_by not in field_map:
-                raise InvalidOrderFieldError(order_by, valid_keys)
-            else:
-                field = field_map[order_by]
-            return field.asc() if order == "asc" else field.desc()
-
-        dependency.__name__ = f"{cls.model.__name__}OrderParams"
-        return dependency
+            inspect.Parameter(
+                "cursor",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=str | None,
+                default=Query(
+                    None,
+                    description="Cursor token from a previous response (cursor only)",
+                ),
+            ),
+            inspect.Parameter(
+                "items_per_page",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=int,
+                default=_page_size_query(default_page_size, max_page_size),
+            ),
+        ]
+        return cls._build_paginate_params(
+            pagination_params=pagination_params,
+            pagination_fixed={"include_total": include_total},
+            dep_name=f"{cls.model.__name__}PaginateParams",
+            search=search,
+            filter=filter,
+            order=order,
+            search_fields=search_fields,
+            facet_fields=facet_fields,
+            order_fields=order_fields,
+            default_order_field=default_order_field,
+            default_order=default_order,
+        )
 
     @overload
     @classmethod
@@ -1568,7 +1651,7 @@ def CrudFactory(
             responses. Supports direct columns (``User.status``) and relationship tuples
             (``(User.role, Role.name)``). Can be overridden per call.
         order_fields: Optional list of model attributes that callers are allowed to order by
-            via ``order_params()``. Can be overridden per call.
+            via ``offset_paginate_params()``. Can be overridden per call.
         m2m_fields: Optional mapping for many-to-many relationships.
             Maps schema field names (containing lists of IDs) to
             SQLAlchemy relationship attributes.

@@ -1031,61 +1031,64 @@ class TestFilterBy:
         assert "JSON" in exc_info.value.col_type
 
 
-class TestFilterParamsSchema:
-    """Tests for AsyncCrud.filter_params()."""
+class TestFilterParamsViaConsolidated:
+    """Tests for filter params via consolidated offset_paginate_params()."""
 
     def test_generates_fields_from_facet_fields(self):
         """Returned dependency has one keyword param per facet field."""
-        import inspect
-
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        dep = UserFacetCrud.filter_params()
+        dep = UserFacetCrud.offset_paginate_params(search=False, order=False)
 
         param_names = set(inspect.signature(dep).parameters)
-        assert param_names == {"username", "email"}
+        assert "username" in param_names
+        assert "email" in param_names
 
     def test_relationship_facet_uses_full_chain_key(self):
         """Relationship tuple uses the full chain joined by __ as the key."""
-        import inspect
-
         UserRoleCrud = CrudFactory(User, facet_fields=[(User.role, Role.name)])
-        dep = UserRoleCrud.filter_params()
+        dep = UserRoleCrud.offset_paginate_params(search=False, order=False)
 
         param_names = set(inspect.signature(dep).parameters)
-        assert param_names == {"role__name"}
+        assert "role__name" in param_names
 
-    def test_raises_when_no_facet_fields(self):
-        """ValueError raised when no facet_fields are configured or provided."""
-        with pytest.raises(ValueError, match="no facet_fields"):
-            UserCrud.filter_params()
+    def test_filter_disabled_no_facet_params(self):
+        """When filter=False, no facet params are generated."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
+        dep = UserFacetCrud.offset_paginate_params(
+            search=False, filter=False, order=False
+        )
+
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"page", "items_per_page"}
 
     def test_facet_fields_override(self):
         """facet_fields= parameter overrides the class-level default."""
-        import inspect
-
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        dep = UserFacetCrud.filter_params(facet_fields=[User.email])
+        dep = UserFacetCrud.offset_paginate_params(
+            search=False, order=False, facet_fields=[User.email]
+        )
 
         param_names = set(inspect.signature(dep).parameters)
-        assert param_names == {"email"}
+        assert "email" in param_names
+        assert "username" not in param_names
 
     @pytest.mark.anyio
-    async def test_awaiting_dep_returns_dict_with_values(self):
-        """Awaiting the dependency returns a dict with only the supplied keys."""
+    async def test_awaiting_dep_returns_filter_by_with_values(self):
+        """Awaiting the dependency returns filter_by dict with only supplied keys."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username, User.email])
-        dep = UserFacetCrud.filter_params()
+        dep = UserFacetCrud.offset_paginate_params(search=False, order=False)
 
-        result = await dep(username=["alice"])
-        assert result == {"username": ["alice"]}
+        result = await dep(page=1, items_per_page=20, username=["alice"], email=None)
+        assert result["filter_by"] == {"username": ["alice"]}
 
     @pytest.mark.anyio
     async def test_multi_value_list_field(self):
         """Multiple values are accepted as a list."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
-        dep = UserFacetCrud.filter_params()
+        dep = UserFacetCrud.offset_paginate_params(search=False, order=False)
 
-        result = await dep(username=["alice", "bob"])
-        assert result == {"username": ["alice", "bob"]}
+        result = await dep(page=1, items_per_page=20, username=["alice", "bob"])
+        assert result["filter_by"] == {"username": ["alice", "bob"]}
 
     def test_disambiguates_duplicate_column_keys(self):
         """Two relationship tuples sharing a terminal column key get prefixed names."""
@@ -1130,15 +1133,15 @@ class TestFilterParamsSchema:
         assert keys == ["username", "email"]
 
     def test_dependency_name_includes_model_name(self):
-        """Returned dependency is named {Model}FilterParams."""
+        """Returned dependency is named {Model}OffsetPaginateParams."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
-        dep = UserFacetCrud.filter_params()
+        dep = UserFacetCrud.offset_paginate_params(search=False, order=False)
 
-        assert dep.__name__ == "UserFilterParams"  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
+        assert dep.__name__ == "UserOffsetPaginateParams"  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
 
     @pytest.mark.anyio
     async def test_integration_with_offset_paginate(self, db_session: AsyncSession):
-        """Dependency result can be passed directly to offset_paginate via filter_by."""
+        """Dependency result can be unpacked directly into offset_paginate."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
         await UserCrud.create(
             db_session, UserCreate(username="alice", email="a@test.com")
@@ -1147,10 +1150,10 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        dep = UserFacetCrud.filter_params()
-        f = await dep(username=["alice"])
+        dep = UserFacetCrud.offset_paginate_params(search=False, order=False)
+        params = await dep(page=1, items_per_page=20, username=["alice"])
         result = await UserFacetCrud.offset_paginate(
-            db_session, filter_by=f, schema=UserRead
+            db_session, **params, schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -1159,7 +1162,7 @@ class TestFilterParamsSchema:
 
     @pytest.mark.anyio
     async def test_dep_result_passed_to_cursor_paginate(self, db_session: AsyncSession):
-        """Dependency result can be passed directly to cursor_paginate via filter_by."""
+        """Dependency result can be unpacked directly into cursor_paginate."""
         UserFacetCursorCrud = CrudFactory(
             User, cursor_column=User.id, facet_fields=[User.username]
         )
@@ -1170,10 +1173,10 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        dep = UserFacetCursorCrud.filter_params()
-        f = await dep(username=["alice"])
+        dep = UserFacetCursorCrud.cursor_paginate_params(search=False, order=False)
+        params = await dep(cursor=None, items_per_page=20, username=["alice"])
         result = await UserFacetCursorCrud.cursor_paginate(
-            db_session, filter_by=f, schema=UserRead
+            db_session, **params, schema=UserRead
         )
 
         assert len(result.data) == 1
@@ -1181,7 +1184,7 @@ class TestFilterParamsSchema:
 
     @pytest.mark.anyio
     async def test_all_none_dep_result_passes_no_filter(self, db_session: AsyncSession):
-        """All-None dependency result results in no filter (returns all rows)."""
+        """All-None dependency result results in filter_by=None (returns all rows)."""
         UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
         await UserCrud.create(
             db_session, UserCreate(username="alice", email="a@test.com")
@@ -1190,53 +1193,70 @@ class TestFilterParamsSchema:
             db_session, UserCreate(username="bob", email="b@test.com")
         )
 
-        dep = UserFacetCrud.filter_params()
-        f = await dep()  # all fields None
+        dep = UserFacetCrud.offset_paginate_params(search=False, order=False)
+        params = await dep(page=1, items_per_page=20)  # all facet fields None
+        assert params["filter_by"] is None
         result = await UserFacetCrud.offset_paginate(
-            db_session, filter_by=f, schema=UserRead
+            db_session, **params, schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
 
+    def test_facet_key_collision_raises(self):
+        """ValueError raised when a facet key clashes with a reserved param name."""
+        # Create a mock facet field whose key would be "search"
+        from unittest.mock import MagicMock
 
-class TestSearchParamsSchema:
-    """Tests for AsyncCrud.search_params()."""
+        mock_field = MagicMock()
+        mock_field.key = "search"
+        mock_field.property.columns = [MagicMock()]
+
+        UserFacetCrud = CrudFactory(User, facet_fields=[mock_field])
+        with pytest.raises(ValueError, match="conflicts with a reserved"):
+            UserFacetCrud.offset_paginate_params(search=True, order=False)
+
+
+class TestSearchParamsViaConsolidated:
+    """Tests for search params via consolidated offset_paginate_params()."""
 
     def test_generates_search_and_search_column_params(self):
         """Returned dependency has search and search_column query params."""
         UserSearchCrud = CrudFactory(
             User, searchable_fields=[User.username, User.email]
         )
-        dep = UserSearchCrud.search_params()
+        dep = UserSearchCrud.offset_paginate_params(filter=False, order=False)
 
         param_names = set(inspect.signature(dep).parameters)
-        assert param_names == {"search", "search_column"}
+        assert "search" in param_names
+        assert "search_column" in param_names
 
-    def test_dependency_name_includes_model_name(self):
-        """Dependency function is named {Model}SearchParams."""
+    def test_search_disabled_no_search_params(self):
+        """When search=False, no search params are generated."""
         UserSearchCrud = CrudFactory(
             User, searchable_fields=[User.username, User.email]
         )
-        dep = UserSearchCrud.search_params()
-        assert dep.__name__ == "UserSearchParams"  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
+        dep = UserSearchCrud.offset_paginate_params(
+            search=False, filter=False, order=False
+        )
 
-    def test_raises_when_no_searchable_fields(self):
-        """ValueError raised when overriding with empty search_fields."""
-        UserSearchCrud = CrudFactory(User, searchable_fields=[User.username])
-        with pytest.raises(ValueError, match="no searchable_fields"):
-            UserSearchCrud.search_params(search_fields=[])
+        param_names = set(inspect.signature(dep).parameters)
+        assert "search" not in param_names
+        assert "search_column" not in param_names
 
     @pytest.mark.anyio
     async def test_awaiting_dep_with_search_only(self):
-        """Awaiting the dependency with only search returns a dict with search key."""
+        """Awaiting the dependency with only search returns search in dict."""
         UserSearchCrud = CrudFactory(
             User, searchable_fields=[User.username, User.email]
         )
-        dep = UserSearchCrud.search_params()
+        dep = UserSearchCrud.offset_paginate_params(filter=False, order=False)
 
-        result = await dep(search="alice")
-        assert result == {"search": "alice"}
+        result = await dep(
+            page=1, items_per_page=20, search="alice", search_column=None
+        )
+        assert result["search"] == "alice"
+        assert "search_column" not in result
 
     @pytest.mark.anyio
     async def test_awaiting_dep_with_search_and_column(self):
@@ -1244,28 +1264,32 @@ class TestSearchParamsSchema:
         UserSearchCrud = CrudFactory(
             User, searchable_fields=[User.username, User.email]
         )
-        dep = UserSearchCrud.search_params()
+        dep = UserSearchCrud.offset_paginate_params(filter=False, order=False)
 
-        result = await dep(search="alice", search_column="username")
-        assert result == {"search": "alice", "search_column": "username"}
+        result = await dep(
+            page=1, items_per_page=20, search="alice", search_column="username"
+        )
+        assert result["search"] == "alice"
+        assert result["search_column"] == "username"
 
     @pytest.mark.anyio
-    async def test_awaiting_dep_with_no_values(self):
-        """Awaiting the dependency with no values returns an empty dict."""
+    async def test_awaiting_dep_with_no_search_values(self):
+        """Awaiting the dependency with no search values omits search keys."""
         UserSearchCrud = CrudFactory(
             User, searchable_fields=[User.username, User.email]
         )
-        dep = UserSearchCrud.search_params()
+        dep = UserSearchCrud.offset_paginate_params(filter=False, order=False)
 
-        result = await dep()
-        assert result == {}
+        result = await dep(page=1, items_per_page=20, search=None, search_column=None)
+        assert "search" not in result
+        assert "search_column" not in result
 
     def test_relationship_search_field_key(self):
         """Relationship tuple search fields use __ joined keys."""
         UserRelSearchCrud = CrudFactory(
             User, searchable_fields=[User.username, (User.role, Role.name)]
         )
-        dep = UserRelSearchCrud.search_params()
+        dep = UserRelSearchCrud.offset_paginate_params(filter=False, order=False)
 
         params = inspect.signature(dep).parameters
         search_column_param = params["search_column"]
@@ -1402,36 +1426,36 @@ class TestSearchColumns:
         assert result.data[0].username == "bob"
 
 
-class TestOrderParamsSchema:
-    """Tests for AsyncCrud.order_params()."""
+class TestOrderParamsViaConsolidated:
+    """Tests for order params via consolidated offset_paginate_params()."""
 
     def test_generates_order_by_and_order_params(self):
         """Returned dependency has order_by and order query params."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username, User.email])
-        dep = UserOrderCrud.order_params()
+        dep = UserOrderCrud.offset_paginate_params(search=False, filter=False)
 
         param_names = set(inspect.signature(dep).parameters)
-        assert param_names == {"order_by", "order"}
+        assert "order_by" in param_names
+        assert "order" in param_names
 
-    def test_dependency_name_includes_model_name(self):
-        """Dependency function is named after the model."""
+    def test_order_disabled_no_order_params(self):
+        """When order=False, no order params are generated."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
-        dep = UserOrderCrud.order_params()
-        assert getattr(dep, "__name__") == "UserOrderParams"
+        dep = UserOrderCrud.offset_paginate_params(
+            search=False, filter=False, order=False
+        )
 
-    def test_raises_when_no_order_fields(self):
-        """ValueError raised when no order_fields are configured or provided."""
-        with pytest.raises(ValueError, match="no order_fields"):
-            UserCrud.order_params()
+        param_names = set(inspect.signature(dep).parameters)
+        assert "order_by" not in param_names
+        assert "order" not in param_names
 
     def test_order_fields_override(self):
         """order_fields= parameter overrides the class-level default."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username, User.email])
-        dep = UserOrderCrud.order_params(order_fields=[User.email])
+        dep = UserOrderCrud.offset_paginate_params(
+            search=False, filter=False, order_fields=[User.email]
+        )
 
-        param_names = set(inspect.signature(dep).parameters)
-        assert "order_by" in param_names
-        # description should only mention email, not username
         sig = inspect.signature(dep)
         description = sig.parameters["order_by"].default.description
         assert "email" in description
@@ -1440,7 +1464,7 @@ class TestOrderParamsSchema:
     def test_order_by_description_lists_valid_fields(self):
         """order_by query param description mentions each allowed field."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username, User.email])
-        dep = UserOrderCrud.order_params()
+        dep = UserOrderCrud.offset_paginate_params(search=False, filter=False)
 
         sig = inspect.signature(dep)
         description = sig.parameters["order_by"].default.description
@@ -1450,8 +1474,12 @@ class TestOrderParamsSchema:
     def test_default_order_reflected_in_order_default(self):
         """default_order is used as the default value for order."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
-        dep_asc = UserOrderCrud.order_params(default_order="asc")
-        dep_desc = UserOrderCrud.order_params(default_order="desc")
+        dep_asc = UserOrderCrud.offset_paginate_params(
+            search=False, filter=False, default_order="asc"
+        )
+        dep_desc = UserOrderCrud.offset_paginate_params(
+            search=False, filter=False, default_order="desc"
+        )
 
         sig_asc = inspect.signature(dep_asc)
         sig_desc = inspect.signature(dep_desc)
@@ -1460,55 +1488,59 @@ class TestOrderParamsSchema:
 
     @pytest.mark.anyio
     async def test_no_order_by_no_default_returns_none(self):
-        """Returns None when order_by is absent and no default_field is set."""
+        """Returns order_by=None when order_by is absent and no default_order_field is set."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
-        dep = UserOrderCrud.order_params()
-        result = await dep(order_by=None, order="asc")
-        assert result is None
+        dep = UserOrderCrud.offset_paginate_params(search=False, filter=False)
+        result = await dep(page=1, items_per_page=20, order_by=None, order="asc")
+        assert result["order_by"] is None
 
     @pytest.mark.anyio
     async def test_no_order_by_with_default_field_returns_asc_expression(self):
-        """Returns default_field.asc() when order_by absent and order=asc."""
+        """Returns default_order_field.asc() when order_by absent and order=asc."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
-        dep = UserOrderCrud.order_params(default_field=User.username)
-        result = await dep(order_by=None, order="asc")
-        assert isinstance(result, UnaryExpression)
-        assert "ASC" in str(result)
+        dep = UserOrderCrud.offset_paginate_params(
+            search=False, filter=False, default_order_field=User.username
+        )
+        result = await dep(page=1, items_per_page=20, order_by=None, order="asc")
+        assert isinstance(result["order_by"], UnaryExpression)
+        assert "ASC" in str(result["order_by"])
 
     @pytest.mark.anyio
     async def test_no_order_by_with_default_field_returns_desc_expression(self):
-        """Returns default_field.desc() when order_by absent and order=desc."""
+        """Returns default_order_field.desc() when order_by absent and order=desc."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
-        dep = UserOrderCrud.order_params(default_field=User.username)
-        result = await dep(order_by=None, order="desc")
-        assert isinstance(result, UnaryExpression)
-        assert "DESC" in str(result)
+        dep = UserOrderCrud.offset_paginate_params(
+            search=False, filter=False, default_order_field=User.username
+        )
+        result = await dep(page=1, items_per_page=20, order_by=None, order="desc")
+        assert isinstance(result["order_by"], UnaryExpression)
+        assert "DESC" in str(result["order_by"])
 
     @pytest.mark.anyio
     async def test_valid_order_by_asc(self):
         """Returns field.asc() for a valid order_by with order=asc."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
-        dep = UserOrderCrud.order_params()
-        result = await dep(order_by="username", order="asc")
-        assert isinstance(result, UnaryExpression)
-        assert "ASC" in str(result)
+        dep = UserOrderCrud.offset_paginate_params(search=False, filter=False)
+        result = await dep(page=1, items_per_page=20, order_by="username", order="asc")
+        assert isinstance(result["order_by"], UnaryExpression)
+        assert "ASC" in str(result["order_by"])
 
     @pytest.mark.anyio
     async def test_valid_order_by_desc(self):
         """Returns field.desc() for a valid order_by with order=desc."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
-        dep = UserOrderCrud.order_params()
-        result = await dep(order_by="username", order="desc")
-        assert isinstance(result, UnaryExpression)
-        assert "DESC" in str(result)
+        dep = UserOrderCrud.offset_paginate_params(search=False, filter=False)
+        result = await dep(page=1, items_per_page=20, order_by="username", order="desc")
+        assert isinstance(result["order_by"], UnaryExpression)
+        assert "DESC" in str(result["order_by"])
 
     @pytest.mark.anyio
     async def test_invalid_order_by_raises_invalid_order_field_error(self):
         """Raises InvalidOrderFieldError for an unknown order_by value."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
-        dep = UserOrderCrud.order_params()
+        dep = UserOrderCrud.offset_paginate_params(search=False, filter=False)
         with pytest.raises(InvalidOrderFieldError) as exc_info:
-            await dep(order_by="nonexistent", order="asc")
+            await dep(page=1, items_per_page=20, order_by="nonexistent", order="asc")
         assert exc_info.value.field == "nonexistent"
         assert "username" in exc_info.value.valid_fields
 
@@ -1516,17 +1548,21 @@ class TestOrderParamsSchema:
     async def test_multiple_fields_all_resolve(self):
         """All configured fields resolve correctly via order_by."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username, User.email])
-        dep = UserOrderCrud.order_params()
-        result_username = await dep(order_by="username", order="asc")
-        result_email = await dep(order_by="email", order="desc")
-        assert isinstance(result_username, ColumnElement)
-        assert isinstance(result_email, ColumnElement)
+        dep = UserOrderCrud.offset_paginate_params(search=False, filter=False)
+        result_username = await dep(
+            page=1, items_per_page=20, order_by="username", order="asc"
+        )
+        result_email = await dep(
+            page=1, items_per_page=20, order_by="email", order="desc"
+        )
+        assert isinstance(result_username["order_by"], ColumnElement)
+        assert isinstance(result_email["order_by"], ColumnElement)
 
     @pytest.mark.anyio
-    async def test_order_params_integrates_with_get_multi(
+    async def test_order_integrates_with_offset_paginate(
         self, db_session: AsyncSession
     ):
-        """order_params output is accepted by get_multi(order_by=...)."""
+        """order in consolidated params is accepted by offset_paginate(order_by=...)."""
         UserOrderCrud = CrudFactory(User, order_fields=[User.username])
         await UserCrud.create(
             db_session, UserCreate(username="charlie", email="c@test.com")
@@ -1535,37 +1571,43 @@ class TestOrderParamsSchema:
             db_session, UserCreate(username="alice", email="a@test.com")
         )
 
-        dep = UserOrderCrud.order_params()
-        order_by = await dep(order_by="username", order="asc")
-        results = await UserOrderCrud.get_multi(db_session, order_by=order_by)
+        dep = UserOrderCrud.offset_paginate_params(search=False, filter=False)
+        params = await dep(page=1, items_per_page=20, order_by="username", order="asc")
+        result = await UserOrderCrud.offset_paginate(
+            db_session, **params, schema=UserRead
+        )
 
-        assert results[0].username == "alice"
-        assert results[1].username == "charlie"
+        assert result.data[0].username == "alice"
+        assert result.data[1].username == "charlie"
 
 
-class TestOffsetParamsSchema:
-    """Tests for AsyncCrud.offset_params()."""
+class TestOffsetPaginateParamsSchema:
+    """Tests for AsyncCrud.offset_paginate_params()."""
 
     def test_returns_page_and_items_per_page_params(self):
-        """Returned dependency has page and items_per_page params only."""
-        dep = RoleCrud.offset_params()
+        """Returned dependency has page and items_per_page params."""
+        dep = RoleCrud.offset_paginate_params(search=False, filter=False, order=False)
         param_names = set(inspect.signature(dep).parameters)
         assert param_names == {"page", "items_per_page"}
 
     def test_dependency_name_includes_model_name(self):
         """Dependency function is named after the model."""
-        dep = RoleCrud.offset_params()
-        assert getattr(dep, "__name__") == "RoleOffsetParams"
+        dep = RoleCrud.offset_paginate_params(search=False, filter=False, order=False)
+        assert getattr(dep, "__name__") == "RoleOffsetPaginateParams"
 
     def test_default_page_size_reflected_in_items_per_page_default(self):
         """default_page_size is used as the default for items_per_page."""
-        dep = RoleCrud.offset_params(default_page_size=42)
+        dep = RoleCrud.offset_paginate_params(
+            default_page_size=42, search=False, filter=False, order=False
+        )
         sig = inspect.signature(dep)
         assert sig.parameters["items_per_page"].default.default == 42
 
     def test_max_page_size_reflected_in_items_per_page_le(self):
         """max_page_size is used as le constraint on items_per_page."""
-        dep = RoleCrud.offset_params(max_page_size=50)
+        dep = RoleCrud.offset_paginate_params(
+            max_page_size=50, search=False, filter=False, order=False
+        )
         sig = inspect.signature(dep)
         le = next(
             m.le
@@ -1576,67 +1618,121 @@ class TestOffsetParamsSchema:
 
     def test_include_total_not_a_query_param(self):
         """include_total is not exposed as a query parameter."""
-        dep = RoleCrud.offset_params()
+        dep = RoleCrud.offset_paginate_params(search=False, filter=False, order=False)
         param_names = set(inspect.signature(dep).parameters)
         assert "include_total" not in param_names
 
     @pytest.mark.anyio
     async def test_include_total_true_forwarded_in_result(self):
         """include_total=True factory arg appears in the resolved dict."""
-        result = await RoleCrud.offset_params(include_total=True)(
-            page=1, items_per_page=10
-        )
+        result = await RoleCrud.offset_paginate_params(
+            include_total=True, search=False, filter=False, order=False
+        )(page=1, items_per_page=10)
         assert result["include_total"] is True
 
     @pytest.mark.anyio
     async def test_include_total_false_forwarded_in_result(self):
         """include_total=False factory arg appears in the resolved dict."""
-        result = await RoleCrud.offset_params(include_total=False)(
-            page=1, items_per_page=10
-        )
+        result = await RoleCrud.offset_paginate_params(
+            include_total=False, search=False, filter=False, order=False
+        )(page=1, items_per_page=10)
         assert result["include_total"] is False
 
     @pytest.mark.anyio
     async def test_awaiting_dep_returns_dict(self):
         """Awaiting the dependency returns a dict with page, items_per_page, include_total."""
-        dep = RoleCrud.offset_params(include_total=False)
+        dep = RoleCrud.offset_paginate_params(
+            include_total=False, search=False, filter=False, order=False
+        )
         result = await dep(page=2, items_per_page=10)
         assert result == {"page": 2, "items_per_page": 10, "include_total": False}
 
     @pytest.mark.anyio
     async def test_integrates_with_offset_paginate(self, db_session: AsyncSession):
-        """offset_params output can be unpacked directly into offset_paginate."""
+        """offset_paginate_params output can be unpacked directly into offset_paginate."""
         await RoleCrud.create(db_session, RoleCreate(name="admin"))
-        dep = RoleCrud.offset_params()
+        dep = RoleCrud.offset_paginate_params(search=False, filter=False, order=False)
         params = await dep(page=1, items_per_page=10)
         result = await RoleCrud.offset_paginate(db_session, **params, schema=RoleRead)
         assert result.pagination.page == 1
         assert result.pagination.items_per_page == 10
 
+    def test_all_features_enabled(self):
+        """With all features enabled, params include search, filter, and order."""
+        FullCrud = CrudFactory(
+            User,
+            searchable_fields=[User.username],
+            facet_fields=[User.email],
+            order_fields=[User.username],
+        )
+        dep = FullCrud.offset_paginate_params()
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {
+            "page",
+            "items_per_page",
+            "search",
+            "search_column",
+            "email",
+            "order_by",
+            "order",
+        }
 
-class TestCursorParamsSchema:
-    """Tests for AsyncCrud.cursor_params()."""
+    def test_search_enabled_but_no_searchable_fields(self):
+        """search=True with no searchable_fields silently skips search params."""
+        NoCrud = CrudFactory(Role)
+        NoCrud.searchable_fields = None
+        dep = NoCrud.offset_paginate_params(
+            search=True, filter=False, order=False, search_fields=None
+        )
+        param_names = set(inspect.signature(dep).parameters)
+        assert "search" not in param_names
+        assert "search_column" not in param_names
+
+    def test_filter_enabled_but_no_facet_fields(self):
+        """filter=True with no facet_fields silently skips filter params."""
+        dep = RoleCrud.offset_paginate_params(search=False, filter=True, order=False)
+        param_names = set(inspect.signature(dep).parameters)
+        assert param_names == {"page", "items_per_page"}
+
+    def test_order_enabled_but_no_order_fields(self):
+        """order=True with no order_fields silently skips order params."""
+        dep = RoleCrud.offset_paginate_params(search=False, filter=False, order=True)
+        param_names = set(inspect.signature(dep).parameters)
+        assert "order_by" not in param_names
+        assert "order" not in param_names
+
+
+class TestCursorPaginateParamsSchema:
+    """Tests for AsyncCrud.cursor_paginate_params()."""
 
     def test_returns_cursor_and_items_per_page_params(self):
         """Returned dependency has cursor and items_per_page params."""
-        dep = RoleCursorCrud.cursor_params()
+        dep = RoleCursorCrud.cursor_paginate_params(
+            search=False, filter=False, order=False
+        )
         param_names = set(inspect.signature(dep).parameters)
         assert param_names == {"cursor", "items_per_page"}
 
     def test_dependency_name_includes_model_name(self):
         """Dependency function is named after the model."""
-        dep = RoleCursorCrud.cursor_params()
-        assert getattr(dep, "__name__") == "RoleCursorParams"
+        dep = RoleCursorCrud.cursor_paginate_params(
+            search=False, filter=False, order=False
+        )
+        assert getattr(dep, "__name__") == "RoleCursorPaginateParams"
 
     def test_default_page_size_reflected_in_items_per_page_default(self):
         """default_page_size is used as the default for items_per_page."""
-        dep = RoleCursorCrud.cursor_params(default_page_size=15)
+        dep = RoleCursorCrud.cursor_paginate_params(
+            default_page_size=15, search=False, filter=False, order=False
+        )
         sig = inspect.signature(dep)
         assert sig.parameters["items_per_page"].default.default == 15
 
     def test_max_page_size_reflected_in_items_per_page_le(self):
         """max_page_size is used as le constraint on items_per_page."""
-        dep = RoleCursorCrud.cursor_params(max_page_size=75)
+        dep = RoleCursorCrud.cursor_paginate_params(
+            max_page_size=75, search=False, filter=False, order=False
+        )
         sig = inspect.signature(dep)
         le = next(
             m.le
@@ -1647,22 +1743,28 @@ class TestCursorParamsSchema:
 
     def test_cursor_defaults_to_none(self):
         """cursor defaults to None."""
-        dep = RoleCursorCrud.cursor_params()
+        dep = RoleCursorCrud.cursor_paginate_params(
+            search=False, filter=False, order=False
+        )
         sig = inspect.signature(dep)
         assert sig.parameters["cursor"].default.default is None
 
     @pytest.mark.anyio
     async def test_awaiting_dep_returns_dict(self):
         """Awaiting the dependency returns a dict with cursor and items_per_page."""
-        dep = RoleCursorCrud.cursor_params()
+        dep = RoleCursorCrud.cursor_paginate_params(
+            search=False, filter=False, order=False
+        )
         result = await dep(cursor=None, items_per_page=5)
         assert result == {"cursor": None, "items_per_page": 5}
 
     @pytest.mark.anyio
     async def test_integrates_with_cursor_paginate(self, db_session: AsyncSession):
-        """cursor_params output can be unpacked directly into cursor_paginate."""
+        """cursor_paginate_params output can be unpacked directly into cursor_paginate."""
         await RoleCrud.create(db_session, RoleCreate(name="admin"))
-        dep = RoleCursorCrud.cursor_params()
+        dep = RoleCursorCrud.cursor_paginate_params(
+            search=False, filter=False, order=False
+        )
         params = await dep(cursor=None, items_per_page=10)
         result = await RoleCursorCrud.cursor_paginate(
             db_session, **params, schema=RoleRead
@@ -1675,13 +1777,13 @@ class TestPaginateParamsSchema:
 
     def test_returns_all_params(self):
         """Returned dependency has pagination_type, page, cursor, items_per_page (no include_total)."""
-        dep = RoleCursorCrud.paginate_params()
+        dep = RoleCursorCrud.paginate_params(search=False, filter=False, order=False)
         param_names = set(inspect.signature(dep).parameters)
         assert param_names == {"pagination_type", "page", "cursor", "items_per_page"}
 
     def test_dependency_name_includes_model_name(self):
         """Dependency function is named after the model."""
-        dep = RoleCursorCrud.paginate_params()
+        dep = RoleCursorCrud.paginate_params(search=False, filter=False, order=False)
         assert getattr(dep, "__name__") == "RolePaginateParams"
 
     def test_default_pagination_type(self):
@@ -1689,7 +1791,10 @@ class TestPaginateParamsSchema:
         from fastapi_toolsets.schemas import PaginationType
 
         dep = RoleCursorCrud.paginate_params(
-            default_pagination_type=PaginationType.CURSOR
+            default_pagination_type=PaginationType.CURSOR,
+            search=False,
+            filter=False,
+            order=False,
         )
         sig = inspect.signature(dep)
         assert (
@@ -1698,13 +1803,17 @@ class TestPaginateParamsSchema:
 
     def test_default_page_size(self):
         """default_page_size is reflected in items_per_page default."""
-        dep = RoleCursorCrud.paginate_params(default_page_size=15)
+        dep = RoleCursorCrud.paginate_params(
+            default_page_size=15, search=False, filter=False, order=False
+        )
         sig = inspect.signature(dep)
         assert sig.parameters["items_per_page"].default.default == 15
 
     def test_max_page_size_le_constraint(self):
         """max_page_size is used as le constraint on items_per_page."""
-        dep = RoleCursorCrud.paginate_params(max_page_size=60)
+        dep = RoleCursorCrud.paginate_params(
+            max_page_size=60, search=False, filter=False, order=False
+        )
         sig = inspect.signature(dep)
         le = next(
             m.le
@@ -1715,19 +1824,23 @@ class TestPaginateParamsSchema:
 
     def test_include_total_not_a_query_param(self):
         """include_total is not exposed as a query parameter."""
-        dep = RoleCursorCrud.paginate_params()
+        dep = RoleCursorCrud.paginate_params(search=False, filter=False, order=False)
         assert "include_total" not in set(inspect.signature(dep).parameters)
 
     @pytest.mark.anyio
     async def test_include_total_forwarded_in_result(self):
         """include_total factory arg appears in the resolved dict."""
-        result_true = await RoleCursorCrud.paginate_params(include_total=True)(
+        result_true = await RoleCursorCrud.paginate_params(
+            include_total=True, search=False, filter=False, order=False
+        )(
             pagination_type=PaginationType.OFFSET,
             page=1,
             cursor=None,
             items_per_page=10,
         )
-        result_false = await RoleCursorCrud.paginate_params(include_total=False)(
+        result_false = await RoleCursorCrud.paginate_params(
+            include_total=False, search=False, filter=False, order=False
+        )(
             pagination_type=PaginationType.OFFSET,
             page=1,
             cursor=None,
@@ -1739,7 +1852,7 @@ class TestPaginateParamsSchema:
     @pytest.mark.anyio
     async def test_awaiting_dep_returns_dict(self):
         """Awaiting the dependency returns a dict with all pagination keys."""
-        dep = RoleCursorCrud.paginate_params()
+        dep = RoleCursorCrud.paginate_params(search=False, filter=False, order=False)
         result = await dep(
             pagination_type=PaginationType.OFFSET,
             page=2,
@@ -1760,7 +1873,9 @@ class TestPaginateParamsSchema:
         from fastapi_toolsets.schemas import OffsetPagination
 
         await RoleCrud.create(db_session, RoleCreate(name="admin"))
-        params = await RoleCursorCrud.paginate_params()(
+        params = await RoleCursorCrud.paginate_params(
+            search=False, filter=False, order=False
+        )(
             pagination_type=PaginationType.OFFSET,
             page=1,
             cursor=None,
@@ -1775,7 +1890,9 @@ class TestPaginateParamsSchema:
         from fastapi_toolsets.schemas import CursorPagination
 
         await RoleCrud.create(db_session, RoleCreate(name="admin"))
-        params = await RoleCursorCrud.paginate_params()(
+        params = await RoleCursorCrud.paginate_params(
+            search=False, filter=False, order=False
+        )(
             pagination_type=PaginationType.CURSOR,
             page=1,
             cursor=None,
