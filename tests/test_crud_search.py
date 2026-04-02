@@ -697,6 +697,67 @@ class TestFacetsRelationship:
         assert result.filter_attributes is not None
         assert result.filter_attributes["role__name"] == ["admin"]
 
+    @pytest.mark.anyio
+    async def test_relationship_search_and_filter_by_same_join(
+        self, db_session: AsyncSession
+    ):
+        """Search + filter_by on the same relationship must not duplicate the JOIN."""
+        UserSearchFacetCrud = CrudFactory(
+            User,
+            searchable_fields=[(User.role, Role.name)],
+            facet_fields=[(User.role, Role.name)],
+        )
+
+        admin = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        editor = await RoleCrud.create(db_session, RoleCreate(name="editor"))
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="a@test.com", role_id=admin.id),
+        )
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="bob", email="b@test.com", role_id=editor.id),
+        )
+
+        # Search by role name AND filter by role name — both need the same join
+        result = await UserSearchFacetCrud.offset_paginate(
+            db_session,
+            search="admin",
+            filter_by={"role__name": "admin"},
+            schema=UserRead,
+        )
+
+        assert len(result.data) == 1
+        assert result.data[0].username == "alice"
+        assert result.filter_attributes is not None
+        assert result.filter_attributes["role__name"] == ["admin"]
+
+    @pytest.mark.anyio
+    async def test_cursor_paginate_duplicate_join(self, db_session: AsyncSession):
+        """cursor_paginate with overlapping search + facet joins must not fail."""
+        UserSearchFacetCursorCrud = CrudFactory(
+            User,
+            searchable_fields=[(User.role, Role.name)],
+            facet_fields=[(User.role, Role.name)],
+            cursor_column=User.id,
+        )
+
+        admin = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="a@test.com", role_id=admin.id),
+        )
+
+        result = await UserSearchFacetCursorCrud.cursor_paginate(
+            db_session,
+            search="admin",
+            filter_by={"role__name": "admin"},
+            schema=UserRead,
+        )
+
+        assert len(result.data) == 1
+        assert result.data[0].username == "alice"
+
 
 class TestFilterBy:
     """Tests for the filter_by parameter on offset_paginate and cursor_paginate."""
