@@ -116,8 +116,12 @@ def _apply_joins(q: Any, joins: JoinType | None, outer_join: bool) -> Any:
 
 def _apply_search_joins(q: Any, search_joins: list[Any]) -> Any:
     """Apply relationship-based outer joins (from search/filter_by) to a query."""
+    seen: set[str] = set()
     for join_rel in search_joins:
-        q = q.outerjoin(join_rel)
+        key = str(join_rel)
+        if key not in seen:
+            seen.add(key)
+            q = q.outerjoin(join_rel)
     return q
 
 

@@ -242,13 +242,19 @@ async def build_facets(
         else:
             q = select(column).select_from(model).distinct()
 
-        # Apply base joins (already done on main query, but needed here independently)
+        # Apply base joins (deduplicated) — needed here independently
+        seen_joins: set[str] = set()
         for rel in base_joins or []:
-            q = q.outerjoin(rel)
+            rel_key = str(rel)
+            if rel_key not in seen_joins:
+                seen_joins.add(rel_key)
+                q = q.outerjoin(rel)
 
-        # Add any extra joins required by this facet field that aren't already in base_joins
+        # Add any extra joins required by this facet field that aren't already applied
         for rel in rels:
-            if str(rel) not in existing_join_keys:
+            rel_key = str(rel)
+            if rel_key not in existing_join_keys and rel_key not in seen_joins:
+                seen_joins.add(rel_key)
                 q = q.outerjoin(rel)
 
         if base_filters:
