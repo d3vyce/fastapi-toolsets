@@ -122,7 +122,7 @@ def _format_validation_error(
     )
 
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content=error_response.model_dump(),
     )
 

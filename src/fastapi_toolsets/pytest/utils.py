@@ -1,7 +1,6 @@
 """Pytest helper utilities for FastAPI testing."""
 
 import os
-import warnings
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -16,29 +15,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-from ..db import cleanup_tables as _cleanup_tables
-from ..db import create_database
+from ..db import cleanup_tables, create_database
 from ..models.watched import EventSession
-
-
-async def cleanup_tables(
-    session: AsyncSession,
-    base: type[DeclarativeBase],
-) -> None:
-    """Truncate all tables for fast between-test cleanup.
-
-    .. deprecated::
-        Import ``cleanup_tables`` from ``fastapi_toolsets.db`` instead.
-        This re-export will be removed in v3.0.0.
-    """
-    warnings.warn(
-        "Importing cleanup_tables from fastapi_toolsets.pytest is deprecated "
-        "and will be removed in v3.0.0. "
-        "Use 'from fastapi_toolsets.db import cleanup_tables' instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    await _cleanup_tables(session=session, base=base)
 
 
 def _get_xdist_worker(default_test_db: str) -> str:
@@ -273,7 +251,7 @@ async def create_db_session(
             yield session
 
             if cleanup:
-                await _cleanup_tables(session=session, base=base)
+                await cleanup_tables(session=session, base=base)
 
         if drop_tables:
             async with engine.begin() as conn:

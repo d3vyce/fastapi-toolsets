@@ -42,12 +42,12 @@ jobs:
             LATEST_PREV_TAG=$(git tag -l "v${PREV_MAJOR}.*" | sort -V | tail -1)
 
             if [ -n "$LATEST_PREV_TAG" ]; then
-              git checkout "$LATEST_PREV_TAG" -- docs/ src/ zensical.toml
+              git checkout "$LATEST_PREV_TAG" -- docs/ docs_src/ src/ zensical.toml
               if ! grep -q '\[project\.extra\.version\]' zensical.toml; then
                 printf '\n[project.extra.version]\nprovider = "mike"\ndefault = "stable"\nalias = true\n' >> zensical.toml
               fi
               uv run mike deploy "v${PREV_MAJOR}"
-              git checkout HEAD -- docs/ src/ zensical.toml
+              git checkout HEAD -- docs/ docs_src/ src/ zensical.toml
             fi
 
             # Delete old feature versions

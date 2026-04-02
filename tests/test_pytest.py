@@ -374,19 +374,6 @@ class TestCreateDbSession:
             pass
 
 
-class TestDeprecatedCleanupTables:
-    """Tests for the deprecated cleanup_tables re-export in fastapi_toolsets.pytest."""
-
-    @pytest.mark.anyio
-    async def test_emits_deprecation_warning(self):
-        """cleanup_tables imported from fastapi_toolsets.pytest emits DeprecationWarning."""
-        from fastapi_toolsets.pytest.utils import cleanup_tables
-
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
-            with pytest.warns(DeprecationWarning, match="fastapi_toolsets.db"):
-                await cleanup_tables(session, Base)
-
-
 class TestGetXdistWorker:
     """Tests for _get_xdist_worker helper."""
 
