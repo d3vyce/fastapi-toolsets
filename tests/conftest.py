@@ -139,6 +139,17 @@ class Post(Base):
     tags: Mapped[list[Tag]] = relationship(secondary=post_tags)
 
 
+class Transfer(Base):
+    """Test model with two FKs to the same table (users)."""
+
+    __tablename__ = "transfers"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    amount: Mapped[str] = mapped_column(String(50))
+    sender_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    receiver_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+
+
 class Article(Base):
     """Test article model with ARRAY and JSON columns."""
 
@@ -300,6 +311,23 @@ class ArticleRead(PydanticBase):
     labels: list[str]
 
 
+class TransferCreate(BaseModel):
+    """Schema for creating a transfer."""
+
+    id: uuid.UUID | None = None
+    amount: str
+    sender_id: uuid.UUID
+    receiver_id: uuid.UUID
+
+
+class TransferRead(PydanticBase):
+    """Schema for reading a transfer."""
+
+    id: uuid.UUID
+    amount: str
+
+
+TransferCrud = CrudFactory(Transfer)
 ArticleCrud = CrudFactory(Article)
 RoleCrud = CrudFactory(Role)
 RoleCursorCrud = CrudFactory(Role, cursor_column=Role.id)

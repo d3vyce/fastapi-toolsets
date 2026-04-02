@@ -38,6 +38,10 @@ from .conftest import (
     Tag,
     TagCreate,
     TagCrud,
+    Transfer,
+    TransferCreate,
+    TransferCrud,
+    TransferRead,
     User,
     UserCreate,
     UserCrud,
@@ -1280,6 +1284,128 @@ class TestCrudJoins:
         )
         assert len(users) == 1
         assert users[0].username == "multi_join"
+
+
+class TestCrudAliasedJoins:
+    """Tests for CRUD operations with aliased joins (same table joined twice)."""
+
+    @pytest.mark.anyio
+    async def test_get_multi_with_aliased_joins(self, db_session: AsyncSession):
+        """Aliased joins allow joining the same table twice."""
+        from sqlalchemy.orm import aliased
+
+        alice = await UserCrud.create(
+            db_session, UserCreate(username="alice", email="alice@test.com")
+        )
+        bob = await UserCrud.create(
+            db_session, UserCreate(username="bob", email="bob@test.com")
+        )
+        await TransferCrud.create(
+            db_session,
+            TransferCreate(amount="100", sender_id=alice.id, receiver_id=bob.id),
+        )
+
+        Sender = aliased(User)
+        Receiver = aliased(User)
+
+        results = await TransferCrud.get_multi(
+            db_session,
+            joins=[
+                (Sender, Transfer.sender_id == Sender.id),
+                (Receiver, Transfer.receiver_id == Receiver.id),
+            ],
+            filters=[Sender.username == "alice", Receiver.username == "bob"],
+        )
+        assert len(results) == 1
+        assert results[0].amount == "100"
+
+    @pytest.mark.anyio
+    async def test_get_multi_aliased_no_match(self, db_session: AsyncSession):
+        """Aliased joins correctly filter out non-matching rows."""
+        from sqlalchemy.orm import aliased
+
+        alice = await UserCrud.create(
+            db_session, UserCreate(username="alice", email="alice@test.com")
+        )
+        bob = await UserCrud.create(
+            db_session, UserCreate(username="bob", email="bob@test.com")
+        )
+        await TransferCrud.create(
+            db_session,
+            TransferCreate(amount="100", sender_id=alice.id, receiver_id=bob.id),
+        )
+
+        Sender = aliased(User)
+        Receiver = aliased(User)
+
+        # bob is receiver, not sender — should return nothing
+        results = await TransferCrud.get_multi(
+            db_session,
+            joins=[
+                (Sender, Transfer.sender_id == Sender.id),
+                (Receiver, Transfer.receiver_id == Receiver.id),
+            ],
+            filters=[Sender.username == "bob", Receiver.username == "alice"],
+        )
+        assert len(results) == 0
+
+    @pytest.mark.anyio
+    async def test_paginate_with_aliased_joins(self, db_session: AsyncSession):
+        """Aliased joins work with offset_paginate."""
+        from sqlalchemy.orm import aliased
+
+        alice = await UserCrud.create(
+            db_session, UserCreate(username="alice", email="alice@test.com")
+        )
+        bob = await UserCrud.create(
+            db_session, UserCreate(username="bob", email="bob@test.com")
+        )
+        await TransferCrud.create(
+            db_session,
+            TransferCreate(amount="50", sender_id=alice.id, receiver_id=bob.id),
+        )
+        await TransferCrud.create(
+            db_session,
+            TransferCreate(amount="75", sender_id=bob.id, receiver_id=alice.id),
+        )
+
+        Sender = aliased(User)
+        result = await TransferCrud.offset_paginate(
+            db_session,
+            joins=[(Sender, Transfer.sender_id == Sender.id)],
+            filters=[Sender.username == "alice"],
+            schema=TransferRead,
+        )
+        assert result.pagination.total_count == 1
+        assert result.data[0].amount == "50"
+
+    @pytest.mark.anyio
+    async def test_count_with_aliased_join(self, db_session: AsyncSession):
+        """Aliased joins work with count."""
+        from sqlalchemy.orm import aliased
+
+        alice = await UserCrud.create(
+            db_session, UserCreate(username="alice", email="alice@test.com")
+        )
+        bob = await UserCrud.create(
+            db_session, UserCreate(username="bob", email="bob@test.com")
+        )
+        await TransferCrud.create(
+            db_session,
+            TransferCreate(amount="10", sender_id=alice.id, receiver_id=bob.id),
+        )
+        await TransferCrud.create(
+            db_session,
+            TransferCreate(amount="20", sender_id=alice.id, receiver_id=bob.id),
+        )
+
+        Sender = aliased(User)
+        count = await TransferCrud.count(
+            db_session,
+            joins=[(Sender, Transfer.sender_id == Sender.id)],
+            filters=[Sender.username == "alice"],
+        )
+        assert count == 2
 
 
 class TestCrudFactoryM2M:

@@ -15,7 +15,7 @@ ModelType = TypeVar("ModelType", bound=DeclarativeBase)
 SchemaType = TypeVar("SchemaType", bound=BaseModel)
 
 # CRUD type aliases
-JoinType = list[tuple[type[DeclarativeBase], Any]]
+JoinType = list[tuple[type[DeclarativeBase] | Any, Any]]
 M2MFieldType = Mapping[str, QueryableAttribute[Any]]
 OrderByClause = ColumnElement[Any] | QueryableAttribute[Any]
 
