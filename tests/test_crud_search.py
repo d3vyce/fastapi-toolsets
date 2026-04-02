@@ -971,7 +971,7 @@ class TestFilterBy:
 
     @pytest.mark.anyio
     async def test_bool_filter_false(self, db_session: AsyncSession):
-        """filter_by with a boolean False value correctly filters rows."""
+        """filter_by with a string 'false' value correctly filters rows."""
         UserBoolCrud = CrudFactory(User, facet_fields=[User.is_active])
         await UserCrud.create(
             db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
@@ -982,7 +982,7 @@ class TestFilterBy:
         )
 
         result = await UserBoolCrud.offset_paginate(
-            db_session, filter_by={"is_active": False}, schema=UserRead
+            db_session, filter_by={"is_active": "false"}, schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -991,7 +991,7 @@ class TestFilterBy:
 
     @pytest.mark.anyio
     async def test_bool_filter_true(self, db_session: AsyncSession):
-        """filter_by with a boolean True value correctly filters rows."""
+        """filter_by with a string 'true' value correctly filters rows."""
         UserBoolCrud = CrudFactory(User, facet_fields=[User.is_active])
         await UserCrud.create(
             db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
@@ -1002,7 +1002,7 @@ class TestFilterBy:
         )
 
         result = await UserBoolCrud.offset_paginate(
-            db_session, filter_by={"is_active": True}, schema=UserRead
+            db_session, filter_by={"is_active": "true"}, schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
@@ -1011,7 +1011,7 @@ class TestFilterBy:
 
     @pytest.mark.anyio
     async def test_bool_filter_list(self, db_session: AsyncSession):
-        """filter_by with a list of booleans produces an IN clause."""
+        """filter_by with a list of string booleans produces an IN clause."""
         UserBoolCrud = CrudFactory(User, facet_fields=[User.is_active])
         await UserCrud.create(
             db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
@@ -1022,11 +1022,40 @@ class TestFilterBy:
         )
 
         result = await UserBoolCrud.offset_paginate(
-            db_session, filter_by={"is_active": [True, False]}, schema=UserRead
+            db_session, filter_by={"is_active": ["true", "false"]}, schema=UserRead
         )
 
         assert isinstance(result.pagination, OffsetPagination)
         assert result.pagination.total_count == 2
+
+    @pytest.mark.anyio
+    async def test_bool_filter_native_bool(self, db_session: AsyncSession):
+        """filter_by with a native Python bool passes through coercion."""
+        UserBoolCrud = CrudFactory(User, facet_fields=[User.is_active])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
+        )
+
+        result = await UserBoolCrud.offset_paginate(
+            db_session, filter_by={"is_active": True}, schema=UserRead
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+
+    def test_bool_coerce_invalid_value(self):
+        """_coerce_bool raises ValueError for non-bool, non-string values."""
+        from fastapi_toolsets.crud.search import _coerce_bool
+
+        with pytest.raises(ValueError, match="Cannot coerce"):
+            _coerce_bool(42)
+
+    def test_bool_coerce_invalid_string(self):
+        """_coerce_bool raises ValueError for unrecognized string values."""
+        from fastapi_toolsets.crud.search import _coerce_bool
+
+        with pytest.raises(ValueError, match="Cannot coerce"):
+            _coerce_bool("maybe")
 
     @pytest.mark.anyio
     async def test_array_contains_single_value(self, db_session: AsyncSession):

@@ -278,6 +278,18 @@ _EQUALITY_TYPES = (String, Integer, Numeric, Date, DateTime, Time, Enum, Uuid)
 """Column types that support equality / IN filtering in build_filter_by."""
 
 
+def _coerce_bool(value: Any) -> bool:
+    """Coerce a string value to a Python bool for Boolean column filtering."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if value.lower() == "true":
+            return True
+        if value.lower() == "false":
+            return False
+    raise ValueError(f"Cannot coerce {value!r} to bool")
+
+
 def build_filter_by(
     filter_by: dict[str, Any],
     facet_fields: Sequence[FacetFieldType],
@@ -324,16 +336,17 @@ def build_filter_by(
                 added_join_keys.add(rel_key)
 
         col_type = column.property.columns[0].type
-        if isinstance(col_type, ARRAY):
+        if isinstance(col_type, Boolean):
+            coerce = _coerce_bool
+            if isinstance(value, list):
+                filters.append(column.in_([coerce(v) for v in value]))
+            else:
+                filters.append(column == coerce(value))
+        elif isinstance(col_type, ARRAY):
             if isinstance(value, list):
                 filters.append(column.overlap(value))
             else:
                 filters.append(column.any(value))
-        elif isinstance(col_type, Boolean):
-            if isinstance(value, list):
-                filters.append(column.in_(value))
-            else:
-                filters.append(column.is_(value))
         elif isinstance(col_type, _EQUALITY_TYPES):
             if isinstance(value, list):
                 filters.append(column.in_(value))
