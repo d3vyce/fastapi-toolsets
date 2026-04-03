@@ -2,9 +2,14 @@
 site_name = "FastAPI Toolsets"
 site_description = "Production-ready utilities for FastAPI applications."
 site_author = "d3vyce"
-site_url = "https://fastapi-toolsets.d3vyce.fr"
+site_url = "https://fastapi-toolsets.d3vyce.fr/"
 copyright = "Copyright &copy; 2026 d3vyce"
 repo_url = "https://github.com/d3vyce/fastapi-toolsets"
+
+[project.extra.version]
+provider = "mike"
+default = "stable"
+alias = true
 
 [project.theme]
 custom_dir = "docs/overrides"

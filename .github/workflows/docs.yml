@@ -34,26 +34,17 @@ jobs:
           MAJOR=$(echo "$VERSION" | cut -d. -f1)
           DEPLOY_VERSION="v$(echo "$VERSION" | cut -d. -f1-2)"
 
-          # On new major: consolidate previous major's feature versions into vX
+          # On new major: keep only the latest feature version of the previous major
           PREV_MAJOR=$((MAJOR - 1))
           OLD_FEATURE_VERSIONS=$(uv run mike list 2>/dev/null | grep -oE "^v${PREV_MAJOR}\.[0-9]+" || true)
 
           if [ -n "$OLD_FEATURE_VERSIONS" ]; then
-            LATEST_PREV_TAG=$(git tag -l "v${PREV_MAJOR}.*" | sort -V | tail -1)
-
-            if [ -n "$LATEST_PREV_TAG" ]; then
-              git checkout "$LATEST_PREV_TAG" -- docs/ docs_src/ src/ zensical.toml
-              if ! grep -q '\[project\.extra\.version\]' zensical.toml; then
-                printf '\n[project.extra.version]\nprovider = "mike"\ndefault = "stable"\nalias = true\n' >> zensical.toml
-              fi
-              uv run mike deploy "v${PREV_MAJOR}"
-              git checkout HEAD -- docs/ docs_src/ src/ zensical.toml
-            fi
-
-            # Delete old feature versions
+            LATEST_PREV=$(echo "$OLD_FEATURE_VERSIONS" | sort -t. -k2 -n | tail -1)
             echo "$OLD_FEATURE_VERSIONS" | while read -r OLD_V; do
-              echo "Deleting $OLD_V"
-              uv run mike delete "$OLD_V"
+              if [ "$OLD_V" != "$LATEST_PREV" ]; then
+                echo "Deleting $OLD_V"
+                uv run mike delete "$OLD_V"
+              fi
             done
           fi
 
