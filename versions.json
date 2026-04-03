@@ -5,5 +5,10 @@
     "aliases": [
       "stable"
     ]
+  },
+  {
+    "version": "v1.3",
+    "title": "v1.3",
+    "aliases": []
   }
 ]
