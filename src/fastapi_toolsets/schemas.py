@@ -163,6 +163,7 @@ class PaginatedResponse(BaseResponse, Generic[DataT]):
     pagination_type: PaginationType | None = None
     filter_attributes: dict[str, list[Any]] | None = None
     search_columns: list[str] | None = None
+    sort_columns: list[str] | None = None
 
     _discriminated_union_cache: ClassVar[dict[Any, Any]] = {}
 
