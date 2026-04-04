@@ -381,6 +381,43 @@ class TestDefaultLoadOptionsIntegration:
         assert result.data[0].role.name == "admin"
 
     @pytest.mark.anyio
+    async def test_default_load_options_applied_to_create(
+        self, db_session: AsyncSession
+    ):
+        """default_load_options loads relationships after create()."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        user = await UserWithDefaultLoad.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+        assert user.role is not None
+        assert user.role.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_default_load_options_applied_to_update(
+        self, db_session: AsyncSession
+    ):
+        """default_load_options loads relationships after update()."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        user = await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com"),
+        )
+        updated = await UserWithDefaultLoad.update(
+            db_session,
+            UserUpdate(role_id=role.id),
+            filters=[User.id == user.id],
+        )
+        assert updated.role is not None
+        assert updated.role.name == "admin"
+
+    @pytest.mark.anyio
     async def test_load_options_overrides_default_load_options(
         self, db_session: AsyncSession
     ):

@@ -171,6 +171,18 @@ class AsyncCrud(Generic[ModelType]):
         return cls.default_load_options
 
     @classmethod
+    async def _reload_with_options(
+        cls: type[Self], session: AsyncSession, instance: ModelType
+    ) -> ModelType:
+        """Re-query instance by PK with default_load_options applied."""
+        mapper = cls.model.__mapper__
+        pk_filters = [
+            getattr(cls.model, col.key) == getattr(instance, col.key)
+            for col in mapper.primary_key
+        ]
+        return await cls.get(session, filters=pk_filters)
+
+    @classmethod
     async def _resolve_m2m(
         cls: type[Self],
         session: AsyncSession,
@@ -705,6 +717,8 @@ class AsyncCrud(Generic[ModelType]):
 
             session.add(db_model)
         await session.refresh(db_model)
+        if cls.default_load_options:
+            db_model = await cls._reload_with_options(session, db_model)
         result = cast(ModelType, db_model)
         if schema:
             return Response(data=schema.model_validate(result))
@@ -1060,6 +1074,8 @@ class AsyncCrud(Generic[ModelType]):
                 for rel_attr, related_instances in m2m_resolved.items():
                     setattr(db_model, rel_attr, related_instances)
         await session.refresh(db_model)
+        if cls.default_load_options:
+            db_model = await cls._reload_with_options(session, db_model)
         if schema:
             return Response(data=schema.model_validate(db_model))
         return db_model
