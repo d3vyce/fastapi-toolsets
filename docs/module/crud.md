@@ -324,6 +324,12 @@ result = await UserCrud.offset_paginate(
 )
 ```
 
+Or via the dependency to narrow which fields are exposed as query parameters:
+
+```python
+params = UserCrud.offset_paginate_params(search_fields=[Post.title])
+```
+
 This allows searching with both [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) and [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate):
 
 ```python
@@ -344,13 +350,37 @@ async def get_users(
     return await UserCrud.cursor_paginate(session=session, **params, schema=UserRead)
 ```
 
+The dependency adds two query parameters to the endpoint:
+
+| Parameter       | Type          |
+| --------------- | ------------- |
+| `search`        | `str \| null` |
+| `search_column` | `str \| null` |
+
+```
+GET /posts?search=hello                        → search all configured columns
+GET /posts?search=hello&search_column=title    → search only Post.title
+```
+
+The available search column keys are returned in the `search_columns` field of [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse). Use them to populate a column picker in the UI, or to validate `search_column` values on the client side:
+
+```json
+{
+  "status": "SUCCESS",
+  "data": ["..."],
+  "pagination": { "..." },
+  "search_columns": ["content", "author__username", "title"]
+}
+```
+
+!!! info "Key format uses `__` as a separator for relationship chains."
+    A direct column `Post.title` produces `"title"`. A relationship tuple `(Post.author, User.username)` produces `"author__username"`. An unknown `search_column` value raises [`InvalidSearchColumnError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidSearchColumnError) (HTTP 422).
+
 ### Faceted search
 
 !!! info "Added in `v1.2`"
 
-Declare `facet_fields` on the CRUD class to return distinct column values alongside paginated results. This is useful for populating filter dropdowns or building faceted search UIs.
-
-Facet fields use the same syntax as `searchable_fields` — direct columns or relationship tuples:
+Declare `facet_fields` on the CRUD class to return distinct column values alongside paginated results. This is useful for populating filter dropdowns or building faceted search UIs. Relationship traversal is supported via tuples, using the same syntax as `searchable_fields`:
 
 ```python
 UserCrud = CrudFactory(
@@ -372,7 +402,47 @@ result = await UserCrud.offset_paginate(
 )
 ```
 
-The distinct values are returned in the `filter_attributes` field of [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse):
+Or via the dependency to narrow which fields are exposed as query parameters:
+
+```python
+params = UserCrud.offset_paginate_params(facet_fields=[User.country])
+```
+
+Facet filtering is built into the consolidated params dependencies. When `filter=True` (the default), each facet field is exposed as a query parameter and values are collected into `filter_by` automatically:
+
+```python
+from typing import Annotated
+
+from fastapi import Depends
+
+@router.get("", response_model_exclude_none=True)
+async def list_users(
+    session: SessionDep,
+    params: Annotated[dict, Depends(UserCrud.offset_paginate_params())],
+) -> OffsetPaginatedResponse[UserRead]:
+    return await UserCrud.offset_paginate(session=session, **params, schema=UserRead)
+```
+
+```python
+@router.get("", response_model_exclude_none=True)
+async def list_users(
+    session: SessionDep,
+    params: Annotated[dict, Depends(UserCrud.cursor_paginate_params())],
+) -> CursorPaginatedResponse[UserRead]:
+    return await UserCrud.cursor_paginate(session=session, **params, schema=UserRead)
+```
+
+Both single-value and multi-value query parameters work:
+
+```
+GET /users?status=active                      → filter_by={"status": ["active"]}
+GET /users?status=active&country=FR           → filter_by={"status": ["active"], "country": ["FR"]}
+GET /users?role__name=admin&role__name=editor → filter_by={"role__name": ["admin", "editor"]}  (IN clause)
+```
+
+`filter_by` and `filters` can be combined — both are applied with AND logic.
+
+The distinct values for each facet field are returned in the `filter_attributes` field of [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse). Use them to populate filter dropdowns in the UI, or to validate `filter_by` keys on the client side:
 
 ```json
 {
@@ -387,50 +457,14 @@ The distinct values are returned in the `filter_attributes` field of [`Paginated
 }
 ```
 
-Use `filter_by` to pass the client's chosen filter values directly — no need to build SQLAlchemy conditions by hand. Any unknown key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError).
-
-!!! info "The keys in `filter_by` are the same keys the client received in `filter_attributes`."
-    Keys use `__` as a separator for the full relationship chain. A direct column `User.status` produces `"status"`. A relationship tuple `(User.role, Role.name)` produces `"role__name"`. A deeper chain `(User.role, Role.permission, Permission.name)` produces `"role__permission__name"`.
-
-`filter_by` and `filters` can be combined — both are applied with AND logic.
-
-Facet filtering is built into the consolidated params dependencies. When `filter=True` (the default), facet fields are exposed as query parameters and collected into `filter_by` automatically:
-
-```python
-from typing import Annotated
-
-from fastapi import Depends
-
-UserCrud = CrudFactory(
-    model=User,
-    facet_fields=[User.status, User.country, (User.role, Role.name)],
-)
-
-@router.get("", response_model_exclude_none=True)
-async def list_users(
-    session: SessionDep,
-    params: Annotated[dict, Depends(UserCrud.offset_paginate_params())],
-) -> OffsetPaginatedResponse[UserRead]:
-    return await UserCrud.offset_paginate(
-        session=session,
-        **params,
-        schema=UserRead,
-    )
-```
-
-Both single-value and multi-value query parameters work:
-
-```
-GET /users?status=active                      → filter_by={"status": ["active"]}
-GET /users?status=active&country=FR           → filter_by={"status": ["active"], "country": ["FR"]}
-GET /users?role__name=admin&role__name=editor → filter_by={"role__name": ["admin", "editor"]}  (IN clause)
-```
+!!! info "Key format uses `__` as a separator for relationship chains."
+    A direct column `User.status` produces `"status"`. A relationship tuple `(User.role, Role.name)` produces `"role__name"`. A deeper chain `(User.role, Role.permission, Permission.name)` produces `"role__permission__name"`. An unknown `filter_by` key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) (HTTP 422).
 
 ## Sorting
 
 !!! info "Added in `v1.3`"
 
-Declare `order_fields` on the CRUD class to expose client-driven column ordering via `order_by` and `order` query parameters.
+Declare `order_fields` on the CRUD class. Relationship traversal is supported via tuples, using the same syntax as `searchable_fields` and `facet_fields`:
 
 ```python
 UserCrud = CrudFactory(
@@ -438,11 +472,27 @@ UserCrud = CrudFactory(
     order_fields=[
         User.name,
         User.created_at,
+        (User.role, Role.name),  # sort by a related model column
     ],
 )
 ```
 
-Ordering is built into the consolidated params dependencies. When `order=True` (the default), `order_by` and `order` query parameters are exposed and resolved into an `OrderByClause` automatically:
+You can override `order_fields` per call:
+
+```python
+result = await UserCrud.offset_paginate(
+    session=session,
+    order_fields=[User.name],
+)
+```
+
+Or via the dependency to narrow which fields are exposed as query parameters:
+
+```python
+params = UserCrud.offset_paginate_params(order_fields=[User.name])
+```
+
+Sorting is built into the consolidated params dependencies. When `order=True` (the default), `order_by` and `order` query parameters are exposed and resolved into an `OrderByClause` automatically:
 
 ```python
 from typing import Annotated
@@ -452,32 +502,49 @@ from fastapi import Depends
 @router.get("")
 async def list_users(
     session: SessionDep,
-    params: Annotated[dict, Depends(UserCrud.offset_paginate_params(
-        default_order_field=User.created_at,
-    ))],
+    params: Annotated[dict, Depends(UserCrud.offset_paginate_params())],
 ) -> OffsetPaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(session=session, **params, schema=UserRead)
+```
+
+```python
+@router.get("")
+async def list_users(
+    session: SessionDep,
+    params: Annotated[dict, Depends(UserCrud.cursor_paginate_params())],
+) -> CursorPaginatedResponse[UserRead]:
+    return await UserCrud.cursor_paginate(session=session, **params, schema=UserRead)
 ```
 
 The dependency adds two query parameters to the endpoint:
 
 | Parameter  | Type            |
 | ---------- | --------------- |
-| `order_by` | `str | null`   |
+| `order_by` | `str \| null`  |
 | `order`    | `asc` or `desc` |
 
 ```
-GET /users?order_by=name&order=asc   → ORDER BY users.name ASC
-GET /users?order_by=name&order=desc  → ORDER BY users.name DESC
+GET /users?order_by=name&order=asc         → ORDER BY users.name ASC
+GET /users?order_by=role__name&order=desc  → LEFT JOIN roles ON ... ORDER BY roles.name DESC
 ```
 
-An unknown `order_by` value raises [`InvalidOrderFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError) (HTTP 422).
+!!! info "Relationship tuples are joined automatically."
+    When a relation field is selected, the related table is LEFT OUTER JOINed automatically. An unknown `order_by` value raises [`InvalidOrderFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError) (HTTP 422).
 
-You can also pass `order_fields` directly to override the class-level defaults:
 
-```python
-params = UserCrud.offset_paginate_params(order_fields=[User.name])
+The available sort keys are returned in the `order_columns` field of [`PaginatedResponse`](../reference/schemas.md#fastapi_toolsets.schemas.PaginatedResponse). Use them to populate a sort picker in the UI, or to validate `order_by` values on the client side:
+
+```json
+{
+  "status": "SUCCESS",
+  "data": ["..."],
+  "pagination": { "..." },
+  "order_columns": ["created_at", "name", "role__name"]
+}
 ```
+
+!!! info "Key format uses `__` as a separator for relationship chains."
+    A direct column `User.name` produces `"name"`. A relationship tuple `(User.role, Role.name)` produces `"role__name"`.
 
 ## Relationship loading
 
