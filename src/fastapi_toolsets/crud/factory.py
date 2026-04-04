@@ -38,6 +38,7 @@ from ..types import (
     M2MFieldType,
     ModelType,
     OrderByClause,
+    OrderFieldType,
     SchemaType,
     SearchFieldType,
 )
@@ -134,7 +135,7 @@ class AsyncCrud(Generic[ModelType]):
     model: ClassVar[type[DeclarativeBase]]
     searchable_fields: ClassVar[Sequence[SearchFieldType] | None] = None
     facet_fields: ClassVar[Sequence[FacetFieldType] | None] = None
-    order_fields: ClassVar[Sequence[QueryableAttribute[Any]] | None] = None
+    order_fields: ClassVar[Sequence[OrderFieldType] | None] = None
     m2m_fields: ClassVar[M2MFieldType | None] = None
     default_load_options: ClassVar[Sequence[ExecutableOption] | None] = None
     cursor_column: ClassVar[Any | None] = None
@@ -279,15 +280,15 @@ class AsyncCrud(Generic[ModelType]):
         return search_field_keys(fields)
 
     @classmethod
-    def _resolve_sort_columns(
+    def _resolve_order_columns(
         cls: type[Self],
-        order_fields: Sequence[QueryableAttribute[Any]] | None,
+        order_fields: Sequence[OrderFieldType] | None,
     ) -> list[str] | None:
         """Return sort column keys, or None if no order fields configured."""
         fields = order_fields if order_fields is not None else cls.order_fields
         if not fields:
             return None
-        return sorted(f.key for f in fields)
+        return sorted(facet_keys(fields))
 
     @classmethod
     def _build_paginate_params(
@@ -301,7 +302,7 @@ class AsyncCrud(Generic[ModelType]):
         order: bool,
         search_fields: Sequence[SearchFieldType] | None,
         facet_fields: Sequence[FacetFieldType] | None,
-        order_fields: Sequence[QueryableAttribute[Any]] | None,
+        order_fields: Sequence[OrderFieldType] | None,
         default_order_field: QueryableAttribute[Any] | None,
         default_order: Literal["asc", "desc"],
     ) -> Callable[..., Awaitable[dict[str, Any]]]:
@@ -360,14 +361,15 @@ class AsyncCrud(Generic[ModelType]):
                 )
                 reserved_names.update(filter_keys)
 
-        order_field_map: dict[str, QueryableAttribute[Any]] | None = None
+        order_field_map: dict[str, OrderFieldType] | None = None
         order_valid_keys: list[str] | None = None
         if order:
             resolved_order = (
                 order_fields if order_fields is not None else cls.order_fields
             )
             if resolved_order:
-                order_field_map = {f.key: f for f in resolved_order}
+                keys = facet_keys(resolved_order)
+                order_field_map = dict(zip(keys, resolved_order))
                 order_valid_keys = sorted(order_field_map.keys())
                 all_params.extend(
                     [
@@ -419,9 +421,16 @@ class AsyncCrud(Generic[ModelType]):
                 else:
                     field = order_field_map[order_by_val]
                 if field is not None:
-                    result["order_by"] = (
-                        field.asc() if order_dir == "asc" else field.desc()
-                    )
+                    if isinstance(field, tuple):
+                        col = field[-1]
+                        result["order_by"] = (
+                            col.asc() if order_dir == "asc" else col.desc()
+                        )
+                        result["order_joins"] = list(field[:-1])
+                    else:
+                        result["order_by"] = (
+                            field.asc() if order_dir == "asc" else field.desc()
+                        )
                 else:
                     result["order_by"] = None
 
@@ -445,7 +454,7 @@ class AsyncCrud(Generic[ModelType]):
         order: bool = True,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        order_fields: Sequence[OrderFieldType] | None = None,
         default_order_field: QueryableAttribute[Any] | None = None,
         default_order: Literal["asc", "desc"] = "asc",
     ) -> Callable[..., Awaitable[dict[str, Any]]]:
@@ -507,7 +516,7 @@ class AsyncCrud(Generic[ModelType]):
         order: bool = True,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        order_fields: Sequence[OrderFieldType] | None = None,
         default_order_field: QueryableAttribute[Any] | None = None,
         default_order: Literal["asc", "desc"] = "asc",
     ) -> Callable[..., Awaitable[dict[str, Any]]]:
@@ -572,7 +581,7 @@ class AsyncCrud(Generic[ModelType]):
         order: bool = True,
         search_fields: Sequence[SearchFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
-        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        order_fields: Sequence[OrderFieldType] | None = None,
         default_order_field: QueryableAttribute[Any] | None = None,
         default_order: Literal["asc", "desc"] = "asc",
     ) -> Callable[..., Awaitable[dict[str, Any]]]:
@@ -1213,13 +1222,14 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         load_options: Sequence[ExecutableOption] | None = None,
         order_by: OrderByClause | None = None,
+        order_joins: list[Any] | None = None,
         page: int = 1,
         items_per_page: int = 20,
         include_total: bool = True,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         search_column: str | None = None,
-        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        order_fields: Sequence[OrderFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1277,6 +1287,10 @@ class AsyncCrud(Generic[ModelType]):
         # Apply search joins (always outer joins for search)
         q = _apply_search_joins(q, search_joins)
 
+        # Apply order joins (relation joins required for order_by field)
+        if order_joins:
+            q = _apply_search_joins(q, order_joins)
+
         if filters:
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
@@ -1321,7 +1335,7 @@ class AsyncCrud(Generic[ModelType]):
             session, facet_fields, filters, search_joins
         )
         search_columns = cls._resolve_search_columns(search_fields)
-        sort_columns = cls._resolve_sort_columns(order_fields)
+        order_columns = cls._resolve_order_columns(order_fields)
 
         return OffsetPaginatedResponse(
             data=items,
@@ -1333,7 +1347,7 @@ class AsyncCrud(Generic[ModelType]):
             ),
             filter_attributes=filter_attributes,
             search_columns=search_columns,
-            sort_columns=sort_columns,
+            order_columns=order_columns,
         )
 
     @classmethod
@@ -1347,11 +1361,12 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         load_options: Sequence[ExecutableOption] | None = None,
         order_by: OrderByClause | None = None,
+        order_joins: list[Any] | None = None,
         items_per_page: int = 20,
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         search_column: str | None = None,
-        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        order_fields: Sequence[OrderFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1427,6 +1442,10 @@ class AsyncCrud(Generic[ModelType]):
         # Apply search joins (always outer joins)
         q = _apply_search_joins(q, search_joins)
 
+        # Apply order joins (relation joins required for order_by field)
+        if order_joins:
+            q = _apply_search_joins(q, order_joins)
+
         if filters:
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
@@ -1485,7 +1504,7 @@ class AsyncCrud(Generic[ModelType]):
             session, facet_fields, filters, search_joins
         )
         search_columns = cls._resolve_search_columns(search_fields)
-        sort_columns = cls._resolve_sort_columns(order_fields)
+        order_columns = cls._resolve_order_columns(order_fields)
 
         return CursorPaginatedResponse(
             data=items,
@@ -1497,7 +1516,7 @@ class AsyncCrud(Generic[ModelType]):
             ),
             filter_attributes=filter_attributes,
             search_columns=search_columns,
-            sort_columns=sort_columns,
+            order_columns=order_columns,
         )
 
     @overload
@@ -1512,6 +1531,7 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = ...,
         load_options: Sequence[ExecutableOption] | None = ...,
         order_by: OrderByClause | None = ...,
+        order_joins: list[Any] | None = ...,
         page: int = ...,
         cursor: str | None = ...,
         items_per_page: int = ...,
@@ -1519,7 +1539,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = ...,
         search_fields: Sequence[SearchFieldType] | None = ...,
         search_column: str | None = ...,
-        order_fields: Sequence[QueryableAttribute[Any]] | None = ...,
+        order_fields: Sequence[OrderFieldType] | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
         filter_by: dict[str, Any] | BaseModel | None = ...,
         schema: type[BaseModel],
@@ -1537,6 +1557,7 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = ...,
         load_options: Sequence[ExecutableOption] | None = ...,
         order_by: OrderByClause | None = ...,
+        order_joins: list[Any] | None = ...,
         page: int = ...,
         cursor: str | None = ...,
         items_per_page: int = ...,
@@ -1544,7 +1565,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = ...,
         search_fields: Sequence[SearchFieldType] | None = ...,
         search_column: str | None = ...,
-        order_fields: Sequence[QueryableAttribute[Any]] | None = ...,
+        order_fields: Sequence[OrderFieldType] | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
         filter_by: dict[str, Any] | BaseModel | None = ...,
         schema: type[BaseModel],
@@ -1561,6 +1582,7 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         load_options: Sequence[ExecutableOption] | None = None,
         order_by: OrderByClause | None = None,
+        order_joins: list[Any] | None = None,
         page: int = 1,
         cursor: str | None = None,
         items_per_page: int = 20,
@@ -1568,7 +1590,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         search_column: str | None = None,
-        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+        order_fields: Sequence[OrderFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1623,6 +1645,7 @@ class AsyncCrud(Generic[ModelType]):
                     outer_join=outer_join,
                     load_options=load_options,
                     order_by=order_by,
+                    order_joins=order_joins,
                     items_per_page=items_per_page,
                     search=search,
                     search_fields=search_fields,
@@ -1642,6 +1665,7 @@ class AsyncCrud(Generic[ModelType]):
                     outer_join=outer_join,
                     load_options=load_options,
                     order_by=order_by,
+                    order_joins=order_joins,
                     page=page,
                     items_per_page=items_per_page,
                     include_total=include_total,
@@ -1663,7 +1687,7 @@ def CrudFactory(
     base_class: type[AsyncCrud[Any]] = AsyncCrud,
     searchable_fields: Sequence[SearchFieldType] | None = None,
     facet_fields: Sequence[FacetFieldType] | None = None,
-    order_fields: Sequence[QueryableAttribute[Any]] | None = None,
+    order_fields: Sequence[OrderFieldType] | None = None,
     m2m_fields: M2MFieldType | None = None,
     default_load_options: Sequence[ExecutableOption] | None = None,
     cursor_column: Any | None = None,

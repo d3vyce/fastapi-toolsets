@@ -12,6 +12,7 @@ from ..types import (
     JoinType,
     M2MFieldType,
     OrderByClause,
+    OrderFieldType,
     SearchFieldType,
 )
 from .factory import AsyncCrud, CrudFactory
@@ -28,6 +29,7 @@ __all__ = [
     "M2MFieldType",
     "NoSearchableFieldsError",
     "OrderByClause",
+    "OrderFieldType",
     "PaginationType",
     "SearchConfig",
     "SearchFieldType",
