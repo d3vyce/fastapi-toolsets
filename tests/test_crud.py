@@ -247,8 +247,8 @@ class TestResolveSearchColumns:
         assert "username" not in result
 
 
-class TestResolveSortColumns:
-    """Tests for _resolve_sort_columns logic."""
+class TestResolveOrderColumns:
+    """Tests for _resolve_order_columns logic."""
 
     def test_returns_none_when_no_order_fields(self):
         """Returns None when cls.order_fields is None and no order_fields passed."""
@@ -256,24 +256,24 @@ class TestResolveSortColumns:
         class AbstractCrud(AsyncCrud[User]):
             pass
 
-        assert AbstractCrud._resolve_sort_columns(None) is None
+        assert AbstractCrud._resolve_order_columns(None) is None
 
     def test_returns_none_when_empty_order_fields_passed(self):
         """Returns None when an empty list is passed explicitly."""
         crud = CrudFactory(User)
-        assert crud._resolve_sort_columns([]) is None
+        assert crud._resolve_order_columns([]) is None
 
     def test_returns_keys_from_class_order_fields(self):
         """Returns sorted column keys from cls.order_fields when no override passed."""
         crud = CrudFactory(User, order_fields=[User.username])
-        result = crud._resolve_sort_columns(None)
+        result = crud._resolve_order_columns(None)
         assert result is not None
         assert "username" in result
 
     def test_order_fields_override_takes_priority(self):
         """Explicit order_fields override cls.order_fields."""
         crud = CrudFactory(User, order_fields=[User.username])
-        result = crud._resolve_sort_columns([User.email])
+        result = crud._resolve_order_columns([User.email])
         assert result is not None
         assert "email" in result
         assert "username" not in result
@@ -281,8 +281,23 @@ class TestResolveSortColumns:
     def test_returns_sorted_keys(self):
         """Keys are returned in sorted order."""
         crud = CrudFactory(User, order_fields=[User.email, User.username])
-        result = crud._resolve_sort_columns(None)
+        result = crud._resolve_order_columns(None)
         assert result is not None
+        assert result == sorted(result)
+
+    def test_relation_tuple_produces_dunder_key(self):
+        """A (rel, column) tuple produces a 'rel__column' key."""
+        crud = CrudFactory(User, order_fields=[(User.role, Role.name)])
+        result = crud._resolve_order_columns(None)
+        assert result == ["role__name"]
+
+    def test_mixed_flat_and_relation_fields(self):
+        """Flat and relation fields can be mixed; keys are sorted."""
+        crud = CrudFactory(User, order_fields=[User.username, (User.role, Role.name)])
+        result = crud._resolve_order_columns(None)
+        assert result is not None
+        assert "username" in result
+        assert "role__name" in result
         assert result == sorted(result)
 
 

@@ -19,9 +19,10 @@ JoinType = list[tuple[type[DeclarativeBase] | Any, Any]]
 M2MFieldType = Mapping[str, QueryableAttribute[Any]]
 OrderByClause = ColumnElement[Any] | QueryableAttribute[Any]
 
-# Search / facet type aliases
+# Search / facet / order type aliases
 SearchFieldType = InstrumentedAttribute[Any] | tuple[InstrumentedAttribute[Any], ...]
 FacetFieldType = SearchFieldType
+OrderFieldType = SearchFieldType
 
 # Dependency type aliases
 SessionDependency = Callable[[], AsyncGenerator[AsyncSession, None]] | Any
