@@ -279,6 +279,17 @@ class AsyncCrud(Generic[ModelType]):
         return search_field_keys(fields)
 
     @classmethod
+    def _resolve_sort_columns(
+        cls: type[Self],
+        order_fields: Sequence[QueryableAttribute[Any]] | None,
+    ) -> list[str] | None:
+        """Return sort column keys, or None if no order fields configured."""
+        fields = order_fields if order_fields is not None else cls.order_fields
+        if not fields:
+            return None
+        return sorted(f.key for f in fields)
+
+    @classmethod
     def _build_paginate_params(
         cls: type[Self],
         *,
@@ -1208,6 +1219,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         search_column: str | None = None,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1228,6 +1240,7 @@ class AsyncCrud(Generic[ModelType]):
             search: Search query string or SearchConfig object
             search_fields: Fields to search in (overrides class default)
             search_column: Restrict search to a single column key.
+            order_fields: Fields allowed for sorting (overrides class default).
             facet_fields: Columns to compute distinct values for (overrides class default)
             filter_by: Dict of {column_key: value} to filter by declared facet fields.
                 Keys must match the column.key of a facet field. Scalar → equality,
@@ -1308,6 +1321,7 @@ class AsyncCrud(Generic[ModelType]):
             session, facet_fields, filters, search_joins
         )
         search_columns = cls._resolve_search_columns(search_fields)
+        sort_columns = cls._resolve_sort_columns(order_fields)
 
         return OffsetPaginatedResponse(
             data=items,
@@ -1319,6 +1333,7 @@ class AsyncCrud(Generic[ModelType]):
             ),
             filter_attributes=filter_attributes,
             search_columns=search_columns,
+            sort_columns=sort_columns,
         )
 
     @classmethod
@@ -1336,6 +1351,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         search_column: str | None = None,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1357,6 +1373,7 @@ class AsyncCrud(Generic[ModelType]):
             search: Search query string or SearchConfig object.
             search_fields: Fields to search in (overrides class default).
             search_column: Restrict search to a single column key.
+            order_fields: Fields allowed for sorting (overrides class default).
             facet_fields: Columns to compute distinct values for (overrides class default).
             filter_by: Dict of {column_key: value} to filter by declared facet fields.
                 Keys must match the column.key of a facet field. Scalar → equality,
@@ -1468,6 +1485,7 @@ class AsyncCrud(Generic[ModelType]):
             session, facet_fields, filters, search_joins
         )
         search_columns = cls._resolve_search_columns(search_fields)
+        sort_columns = cls._resolve_sort_columns(order_fields)
 
         return CursorPaginatedResponse(
             data=items,
@@ -1479,6 +1497,7 @@ class AsyncCrud(Generic[ModelType]):
             ),
             filter_attributes=filter_attributes,
             search_columns=search_columns,
+            sort_columns=sort_columns,
         )
 
     @overload
@@ -1500,6 +1519,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = ...,
         search_fields: Sequence[SearchFieldType] | None = ...,
         search_column: str | None = ...,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
         filter_by: dict[str, Any] | BaseModel | None = ...,
         schema: type[BaseModel],
@@ -1524,6 +1544,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = ...,
         search_fields: Sequence[SearchFieldType] | None = ...,
         search_column: str | None = ...,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
         filter_by: dict[str, Any] | BaseModel | None = ...,
         schema: type[BaseModel],
@@ -1547,6 +1568,7 @@ class AsyncCrud(Generic[ModelType]):
         search: str | SearchConfig | None = None,
         search_fields: Sequence[SearchFieldType] | None = None,
         search_column: str | None = None,
+        order_fields: Sequence[QueryableAttribute[Any]] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
@@ -1575,6 +1597,7 @@ class AsyncCrud(Generic[ModelType]):
             search: Search query string or :class:`.SearchConfig` object.
             search_fields: Fields to search in (overrides class default).
             search_column: Restrict search to a single column key.
+            order_fields: Fields allowed for sorting (overrides class default).
             facet_fields: Columns to compute distinct values for (overrides
                 class default).
             filter_by: Dict of ``{column_key: value}`` to filter by declared
@@ -1604,6 +1627,7 @@ class AsyncCrud(Generic[ModelType]):
                     search=search,
                     search_fields=search_fields,
                     search_column=search_column,
+                    order_fields=order_fields,
                     facet_fields=facet_fields,
                     filter_by=filter_by,
                     schema=schema,
@@ -1624,6 +1648,7 @@ class AsyncCrud(Generic[ModelType]):
                     search=search,
                     search_fields=search_fields,
                     search_column=search_column,
+                    order_fields=order_fields,
                     facet_fields=facet_fields,
                     filter_by=filter_by,
                     schema=schema,

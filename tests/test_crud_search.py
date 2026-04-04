@@ -1516,6 +1516,101 @@ class TestSearchColumns:
         assert result.data[0].username == "bob"
 
 
+class TestSortColumns:
+    """Tests for sort_columns in paginated responses."""
+
+    @pytest.mark.anyio
+    async def test_sort_columns_returned_in_offset_paginate(
+        self, db_session: AsyncSession
+    ):
+        """offset_paginate response includes sort_columns."""
+        UserSortCrud = CrudFactory(User, order_fields=[User.username, User.email])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserSortCrud.offset_paginate(db_session, schema=UserRead)
+
+        assert result.sort_columns is not None
+        assert "username" in result.sort_columns
+        assert "email" in result.sort_columns
+
+    @pytest.mark.anyio
+    async def test_sort_columns_returned_in_cursor_paginate(
+        self, db_session: AsyncSession
+    ):
+        """cursor_paginate response includes sort_columns."""
+        UserSortCursorCrud = CrudFactory(
+            User,
+            cursor_column=User.id,
+            order_fields=[User.username, User.email],
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserSortCursorCrud.cursor_paginate(db_session, schema=UserRead)
+
+        assert result.sort_columns is not None
+        assert "username" in result.sort_columns
+        assert "email" in result.sort_columns
+
+    @pytest.mark.anyio
+    async def test_sort_columns_none_when_no_order_fields(
+        self, db_session: AsyncSession
+    ):
+        """sort_columns is None when no order_fields are configured."""
+        result = await UserCrud.offset_paginate(db_session, schema=UserRead)
+
+        assert result.sort_columns is None
+
+    @pytest.mark.anyio
+    async def test_sort_columns_override_in_offset_paginate(
+        self, db_session: AsyncSession
+    ):
+        """order_fields override in offset_paginate is reflected in sort_columns."""
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserCrud.offset_paginate(
+            db_session, order_fields=[User.email], schema=UserRead
+        )
+
+        assert result.sort_columns == ["email"]
+
+    @pytest.mark.anyio
+    async def test_sort_columns_override_in_cursor_paginate(
+        self, db_session: AsyncSession
+    ):
+        """order_fields override in cursor_paginate is reflected in sort_columns."""
+        UserCursorCrud = CrudFactory(User, cursor_column=User.id)
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserCursorCrud.cursor_paginate(
+            db_session, order_fields=[User.username], schema=UserRead
+        )
+
+        assert result.sort_columns == ["username"]
+
+    @pytest.mark.anyio
+    async def test_sort_columns_are_sorted_alphabetically(
+        self, db_session: AsyncSession
+    ):
+        """sort_columns keys are returned in alphabetical order."""
+        UserSortCrud = CrudFactory(User, order_fields=[User.email, User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserSortCrud.offset_paginate(db_session, schema=UserRead)
+
+        assert result.sort_columns is not None
+        assert result.sort_columns == sorted(result.sort_columns)
+
+
 class TestOrderParamsViaConsolidated:
     """Tests for order params via consolidated offset_paginate_params()."""
 
