@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from enum import Enum
 
 import pytest
 from pydantic import BaseModel
@@ -12,6 +13,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Enum as SAEnum,
     ForeignKey,
     Integer,
     JSON,
@@ -137,6 +139,35 @@ class Post(Base):
     author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
 
     tags: Mapped[list[Tag]] = relationship(secondary=post_tags)
+
+
+class OrderStatus(int, Enum):
+    """Integer-backed enum for order status."""
+
+    PENDING = 1
+    PROCESSING = 2
+    SHIPPED = 3
+    CANCELLED = 4
+
+
+class Color(str, Enum):
+    """String-backed enum for color."""
+
+    RED = "red"
+    GREEN = "green"
+    BLUE = "blue"
+
+
+class Order(Base):
+    """Test model with an IntEnum column (Enum(int, Enum)) and a raw Integer column."""
+
+    __tablename__ = "orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100))
+    status: Mapped[OrderStatus] = mapped_column(SAEnum(OrderStatus))
+    priority: Mapped[int] = mapped_column(Integer)
+    color: Mapped[Color] = mapped_column(SAEnum(Color))
 
 
 class Transfer(Base):
@@ -311,6 +342,26 @@ class ArticleRead(PydanticBase):
     labels: list[str]
 
 
+class OrderCreate(BaseModel):
+    """Schema for creating an order."""
+
+    id: uuid.UUID | None = None
+    name: str
+    status: OrderStatus
+    priority: int = 0
+    color: Color = Color.RED
+
+
+class OrderRead(PydanticBase):
+    """Schema for reading an order."""
+
+    id: uuid.UUID
+    name: str
+    status: OrderStatus
+    priority: int
+    color: Color
+
+
 class TransferCreate(BaseModel):
     """Schema for creating a transfer."""
 
@@ -327,6 +378,7 @@ class TransferRead(PydanticBase):
     amount: str
 
 
+OrderCrud = CrudFactory(Order)
 TransferCrud = CrudFactory(Transfer)
 ArticleCrud = CrudFactory(Article)
 RoleCrud = CrudFactory(Role)
