@@ -265,7 +265,15 @@ async def build_facets(
         else:
             q = q.order_by(column)
         result = await session.execute(q)
-        values = [row[0] for row in result.all() if row[0] is not None]
+        col_type = column.property.columns[0].type
+        enum_class = getattr(col_type, "enum_class", None)
+        values = [
+            row[0].name
+            if (enum_class is not None and isinstance(row[0], enum_class))
+            else row[0]
+            for row in result.all()
+            if row[0] is not None
+        ]
         return key, values
 
     pairs = await asyncio.gather(
@@ -349,18 +357,18 @@ def build_filter_by(
                 filters.append(column.any(value))
         elif isinstance(col_type, Enum):
             enum_class = col_type.enum_class
-            if enum_class is not None and issubclass(enum_class, int):
+            if enum_class is not None:
 
-                def _coerce_int_enum(v: Any) -> Any:
+                def _coerce_enum(v: Any) -> Any:
                     if isinstance(v, enum_class):
                         return v
-                    return enum_class(int(v))
+                    return enum_class[v]  # lookup by name: "PENDING", "RED"
 
                 if isinstance(value, list):
-                    filters.append(column.in_([_coerce_int_enum(v) for v in value]))
+                    filters.append(column.in_([_coerce_enum(v) for v in value]))
                 else:
-                    filters.append(column == _coerce_int_enum(value))
-            else:
+                    filters.append(column == _coerce_enum(value))
+            else:  # pragma: no cover
                 if isinstance(value, list):
                     filters.append(column.in_(value))
                 else:
