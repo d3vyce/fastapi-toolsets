@@ -23,6 +23,12 @@ from .conftest import (
     ArticleCreate,
     ArticleCrud,
     ArticleRead,
+    Color,
+    Order,
+    OrderCreate,
+    OrderCrud,
+    OrderRead,
+    OrderStatus,
     Role,
     RoleCreate,
     RoleCrud,
@@ -1119,6 +1125,227 @@ class TestFilterBy:
 
         assert exc_info.value.key == "metadata_"
         assert "JSON" in exc_info.value.col_type
+
+
+class TestFilterByIntEnum:
+    """Tests for filter_by on columns typed as (int, Enum) / IntEnum."""
+
+    @pytest.mark.anyio
+    async def test_filter_by_intenum_member(self, db_session: AsyncSession):
+        """filter_by with an IntEnum member value filters correctly."""
+        OrderFacetCrud = CrudFactory(Order, facet_fields=[Order.status])
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-1", status=OrderStatus.PENDING)
+        )
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-2", status=OrderStatus.SHIPPED)
+        )
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-3", status=OrderStatus.PENDING)
+        )
+
+        result = await OrderFacetCrud.offset_paginate(
+            db_session,
+            filter_by={"status": OrderStatus.PENDING},
+            schema=OrderRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+        names = {o.name for o in result.data}
+        assert names == {"order-1", "order-3"}
+
+    @pytest.mark.anyio
+    async def test_filter_by_plain_int_value(self, db_session: AsyncSession):
+        """filter_by with a plain int (not an enum member) filters correctly on an IntEnum column."""
+        OrderFacetCrud = CrudFactory(Order, facet_fields=[Order.status])
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-1", status=OrderStatus.PENDING)
+        )
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-2", status=OrderStatus.SHIPPED)
+        )
+
+        result = await OrderFacetCrud.offset_paginate(
+            db_session,
+            filter_by={"status": 1},  # plain int, not OrderStatus.PENDING
+            schema=OrderRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].name == "order-1"
+
+    @pytest.mark.anyio
+    async def test_filter_by_intenum_list(self, db_session: AsyncSession):
+        """filter_by with a list of IntEnum members produces an IN filter."""
+        OrderFacetCrud = CrudFactory(Order, facet_fields=[Order.status])
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-1", status=OrderStatus.PENDING)
+        )
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-2", status=OrderStatus.SHIPPED)
+        )
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-3", status=OrderStatus.CANCELLED)
+        )
+
+        result = await OrderFacetCrud.offset_paginate(
+            db_session,
+            filter_by={"status": [OrderStatus.PENDING, OrderStatus.SHIPPED]},
+            schema=OrderRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+        names = {o.name for o in result.data}
+        assert names == {"order-1", "order-2"}
+
+    @pytest.mark.anyio
+    async def test_filter_by_plain_int_list(self, db_session: AsyncSession):
+        """filter_by with a list of plain ints filters correctly on an IntEnum column."""
+        OrderFacetCrud = CrudFactory(Order, facet_fields=[Order.status])
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-1", status=OrderStatus.PENDING)
+        )
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-2", status=OrderStatus.SHIPPED)
+        )
+        await OrderCrud.create(
+            db_session, OrderCreate(name="order-3", status=OrderStatus.CANCELLED)
+        )
+
+        result = await OrderFacetCrud.offset_paginate(
+            db_session,
+            filter_by={"status": [1, 3]},  # plain ints for PENDING and SHIPPED
+            schema=OrderRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+        names = {o.name for o in result.data}
+        assert names == {"order-1", "order-2"}
+
+
+class TestFilterByStrEnum:
+    """Tests for filter_by on columns typed as (str, Enum) / StrEnum (lines 364-367)."""
+
+    @pytest.mark.anyio
+    async def test_filter_by_strenum_member(self, db_session: AsyncSession):
+        """filter_by with a StrEnum member on a string Enum column filters correctly."""
+        OrderColorCrud = CrudFactory(Order, facet_fields=[Order.color])
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(name="red-order", status=OrderStatus.PENDING, color=Color.RED),
+        )
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(
+                name="blue-order", status=OrderStatus.PENDING, color=Color.BLUE
+            ),
+        )
+
+        result = await OrderColorCrud.offset_paginate(
+            db_session,
+            filter_by={"color": Color.RED},
+            schema=OrderRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].name == "red-order"
+
+    @pytest.mark.anyio
+    async def test_filter_by_strenum_list(self, db_session: AsyncSession):
+        """filter_by with a list of StrEnum members produces an IN filter."""
+        OrderColorCrud = CrudFactory(Order, facet_fields=[Order.color])
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(name="red-order", status=OrderStatus.PENDING, color=Color.RED),
+        )
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(
+                name="green-order", status=OrderStatus.PENDING, color=Color.GREEN
+            ),
+        )
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(
+                name="blue-order", status=OrderStatus.PENDING, color=Color.BLUE
+            ),
+        )
+
+        result = await OrderColorCrud.offset_paginate(
+            db_session,
+            filter_by={"color": [Color.RED, Color.BLUE]},
+            schema=OrderRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 2
+        names = {o.name for o in result.data}
+        assert names == {"red-order", "blue-order"}
+
+
+class TestFilterByIntegerColumn:
+    """Tests for filter_by on plain Integer columns with IntEnum values."""
+
+    @pytest.mark.anyio
+    async def test_filter_by_integer_column_with_intenum_member(
+        self, db_session: AsyncSession
+    ):
+        """filter_by with an IntEnum member on an Integer column works correctly."""
+        OrderPriorityCrud = CrudFactory(Order, facet_fields=[Order.priority])
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(
+                name="order-1", status=OrderStatus.PENDING, priority=OrderStatus.PENDING
+            ),
+        )
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(
+                name="order-2", status=OrderStatus.SHIPPED, priority=OrderStatus.SHIPPED
+            ),
+        )
+
+        result = await OrderPriorityCrud.offset_paginate(
+            db_session,
+            filter_by={
+                "priority": OrderStatus.PENDING
+            },  # IntEnum member on Integer col
+            schema=OrderRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].name == "order-1"
+
+    @pytest.mark.anyio
+    async def test_filter_by_integer_column_with_plain_int(
+        self, db_session: AsyncSession
+    ):
+        """filter_by with a plain int on an Integer column works correctly."""
+        OrderPriorityCrud = CrudFactory(Order, facet_fields=[Order.priority])
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(name="order-1", status=OrderStatus.PENDING, priority=1),
+        )
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(name="order-2", status=OrderStatus.SHIPPED, priority=3),
+        )
+
+        result = await OrderPriorityCrud.offset_paginate(
+            db_session,
+            filter_by={"priority": 1},
+            schema=OrderRead,
+        )
+
+        assert isinstance(result.pagination, OffsetPagination)
+        assert result.pagination.total_count == 1
+        assert result.data[0].name == "order-1"
 
 
 class TestFilterParamsViaConsolidated:

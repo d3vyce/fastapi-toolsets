@@ -347,6 +347,24 @@ def build_filter_by(
                 filters.append(column.overlap(value))
             else:
                 filters.append(column.any(value))
+        elif isinstance(col_type, Enum):
+            enum_class = col_type.enum_class
+            if enum_class is not None and issubclass(enum_class, int):
+
+                def _coerce_int_enum(v: Any) -> Any:
+                    if isinstance(v, enum_class):
+                        return v
+                    return enum_class(int(v))
+
+                if isinstance(value, list):
+                    filters.append(column.in_([_coerce_int_enum(v) for v in value]))
+                else:
+                    filters.append(column == _coerce_int_enum(value))
+            else:
+                if isinstance(value, list):
+                    filters.append(column.in_(value))
+                else:
+                    filters.append(column == value)
         elif isinstance(col_type, _EQUALITY_TYPES):
             if isinstance(value, list):
                 filters.append(column.in_(value))
