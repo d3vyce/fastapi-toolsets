@@ -15,12 +15,13 @@ from ..types import (
     OrderFieldType,
     SearchFieldType,
 )
-from .factory import AsyncCrud, CrudFactory
+from .factory import AsyncCrud, CrudFactory, lateral_load
 from .search import SearchConfig, get_searchable_fields
 
 __all__ = [
     "AsyncCrud",
     "CrudFactory",
+    "lateral_load",
     "FacetFieldType",
     "get_searchable_fields",
     "InvalidFacetFilterError",
