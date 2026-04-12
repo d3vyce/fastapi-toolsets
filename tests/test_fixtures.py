@@ -10,6 +10,7 @@ from fastapi_toolsets.fixtures import (
     Context,
     FixtureRegistry,
     LoadStrategy,
+    get_field_by_attr,
     get_obj_by_attr,
     load_fixtures,
     load_fixtures_by_context,
@@ -949,6 +950,41 @@ class TestGetObjByAttr:
         """Raises StopIteration when value type doesn't match."""
         with pytest.raises(StopIteration):
             get_obj_by_attr(self.roles, "id", "not-a-uuid")
+
+
+class TestGetFieldByAttr:
+    """Tests for get_field_by_attr helper function."""
+
+    def setup_method(self):
+        self.registry = FixtureRegistry()
+        self.role_id_1 = uuid.uuid4()
+        self.role_id_2 = uuid.uuid4()
+        role_id_1 = self.role_id_1
+        role_id_2 = self.role_id_2
+
+        @self.registry.register
+        def roles() -> list[Role]:
+            return [
+                Role(id=role_id_1, name="admin"),
+                Role(id=role_id_2, name="user"),
+            ]
+
+        self.roles = roles
+
+    def test_returns_id_by_default(self):
+        """Returns the id field when no field is specified."""
+        result = get_field_by_attr(self.roles, "name", "admin")
+        assert result == self.role_id_1
+
+    def test_returns_specified_field(self):
+        """Returns the requested field instead of id."""
+        result = get_field_by_attr(self.roles, "id", self.role_id_2, field="name")
+        assert result == "user"
+
+    def test_no_match_raises_stop_iteration(self):
+        """Propagates StopIteration from get_obj_by_attr when no match found."""
+        with pytest.raises(StopIteration, match="No object with name=missing"):
+            get_field_by_attr(self.roles, "name", "missing")
 
 
 class TestGetPrimaryKey:
