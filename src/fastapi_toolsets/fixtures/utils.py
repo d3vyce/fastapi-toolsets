@@ -250,6 +250,31 @@ def get_obj_by_attr(
         ) from None
 
 
+def get_field_by_attr(
+    fixtures: Callable[[], Sequence[ModelType]],
+    attr_name: str,
+    value: Any,
+    *,
+    field: str = "id",
+) -> Any:
+    """Get a single field value from a fixture object matched by an attribute.
+
+    Args:
+        fixtures: A fixture function registered via ``@registry.register``
+            that returns a sequence of SQLAlchemy model instances.
+        attr_name: Name of the attribute to match against.
+        value: Value to match.
+        field: Attribute name to return from the matched object (default: ``"id"``).
+
+    Returns:
+        The value of ``field`` on the first matching model instance.
+
+    Raises:
+        StopIteration: If no matching object is found in the fixture group.
+    """
+    return getattr(get_obj_by_attr(fixtures, attr_name, value), field)
+
+
 async def load_fixtures(
     session: AsyncSession,
     registry: FixtureRegistry,
