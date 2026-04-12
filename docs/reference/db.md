@@ -13,6 +13,9 @@ from fastapi_toolsets.db import (
     create_db_context,
     get_transaction,
     lock_tables,
+    m2m_add,
+    m2m_remove,
+    m2m_set,
     wait_for_row_change,
 )
 ```
@@ -32,3 +35,9 @@ from fastapi_toolsets.db import (
 ## ::: fastapi_toolsets.db.create_database
 
 ## ::: fastapi_toolsets.db.cleanup_tables
+
+## ::: fastapi_toolsets.db.m2m_add
+
+## ::: fastapi_toolsets.db.m2m_remove
+
+## ::: fastapi_toolsets.db.m2m_set
