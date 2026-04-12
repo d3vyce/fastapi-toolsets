@@ -536,11 +536,6 @@ class TestCreateWorkerDatabase:
         await engine.dispose()
 
 
-# ---------------------------------------------------------------------------
-# Local models for composite-PK coverage (own Base → own tables, isolated)
-# ---------------------------------------------------------------------------
-
-
 class _LocalBase(DeclarativeBase):
     pass
 

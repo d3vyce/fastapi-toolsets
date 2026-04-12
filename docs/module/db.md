@@ -118,6 +118,57 @@ async def clean(db_session):
     await cleanup_tables(session=db_session, base=Base)
 ```
 
+## Many-to-Many helpers
+
+SQLAlchemy's ORM collection API triggers lazy-loads when you append to a relationship inside a savepoint (e.g. inside `lock_tables` or a nested `get_transaction`). The three `m2m_*` helpers bypass the ORM collection entirely and issue direct SQL against the association table.
+
+### `m2m_add` — insert associations
+
+[`m2m_add`](../reference/db.md#fastapi_toolsets.db.m2m_add) inserts one or more rows into a secondary table without touching the ORM collection:
+
+```python
+from fastapi_toolsets.db import lock_tables, m2m_add
+
+async with lock_tables(session, [Tag]):
+    tag = await TagCrud.create(session, TagCreate(name="python"))
+    await m2m_add(session, post, Post.tags, tag)
+```
+
+Pass `ignore_conflicts=True` to silently skip associations that already exist:
+
+```python
+await m2m_add(session, post, Post.tags, tag, ignore_conflicts=True)
+```
+
+### `m2m_remove` — delete associations
+
+[`m2m_remove`](../reference/db.md#fastapi_toolsets.db.m2m_remove) deletes specific association rows. Removing a non-existent association is a no-op:
+
+```python
+from fastapi_toolsets.db import get_transaction, m2m_remove
+
+async with get_transaction(session):
+    await m2m_remove(session, post, Post.tags, tag1, tag2)
+```
+
+### `m2m_set` — replace the full set
+
+[`m2m_set`](../reference/db.md#fastapi_toolsets.db.m2m_set) atomically replaces all associations: it deletes every existing row for the owner instance then inserts the new set. Passing no related instances clears the association entirely:
+
+```python
+from fastapi_toolsets.db import get_transaction, m2m_set
+
+# Replace all tags
+async with get_transaction(session):
+    await m2m_set(session, post, Post.tags, tag_a, tag_b)
+
+# Clear all tags
+async with get_transaction(session):
+    await m2m_set(session, post, Post.tags)
+```
+
+All three helpers raise `TypeError` if the relationship attribute is not a Many-to-Many (i.e. has no secondary table).
+
 ---
 
 [:material-api: API Reference](../reference/db.md)
