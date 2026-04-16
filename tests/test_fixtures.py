@@ -15,9 +15,24 @@ from fastapi_toolsets.fixtures import (
     load_fixtures,
     load_fixtures_by_context,
 )
-from fastapi_toolsets.fixtures.utils import _get_primary_key, _instance_to_dict
+from fastapi_toolsets.fixtures.utils import (
+    _get_primary_key,
+    _get_table_chain,
+    _instance_to_dict,
+    _instance_to_dict_for_cls,
+)
 
-from .conftest import IntRole, Permission, Role, RoleCreate, RoleCrud, User, UserCrud
+from .conftest import (
+    Challenge,
+    ChallengeStandard,
+    IntRole,
+    Permission,
+    Role,
+    RoleCreate,
+    RoleCrud,
+    User,
+    UserCrud,
+)
 
 
 class AppContext(str, Enum):
@@ -1509,3 +1524,236 @@ class TestBatchNullableColumnEdgeCases:
         assert rows["only_role"].notes is None
         assert rows["only_notes"].role_id is None
         assert rows["only_notes"].notes == "partial"
+
+
+class TestJoinedTableInheritance:
+    """Tests for fixture batch helpers with SQLAlchemy joined-table inheritance.
+
+    Regression coverage for the KeyError raised when _batch_insert/_batch_merge
+    used model_cls.__mapper__.column_attrs (which includes inherited parent columns)
+    against a pg_insert targeting only the child table.
+    """
+
+    def test_get_table_chain_plain_model(self):
+        """_get_table_chain returns [model_cls] for a non-inherited model."""
+        chain = _get_table_chain(Role)
+        assert chain == [Role]
+
+    def test_get_table_chain_jti_child(self):
+        """_get_table_chain returns [root, child] for a joined-table child."""
+        chain = _get_table_chain(ChallengeStandard)
+        assert chain == [Challenge, ChallengeStandard]
+
+    def test_instance_to_dict_for_cls_root(self):
+        """_instance_to_dict_for_cls scopes to root table columns only."""
+        cid = uuid.uuid4()
+        inst = ChallengeStandard(
+            id=cid, title="root-only", challenge_type="standard", difficulty="easy"
+        )
+        d = _instance_to_dict_for_cls(inst, Challenge)
+        assert "id" in d
+        assert "title" in d
+        assert "challenge_type" in d
+        assert "difficulty" not in d  # child column excluded
+
+    def test_instance_to_dict_for_cls_child(self):
+        """_instance_to_dict_for_cls scopes to child table columns only."""
+        cid = uuid.uuid4()
+        inst = ChallengeStandard(
+            id=cid, title="child-only", challenge_type="standard", difficulty="hard"
+        )
+        d = _instance_to_dict_for_cls(inst, ChallengeStandard)
+        assert "id" in d
+        assert "difficulty" in d
+        assert "title" not in d  # parent column excluded
+        assert "challenge_type" not in d  # parent column excluded
+
+    @pytest.mark.anyio
+    async def test_insert_strategy_jti(self, db_session: AsyncSession):
+        """INSERT strategy correctly inserts both root and child table rows."""
+        from sqlalchemy import select
+
+        registry = FixtureRegistry()
+        cid1 = uuid.uuid4()
+        cid2 = uuid.uuid4()
+
+        @registry.register
+        def challenges():
+            return [
+                ChallengeStandard(
+                    id=cid1, title="Alpha", challenge_type="standard", difficulty="easy"
+                ),
+                ChallengeStandard(
+                    id=cid2, title="Beta", challenge_type="standard", difficulty="hard"
+                ),
+            ]
+
+        result = await load_fixtures(
+            db_session, registry, "challenges", strategy=LoadStrategy.INSERT
+        )
+        assert len(result["challenges"]) == 2
+
+        rows = (await db_session.execute(select(ChallengeStandard))).scalars().all()
+        by_title = {r.title: r for r in rows}
+        assert by_title["Alpha"].difficulty == "easy"
+        assert by_title["Beta"].difficulty == "hard"
+        assert by_title["Alpha"].challenge_type == "standard"
+
+    @pytest.mark.anyio
+    async def test_merge_strategy_jti_insert(self, db_session: AsyncSession):
+        """MERGE strategy inserts new JTI rows correctly."""
+        from sqlalchemy import select
+
+        registry = FixtureRegistry()
+        cid = uuid.uuid4()
+
+        @registry.register
+        def challenges():
+            return [
+                ChallengeStandard(
+                    id=cid,
+                    title="Gamma",
+                    challenge_type="standard",
+                    difficulty="medium",
+                )
+            ]
+
+        result = await load_fixtures(
+            db_session, registry, "challenges", strategy=LoadStrategy.MERGE
+        )
+        assert len(result["challenges"]) == 1
+
+        row = (
+            await db_session.execute(
+                select(ChallengeStandard).where(ChallengeStandard.id == cid)
+            )
+        ).scalar_one()
+        assert row.title == "Gamma"
+        assert row.difficulty == "medium"
+
+    @pytest.mark.anyio
+    async def test_merge_strategy_jti_upsert(self, db_session: AsyncSession):
+        """MERGE strategy updates existing JTI rows on re-load."""
+        from sqlalchemy import select
+
+        registry = FixtureRegistry()
+        cid = uuid.uuid4()
+
+        @registry.register
+        def challenges():
+            return [
+                ChallengeStandard(
+                    id=cid,
+                    title="Original",
+                    challenge_type="standard",
+                    difficulty="easy",
+                )
+            ]
+
+        await load_fixtures(
+            db_session, registry, "challenges", strategy=LoadStrategy.MERGE
+        )
+
+        registry2 = FixtureRegistry()
+
+        @registry2.register
+        def challenges():  # noqa: F811
+            return [
+                ChallengeStandard(
+                    id=cid,
+                    title="Updated",
+                    challenge_type="standard",
+                    difficulty="hard",
+                )
+            ]
+
+        await load_fixtures(
+            db_session, registry2, "challenges", strategy=LoadStrategy.MERGE
+        )
+
+        row = (
+            await db_session.execute(
+                select(ChallengeStandard).where(ChallengeStandard.id == cid)
+            )
+        ).scalar_one()
+        assert row.title == "Updated"
+        assert row.difficulty == "hard"
+
+    @pytest.mark.anyio
+    async def test_skip_existing_strategy_jti_inserts_new(
+        self, db_session: AsyncSession
+    ):
+        """SKIP_EXISTING inserts a new JTI row and returns it."""
+        from sqlalchemy import select
+
+        registry = FixtureRegistry()
+        cid = uuid.uuid4()
+
+        @registry.register
+        def challenges():
+            return [
+                ChallengeStandard(
+                    id=cid, title="New", challenge_type="standard", difficulty="easy"
+                )
+            ]
+
+        result = await load_fixtures(
+            db_session, registry, "challenges", strategy=LoadStrategy.SKIP_EXISTING
+        )
+        assert len(result["challenges"]) == 1
+
+        row = (
+            await db_session.execute(
+                select(ChallengeStandard).where(ChallengeStandard.id == cid)
+            )
+        ).scalar_one()
+        assert row.title == "New"
+
+    @pytest.mark.anyio
+    async def test_skip_existing_strategy_jti_skips_existing(
+        self, db_session: AsyncSession
+    ):
+        """SKIP_EXISTING does not overwrite an existing JTI row."""
+        from sqlalchemy import select
+
+        registry = FixtureRegistry()
+        cid = uuid.uuid4()
+
+        @registry.register
+        def challenges():
+            return [
+                ChallengeStandard(
+                    id=cid, title="First", challenge_type="standard", difficulty="easy"
+                )
+            ]
+
+        await load_fixtures(
+            db_session, registry, "challenges", strategy=LoadStrategy.SKIP_EXISTING
+        )
+        db_session.expunge_all()
+
+        registry2 = FixtureRegistry()
+
+        @registry2.register
+        def challenges():  # noqa: F811
+            return [
+                ChallengeStandard(
+                    id=cid,
+                    title="Overwrite",
+                    challenge_type="standard",
+                    difficulty="hard",
+                )
+            ]
+
+        result = await load_fixtures(
+            db_session, registry2, "challenges", strategy=LoadStrategy.SKIP_EXISTING
+        )
+        assert result["challenges"] == []
+
+        row = (
+            await db_session.execute(
+                select(ChallengeStandard).where(ChallengeStandard.id == cid)
+            )
+        ).scalar_one()
+        assert row.title == "First"
+        assert row.difficulty == "easy"

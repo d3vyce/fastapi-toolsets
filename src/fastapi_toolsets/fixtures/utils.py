@@ -40,6 +40,32 @@ def _instance_to_dict(instance: DeclarativeBase) -> dict[str, Any]:
     return result
 
 
+def _get_table_chain(model_cls: type[DeclarativeBase]) -> list[type[DeclarativeBase]]:
+    """Return [root, ..., model_cls] for joined-table inheritance, or [model_cls]."""
+    chain: list[type[DeclarativeBase]] = []
+    current = sa_inspect(model_cls)
+    while current is not None:
+        chain.append(current.class_)
+        current = current.inherits
+    chain.reverse()
+    seen: set[int] = set()
+    result: list[type[DeclarativeBase]] = []
+    for cls in chain:
+        tid = id(cls.__table__)
+        if tid not in seen:  # pragma: no branch
+            seen.add(tid)
+            result.append(cls)
+    return result
+
+
+def _instance_to_dict_for_cls(
+    instance: DeclarativeBase, cls: type[DeclarativeBase]
+) -> dict[str, Any]:
+    """Like _instance_to_dict but limited to columns belonging to cls's own table."""
+    own_cols = {col.key for col in cls.__table__.columns}
+    return {k: v for k, v in _instance_to_dict(instance).items() if k in own_cols}
+
+
 def _group_by_type(
     instances: list[DeclarativeBase],
 ) -> list[tuple[type[DeclarativeBase], list[DeclarativeBase]]]:
@@ -73,9 +99,11 @@ async def _batch_insert(
     instances: list[DeclarativeBase],
 ) -> None:
     """INSERT all instances — raises on conflict (no duplicate handling)."""
-    dicts = [_instance_to_dict(i) for i in instances]
-    for group_dicts, _ in _group_by_column_set(dicts, instances):
-        await session.execute(pg_insert(model_cls).values(group_dicts))
+    for cls in _get_table_chain(model_cls):
+        dicts = [_instance_to_dict_for_cls(i, cls) for i in instances]
+        for group_dicts, _ in _group_by_column_set(dicts, instances):
+            if group_dicts and group_dicts[0]:  # pragma: no branch
+                await session.execute(pg_insert(cls).values(group_dicts))
 
 
 async def _batch_merge(
@@ -84,31 +112,30 @@ async def _batch_merge(
     instances: list[DeclarativeBase],
 ) -> None:
     """UPSERT: insert new rows, update existing ones with the provided values."""
-    mapper = model_cls.__mapper__
-    pk_names = [col.name for col in mapper.primary_key]
-    pk_names_set = set(pk_names)
-    non_pk_cols = [
-        prop.key
-        for prop in mapper.column_attrs
-        if not any(col.name in pk_names_set for col in prop.columns)
-    ]
+    for cls in _get_table_chain(model_cls):
+        pk_names = [col.name for col in cls.__table__.primary_key]
+        pk_names_set = set(pk_names)
+        own_col_keys = {col.key for col in cls.__table__.columns}
+        non_pk_cols = [k for k in own_col_keys if k not in pk_names_set]
 
-    dicts = [_instance_to_dict(i) for i in instances]
-    for group_dicts, _ in _group_by_column_set(dicts, instances):
-        stmt = pg_insert(model_cls).values(group_dicts)
+        dicts = [_instance_to_dict_for_cls(i, cls) for i in instances]
+        for group_dicts, _ in _group_by_column_set(dicts, instances):
+            if not group_dicts or not group_dicts[0]:  # pragma: no cover
+                continue
+            stmt = pg_insert(cls).values(group_dicts)
 
-        inserted_keys = set(group_dicts[0])
-        update_cols = [col for col in non_pk_cols if col in inserted_keys]
+            inserted_keys = set(group_dicts[0])
+            update_cols = [col for col in non_pk_cols if col in inserted_keys]
 
-        if update_cols:
-            stmt = stmt.on_conflict_do_update(
-                index_elements=pk_names,
-                set_={col: stmt.excluded[col] for col in update_cols},
-            )
-        else:
-            stmt = stmt.on_conflict_do_nothing(index_elements=pk_names)
+            if update_cols:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=pk_names,
+                    set_={col: stmt.excluded[col] for col in update_cols},
+                )
+            else:
+                stmt = stmt.on_conflict_do_nothing(index_elements=pk_names)
 
-        await session.execute(stmt)
+            await session.execute(stmt)
 
 
 async def _batch_skip_existing(
@@ -117,6 +144,16 @@ async def _batch_skip_existing(
     instances: list[DeclarativeBase],
 ) -> list[DeclarativeBase]:
     """INSERT only rows that do not already exist; return the inserted ones."""
+    if len(_get_table_chain(model_cls)) > 1:
+        loaded: list[DeclarativeBase] = []
+        for inst in instances:
+            pk = _get_primary_key(inst)
+            if pk is None or not await session.get(model_cls, pk):
+                session.add(inst)
+                loaded.append(inst)
+        await session.flush()
+        return loaded
+
     mapper = model_cls.__mapper__
     pk_names = [col.name for col in mapper.primary_key]
 
@@ -129,7 +166,7 @@ async def _batch_skip_existing(
         else:
             with_pk_pairs.append((inst, pk))
 
-    loaded: list[DeclarativeBase] = list(no_pk)
+    loaded = list(no_pk)
     if no_pk:
         no_pk_dicts = [_instance_to_dict(i) for i in no_pk]
         for group_dicts, _ in _group_by_column_set(no_pk_dicts, no_pk):
@@ -179,7 +216,7 @@ async def _load_ordered(
         if contexts is not None and not variants:
             variants = registry.get_variants(name)
 
-        if not variants:
+        if not variants:  # pragma: no cover
             results[name] = []
             continue
 
@@ -204,6 +241,8 @@ async def _load_ordered(
                     case LoadStrategy.SKIP_EXISTING:
                         inserted = await _batch_skip_existing(session, model_cls, group)
                         loaded.extend(inserted)
+                    case _:  # pragma: no cover
+                        pass
 
         results[name] = loaded
         logger.info(f"Loaded fixture '{name}': {len(loaded)} {model_name}(s)")

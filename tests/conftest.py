@@ -192,6 +192,35 @@ class Article(Base):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
 
 
+class Challenge(Base):
+    """Base challenge model (root of joined-table inheritance hierarchy)."""
+
+    __tablename__ = "challenges"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(200))
+    challenge_type: Mapped[str] = mapped_column(String(50))
+    points: Mapped[int] = mapped_column(Integer, default=0)
+
+    __mapper_args__ = {
+        "polymorphic_on": "challenge_type",
+        "polymorphic_identity": "challenge",
+    }
+
+
+class ChallengeStandard(Challenge):
+    """Standard challenge — child table in joined-table inheritance."""
+
+    __tablename__ = "challenge_standard"
+
+    id: Mapped[uuid.UUID] = mapped_column(ForeignKey("challenges.id"), primary_key=True)
+    difficulty: Mapped[str] = mapped_column(String(50))
+
+    __mapper_args__ = {
+        "polymorphic_identity": "standard",
+    }
+
+
 class RoleCreate(BaseModel):
     """Schema for creating a role."""
 
