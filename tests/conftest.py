@@ -440,6 +440,21 @@ async def engine():
 
 
 @pytest.fixture(scope="function")
+async def session_maker(engine):
+    """Provide a session factory with tables created and dropped around the test."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        yield factory
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture(scope="function")
 async def db_session(engine):
     """Create a test database session with tables.
 
