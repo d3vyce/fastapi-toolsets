@@ -153,7 +153,7 @@ class LockMode(str, Enum):
 
 @asynccontextmanager
 async def lock_tables(
-    session: AsyncSession,
+    session_maker: async_sessionmaker[AsyncSession],
     tables: list[type[DeclarativeBase]],
     *,
     mode: LockMode = LockMode.SHARE_UPDATE_EXCLUSIVE,
@@ -161,42 +161,44 @@ async def lock_tables(
 ) -> AsyncGenerator[AsyncSession, None]:
     """Lock PostgreSQL tables for the duration of a transaction.
 
-    Acquires table-level locks that are held until the transaction ends.
-    Useful for preventing concurrent modifications during critical operations.
-
     Args:
-        session: AsyncSession instance
-        tables: List of SQLAlchemy model classes to lock
-        mode: Lock mode (default: SHARE UPDATE EXCLUSIVE)
-        timeout: Lock timeout (default: "5s")
+        session_maker: Async session factory used to create the dedicated
+            session.
+        tables: List of SQLAlchemy model classes to lock.
+        mode: Lock mode (default: SHARE UPDATE EXCLUSIVE).
+        timeout: Lock timeout (default: "5s").
 
     Yields:
-        The session with locked tables
+        The dedicated session, open within the locked transaction.
 
     Raises:
-        SQLAlchemyError: If lock cannot be acquired within timeout
+        SQLAlchemyError: If the lock cannot be acquired within *timeout*.
 
     Example:
         ```python
         from fastapi_toolsets.db import lock_tables, LockMode
 
-        async with lock_tables(session, [User, Account]):
-            # Tables are locked with SHARE UPDATE EXCLUSIVE mode
+        async with lock_tables(session_maker, [User, Account]) as session:
+            # Tables are locked; changes are committed when the context exits.
             user = await UserCrud.get(session, [User.id == 1])
             user.balance += 100
 
         # With custom lock mode
-        async with lock_tables(session, [Order], mode=LockMode.EXCLUSIVE):
-            # Exclusive lock - no other transactions can access
+        async with lock_tables(session_maker, [Order], mode=LockMode.EXCLUSIVE) as session:
             await process_order(session, order_id)
         ```
     """
     table_names = ",".join(table.__tablename__ for table in tables)
 
-    async with get_transaction(session):
-        await session.execute(text(f"SET LOCAL lock_timeout='{timeout}'"))
-        await session.execute(text(f"LOCK {table_names} IN {mode.value} MODE"))
-        yield session
+    async with session_maker() as session:
+        try:
+            await session.execute(text(f"SET LOCAL lock_timeout='{timeout}'"))
+            await session.execute(text(f"LOCK {table_names} IN {mode.value} MODE"))
+            yield session
+            await session.commit()
+        except BaseException:
+            await session.rollback()
+            raise
 
 
 async def create_database(

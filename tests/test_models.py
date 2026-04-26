@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import String
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 import fastapi_toolsets.models.watched as _watched_module
@@ -20,6 +21,7 @@ from fastapi_toolsets.models import (
     listens_for,
 )
 from fastapi_toolsets.models.watched import (
+    EventSession,
     _EVENT_HANDLERS,
     _SESSION_CREATES,
     _SESSION_DELETES,
@@ -336,6 +338,23 @@ async def mixin_session_expire():
         DATABASE_URL, MixinBase, expire_on_commit=True
     ) as session:
         yield session
+
+
+@pytest.fixture(scope="function")
+async def mixin_session_maker():
+    """Provide an EventSession-backed session factory with MixinBase tables."""
+    engine = create_async_engine(DATABASE_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(MixinBase.metadata.create_all)
+
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=EventSession)
+
+    try:
+        yield factory
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(MixinBase.metadata.drop_all)
+        await engine.dispose()
 
 
 class TestUUIDMixin:
@@ -1559,15 +1578,13 @@ class TestEventSessionWithGetTransaction:
         assert creates[0]["obj_id"] == survivor.id
 
     @pytest.mark.anyio
-    async def test_lock_tables_with_events(self, mixin_session):
-        """Events fire correctly after lock_tables context."""
+    async def test_lock_tables_with_events(self, mixin_session_maker):
+        """Events fire correctly when lock_tables commits on context exit."""
         from fastapi_toolsets.db import lock_tables
 
-        async with lock_tables(mixin_session, [WatchedModel]):
+        async with lock_tables(mixin_session_maker, [WatchedModel]) as session:
             obj = WatchedModel(status="locked", other="x")
-            mixin_session.add(obj)
-
-        await mixin_session.commit()
+            session.add(obj)
 
         creates = [e for e in _test_events if e["event"] == "create"]
         assert len(creates) == 1
