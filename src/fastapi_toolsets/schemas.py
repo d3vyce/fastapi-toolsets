@@ -179,7 +179,7 @@ class PaginatedResponse(BaseResponse, Generic[DataT]):
                 ]
                 cls._discriminated_union_cache[item] = cached
             return cached  # ty:ignore[invalid-return-type]
-        return super().__class_getitem__(item)
+        return super().__class_getitem__(item)  # ty:ignore[invalid-return-type]
 
 
 class OffsetPaginatedResponse(PaginatedResponse[DataT]):

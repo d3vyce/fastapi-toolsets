@@ -1334,7 +1334,7 @@ class AsyncCrud(Generic[ModelType]):
                 count_q = count_q.where(and_(*filters))
 
             count_result = await session.execute(count_q)
-            total_count: int | None = count_result.scalar_one()
+            total_count: int = count_result.scalar_one()
             has_more = page * items_per_page < total_count
         else:
             # Fetch one extra row to detect if a next page exists without COUNT
