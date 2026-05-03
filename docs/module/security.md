@@ -4,7 +4,7 @@ Composable authentication helpers for FastAPI that use `Security()` for OpenAPI 
 
 ## Overview
 
-The `security` module provides four auth source classes and a `MultiAuth` factory. Each class wraps a FastAPI security scheme for OpenAPI and accepts a validator function called as:
+The `security` module provides four auth source classes, a `MultiAuth` factory, and a set of OAuth 2.0 / OIDC helper utilities. Each auth class wraps a FastAPI security scheme for OpenAPI and accepts a validator function called as:
 
 ```python
 await validator(credential, **kwargs)
@@ -92,59 +92,52 @@ async def me(user: User = Security(cookie_auth)):
     return user
 ```
 
-### [`OAuth2Auth`](../reference/security.md#fastapi_toolsets.security.OAuth2Auth)
+#### Signed cookies
 
-Reads the `Authorization: Bearer <token>` header and registers the token endpoint
-in OpenAPI via `OAuth2PasswordBearer`.
+Pass `secret_key` to enable HMAC-SHA256 signed, tamper-proof cookies. The cookie
+payload includes an expiry timestamp (`ttl`, default 24 h). No database entry is
+required — the signature is self-contained.
+
+Use `set_cookie()` to issue the signed cookie on login and `delete_cookie()` to
+clear it on logout:
 
 ```python
-from fastapi_toolsets.security import OAuth2Auth
+cookie_auth = CookieAuth("session", verify_session, secret_key="your-secret")
 
-oauth2_auth = OAuth2Auth(token_url="/token", validator=verify_token)
+@app.post("/login")
+async def login(response: Response):
+    cookie_auth.set_cookie(response, user_id)
+    return {"ok": True}
+
+@app.post("/logout")
+async def logout(response: Response):
+    cookie_auth.delete_cookie(response)
+    return {"ok": True}
 
 @app.get("/me")
-async def me(user: User = Security(oauth2_auth)):
+async def me(user: User = Security(cookie_auth)):
     return user
 ```
 
-### [`OpenIDAuth`](../reference/security.md#fastapi_toolsets.security.OpenIDAuth)
+When `secret_key` is not set, the raw cookie value is passed directly to the
+validator (stateful session behaviour — you manage the session store).
 
-Reads the `Authorization: Bearer <token>` header and registers the OpenID Connect
-discovery URL in OpenAPI via `OpenIdConnect`. Token validation is fully delegated
-to your validator — use any OIDC / JWT library (`authlib`, `python-jose`, `PyJWT`).
+### [`APIKeyHeaderAuth`](../reference/security.md#fastapi_toolsets.security.APIKeyHeaderAuth)
 
-```python
-from fastapi_toolsets.security import OpenIDAuth
-
-async def verify_google_token(token: str, *, audience: str) -> User:
-    payload = jwt.decode(token, google_public_keys, algorithms=["RS256"],
-                         audience=audience)
-    return User(email=payload["email"], name=payload["name"])
-
-google_auth = OpenIDAuth(
-    "https://accounts.google.com/.well-known/openid-configuration",
-    verify_google_token,
-    audience="my-client-id",
-)
-
-@app.get("/me")
-async def me(user: User = Security(google_auth)):
-    return user
-```
-
-The discovery URL is used **only for OpenAPI documentation** — no requests are made
-to it by this class. You are responsible for fetching and caching the provider's
-public keys in your validator.
-
-Multiple providers work naturally with `MultiAuth`:
+Reads an API key from a named HTTP header. Wraps `APIKeyHeader` for OpenAPI.
 
 ```python
-multi = MultiAuth(google_auth, github_auth)
+from fastapi_toolsets.security import APIKeyHeaderAuth
+
+api_key_auth = APIKeyHeaderAuth("X-API-Key", validator=verify_api_key)
 
 @app.get("/data")
-async def data(user: User = Security(multi)):
+async def data(user: User = Security(api_key_auth)):
     return user
 ```
+
+The header name is configurable — use any header your API defines (e.g.
+`"X-API-Key"`, `"Authorization"`, `"X-Service-Token"`).
 
 ## Typed validator kwargs
 
@@ -184,8 +177,8 @@ async def profile(user: User = Security(bearer.require(role=Role.USER))):
 ```
 
 `.require()` kwargs are merged over existing ones — new values win on conflict.
-The `prefix` (for `BearerTokenAuth`) and cookie name (for `CookieAuth`) are
-always preserved.
+The `prefix` (for `BearerTokenAuth`), cookie name and `secret_key` (for
+`CookieAuth`), and header name (for `APIKeyHeaderAuth`) are always preserved.
 
 `.require()` instances work transparently inside `MultiAuth`:
 
@@ -201,6 +194,10 @@ multi = MultiAuth(
 [`MultiAuth`](../reference/security.md#fastapi_toolsets.security.MultiAuth) combines
 multiple auth sources into a single callable. Sources are tried in order; the
 first one that finds a credential wins.
+
+If a credential is extracted but the validator raises, the exception propagates
+immediately — the remaining sources are **not** tried. This prevents silent
+fallthrough on invalid credentials.
 
 ```python
 from fastapi_toolsets.security import MultiAuth
@@ -260,6 +257,120 @@ each source to issue correctly-prefixed tokens:
 ```python
 user_token = user_bearer.generate_token()  # "user_..."
 org_token  = org_bearer.generate_token()   # "org_..."
+```
+
+## Custom auth sources
+
+Subclass [`AuthSource`](../reference/security.md#fastapi_toolsets.security.AuthSource)
+to implement any credential extraction strategy. You only need to implement
+`extract()` and `authenticate()`:
+
+```python
+from fastapi_toolsets.security import AuthSource
+from fastapi_toolsets.exceptions import UnauthorizedError
+
+class MTLSAuth(AuthSource):
+    async def extract(self, request) -> str | None:
+        return request.headers.get("X-Client-Cert-DN") or None
+
+    async def authenticate(self, credential: str):
+        dn = parse_dn(credential)
+        if dn.get("O") != "MyOrg":
+            raise UnauthorizedError()
+        return {"dn": credential}
+```
+
+Custom sources work transparently inside `MultiAuth`.
+
+## OAuth 2.0 / OIDC helpers
+
+The module provides standalone async utilities for building OAuth 2.0 / OIDC
+login flows. They handle provider discovery, authorization redirects, token
+exchange, and state encoding — leaving JWT validation and session management to
+your application.
+
+### Provider discovery
+
+[`oauth_resolve_provider_urls()`](../reference/security.md#fastapi_toolsets.security.oauth_resolve_provider_urls)
+fetches the OIDC discovery document and returns the endpoint URLs. Results are
+cached in-process to avoid repeated network calls:
+
+```python
+from fastapi_toolsets.security import oauth_resolve_provider_urls
+
+auth_url, token_url, userinfo_url = await oauth_resolve_provider_urls(
+    "https://accounts.google.com/.well-known/openid-configuration"
+)
+```
+
+Returns a `(authorization_url, token_url, userinfo_url)` tuple. `userinfo_url`
+is `None` when the provider does not advertise one.
+
+### Authorization redirect
+
+[`oauth_build_authorization_redirect()`](../reference/security.md#fastapi_toolsets.security.oauth_build_authorization_redirect)
+constructs the redirect to the provider's authorization page. The `destination`
+URL (where to send the user after the full flow) is encoded as the `state`
+parameter:
+
+```python
+from fastapi_toolsets.security import oauth_build_authorization_redirect
+
+@app.get("/auth/google/login")
+async def google_login():
+    auth_url, _, _ = await oauth_resolve_provider_urls(GOOGLE_DISCOVERY_URL)
+    return oauth_build_authorization_redirect(
+        auth_url,
+        client_id=GOOGLE_CLIENT_ID,
+        scopes="openid email profile",
+        redirect_uri="https://myapp.com/auth/google/callback",
+        destination="/dashboard",
+    )
+```
+
+### Token exchange and userinfo
+
+[`oauth_fetch_userinfo()`](../reference/security.md#fastapi_toolsets.security.oauth_fetch_userinfo)
+performs the two-step exchange: it POSTs the authorization code to the token
+endpoint, then GETs the userinfo endpoint with the resulting access token:
+
+```python
+from fastapi_toolsets.security import oauth_fetch_userinfo
+
+@app.get("/auth/google/callback")
+async def google_callback(code: str, state: str):
+    _, token_url, userinfo_url = await oauth_resolve_provider_urls(GOOGLE_DISCOVERY_URL)
+    userinfo = await oauth_fetch_userinfo(
+        token_url=token_url,
+        userinfo_url=userinfo_url,
+        code=code,
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        redirect_uri="https://myapp.com/auth/google/callback",
+    )
+    user = await db.upsert_user(email=userinfo["email"])
+    destination = oauth_decode_state(state, fallback="/")
+    response = RedirectResponse(destination)
+    session_cookie.set_cookie(response, str(user.id))
+    return response
+```
+
+### State encoding
+
+[`oauth_encode_state()`](../reference/security.md#fastapi_toolsets.security.oauth_encode_state)
+and
+[`oauth_decode_state()`](../reference/security.md#fastapi_toolsets.security.oauth_decode_state)
+base64url-encode and decode the destination URL embedded in the OAuth `state`
+parameter. `oauth_decode_state` handles missing padding and returns the `fallback`
+if `state` is absent, `"null"`, or malformed:
+
+```python
+from fastapi_toolsets.security import oauth_encode_state, oauth_decode_state
+
+encoded = oauth_encode_state("/dashboard")       # e.g. "L2Rhc2hib2FyZA=="
+decoded = oauth_decode_state(encoded, fallback="/")  # "/dashboard"
+decoded = oauth_decode_state(None, fallback="/")     # "/"
+decoded = oauth_decode_state("null", fallback="/")   # "/"
 ```
 
 ---

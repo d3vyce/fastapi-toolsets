@@ -9,9 +9,13 @@ from fastapi_toolsets.security import (
     AuthSource,
     BearerTokenAuth,
     CookieAuth,
-    OAuth2Auth,
-    OpenIDAuth,
+    APIKeyHeaderAuth,
     MultiAuth,
+    oauth_build_authorization_redirect,
+    oauth_decode_state,
+    oauth_encode_state,
+    oauth_fetch_userinfo,
+    oauth_resolve_provider_urls,
 )
 ```
 
@@ -21,8 +25,16 @@ from fastapi_toolsets.security import (
 
 ## ::: fastapi_toolsets.security.CookieAuth
 
-## ::: fastapi_toolsets.security.OAuth2Auth
-
-## ::: fastapi_toolsets.security.OpenIDAuth
+## ::: fastapi_toolsets.security.APIKeyHeaderAuth
 
 ## ::: fastapi_toolsets.security.MultiAuth
+
+## ::: fastapi_toolsets.security.oauth_resolve_provider_urls
+
+## ::: fastapi_toolsets.security.oauth_fetch_userinfo
+
+## ::: fastapi_toolsets.security.oauth_build_authorization_redirect
+
+## ::: fastapi_toolsets.security.oauth_encode_state
+
+## ::: fastapi_toolsets.security.oauth_decode_state
