@@ -151,14 +151,13 @@ class LockMode(str, Enum):
     ACCESS_EXCLUSIVE = "ACCESS EXCLUSIVE"
 
 
-@asynccontextmanager
-async def lock_tables(
-    session_maker: async_sessionmaker[AsyncSession],
+def lock_tables(
+    session_maker: async_sessionmaker[_SessionT],
     tables: list[type[DeclarativeBase]],
     *,
     mode: LockMode = LockMode.SHARE_UPDATE_EXCLUSIVE,
     timeout: str = "5s",
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AbstractAsyncContextManager[_SessionT]:
     """Lock PostgreSQL tables for the duration of a transaction.
 
     Args:
@@ -190,15 +189,19 @@ async def lock_tables(
     """
     table_names = ",".join(table.__tablename__ for table in tables)
 
-    async with session_maker() as session:
-        try:
-            await session.execute(text(f"SET LOCAL lock_timeout='{timeout}'"))
-            await session.execute(text(f"LOCK {table_names} IN {mode.value} MODE"))
-            yield session
-            await session.commit()
-        except BaseException:
-            await session.rollback()
-            raise
+    @asynccontextmanager
+    async def _lock() -> AsyncGenerator[_SessionT, None]:
+        async with session_maker() as session:
+            try:
+                await session.execute(text(f"SET LOCAL lock_timeout='{timeout}'"))
+                await session.execute(text(f"LOCK {table_names} IN {mode.value} MODE"))
+                yield session
+                await session.commit()
+            except BaseException:
+                await session.rollback()
+                raise
+
+    return _lock()
 
 
 async def create_database(
