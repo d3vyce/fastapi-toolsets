@@ -18,7 +18,7 @@ from fastapi_toolsets.security import (
     oauth_decode_state,
     oauth_encode_state,
     oauth_fetch_userinfo,
-    oauth_generate_nonce,
+    oauth_generate_state_token,
     oauth_resolve_provider_urls,
 )
 
@@ -1013,56 +1013,64 @@ def _make_async_client_mock(get_return=None, post_return=None):
 
 class TestEncodeDecodeOAuthState:
     def test_encode_returns_base64url_string(self):
-        result = oauth_encode_state("https://example.com/dashboard", "test-nonce")
+        result = oauth_encode_state("https://example.com/dashboard", "test-state-token")
         assert isinstance(result, str)
         assert "+" not in result
         assert "/" not in result
 
     def test_round_trip(self):
         url = "https://example.com/after-login?next=/home"
-        nonce = "test-nonce"
+        state_token = "test-state-token"
         assert (
             oauth_decode_state(
-                oauth_encode_state(url, nonce), expected_nonce=nonce, fallback="/"
+                oauth_encode_state(url, state_token),
+                expected_state_token=state_token,
+                fallback="/",
             )
             == url
         )
 
     def test_decode_none_returns_fallback(self):
         assert (
-            oauth_decode_state(None, expected_nonce="any", fallback="/home") == "/home"
+            oauth_decode_state(None, expected_state_token="any", fallback="/home")
+            == "/home"
         )
 
     def test_decode_null_string_returns_fallback(self):
         assert (
-            oauth_decode_state("null", expected_nonce="any", fallback="/home")
+            oauth_decode_state("null", expected_state_token="any", fallback="/home")
             == "/home"
         )
 
     def test_decode_invalid_base64_returns_fallback(self):
         assert (
             oauth_decode_state(
-                "!!!notbase64!!!", expected_nonce="any", fallback="/home"
+                "!!!notbase64!!!", expected_state_token="any", fallback="/home"
             )
             == "/home"
         )
 
     def test_decode_handles_missing_padding(self):
         url = "https://example.com/x"
-        nonce = "test-nonce"
-        encoded = oauth_encode_state(url, nonce).rstrip("=")
-        assert oauth_decode_state(encoded, expected_nonce=nonce, fallback="/") == url
-
-    def test_decode_wrong_nonce_returns_fallback(self):
-        url = "https://example.com/dashboard"
-        encoded = oauth_encode_state(url, "correct-nonce")
+        state_token = "test-state-token"
+        encoded = oauth_encode_state(url, state_token).rstrip("=")
         assert (
-            oauth_decode_state(encoded, expected_nonce="wrong-nonce", fallback="/")
+            oauth_decode_state(encoded, expected_state_token=state_token, fallback="/")
+            == url
+        )
+
+    def test_decode_wrong_state_token_returns_fallback(self):
+        url = "https://example.com/dashboard"
+        encoded = oauth_encode_state(url, "correct-token")
+        assert (
+            oauth_decode_state(
+                encoded, expected_state_token="wrong-token", fallback="/"
+            )
             == "/"
         )
 
-    def test_generate_nonce_is_random(self):
-        assert oauth_generate_nonce() != oauth_generate_nonce()
+    def test_generate_state_token_is_random(self):
+        assert oauth_generate_state_token() != oauth_generate_state_token()
 
 
 class TestBuildAuthorizationRedirect:
@@ -1075,19 +1083,19 @@ class TestBuildAuthorizationRedirect:
             scopes="openid email",
             redirect_uri="https://app.example.com/callback",
             destination="https://app.example.com/dashboard",
-            nonce="test-nonce",
+            state_token="test-state-token",
         )
         assert isinstance(response, RedirectResponse)
 
     def test_redirect_location_contains_all_params(self):
-        nonce = "test-nonce"
+        state_token = "test-state-token"
         response = oauth_build_authorization_redirect(
             "https://auth.example.com/authorize",
             client_id="my-client",
             scopes="openid email",
             redirect_uri="https://app.example.com/callback",
             destination="https://app.example.com/dashboard",
-            nonce=nonce,
+            state_token=state_token,
         )
         location = response.headers["location"]
         parsed = urlparse(location)
@@ -1101,7 +1109,9 @@ class TestBuildAuthorizationRedirect:
         assert params["scope"] == ["openid email"]
         assert params["redirect_uri"] == ["https://app.example.com/callback"]
         assert (
-            oauth_decode_state(params["state"][0], expected_nonce=nonce, fallback="")
+            oauth_decode_state(
+                params["state"][0], expected_state_token=state_token, fallback=""
+            )
             == "https://app.example.com/dashboard"
         )
 
