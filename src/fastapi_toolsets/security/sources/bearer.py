@@ -4,7 +4,7 @@ import inspect
 import secrets
 from typing import Annotated, Any, Callable
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, SecurityScopes
 
 from fastapi_toolsets.exceptions import UnauthorizedError
@@ -66,7 +66,7 @@ class BearerTokenAuth(AuthSource):
             raise UnauthorizedError()
         return await self._validator(token, **self._kwargs)
 
-    async def extract(self, request: Any) -> str | None:
+    async def extract(self, request: Request) -> str | None:
         """Extract the raw credential from the request without validating.
 
         Returns ``None`` if no ``Authorization: Bearer`` header is present,

@@ -15,6 +15,7 @@ from fastapi_toolsets.security import (
     oauth_decode_state,
     oauth_encode_state,
     oauth_fetch_userinfo,
+    oauth_generate_nonce,
     oauth_resolve_provider_urls,
 )
 ```
@@ -32,6 +33,8 @@ from fastapi_toolsets.security import (
 ## ::: fastapi_toolsets.security.oauth_resolve_provider_urls
 
 ## ::: fastapi_toolsets.security.oauth_fetch_userinfo
+
+## ::: fastapi_toolsets.security.oauth_generate_nonce
 
 ## ::: fastapi_toolsets.security.oauth_build_authorization_redirect
 

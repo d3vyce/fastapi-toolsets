@@ -1,5 +1,6 @@
 """Abstract base class for authentication sources."""
 
+import functools
 import inspect
 from abc import ABC, abstractmethod
 from typing import Any, Callable
@@ -15,6 +16,7 @@ def _ensure_async(fn: Callable[..., Any]) -> Callable[..., Any]:
     if inspect.iscoroutinefunction(fn):
         return fn
 
+    @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         return fn(*args, **kwargs)
 

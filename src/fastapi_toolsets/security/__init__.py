@@ -6,6 +6,7 @@ from .oauth import (
     oauth_decode_state,
     oauth_encode_state,
     oauth_fetch_userinfo,
+    oauth_generate_nonce,
     oauth_resolve_provider_urls,
 )
 from .sources import APIKeyHeaderAuth, BearerTokenAuth, CookieAuth, MultiAuth
@@ -20,5 +21,6 @@ __all__ = [
     "oauth_decode_state",
     "oauth_encode_state",
     "oauth_fetch_userinfo",
+    "oauth_generate_nonce",
     "oauth_resolve_provider_urls",
 ]

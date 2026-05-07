@@ -18,6 +18,7 @@ from fastapi_toolsets.security import (
     oauth_decode_state,
     oauth_encode_state,
     oauth_fetch_userinfo,
+    oauth_generate_nonce,
     oauth_resolve_provider_urls,
 )
 
@@ -760,7 +761,10 @@ class TestCookieAuthSigned:
         """set_cookie signs the value; the signed cookie is verified on read."""
         from fastapi import Response
 
-        auth = CookieAuth("session", cookie_validator, secret_key=self.SECRET)
+        # secure=False for test client which runs over plain HTTP
+        auth = CookieAuth(
+            "session", cookie_validator, secret_key=self.SECRET, secure=False
+        )
 
         def setup(app: FastAPI):
             @app.get("/login")
@@ -777,6 +781,26 @@ class TestCookieAuthSigned:
             response = client.get("/me")
         assert response.status_code == 200
         assert response.json() == {"session": VALID_COOKIE}
+
+    def test_set_cookie_has_secure_flag_by_default(self):
+        """set_cookie includes Secure flag when secure=True (the default)."""
+        from starlette.responses import Response as StarletteResponse
+
+        auth = CookieAuth("session", cookie_validator, secret_key=self.SECRET)
+        response = StarletteResponse()
+        auth.set_cookie(response, "value")
+        assert "secure" in response.headers["set-cookie"].lower()
+
+    def test_set_cookie_no_secure_flag_when_disabled(self):
+        """set_cookie omits Secure flag when secure=False (local dev)."""
+        from starlette.responses import Response as StarletteResponse
+
+        auth = CookieAuth(
+            "session", cookie_validator, secret_key=self.SECRET, secure=False
+        )
+        response = StarletteResponse()
+        auth.set_cookie(response, "value")
+        assert "secure" not in response.headers["set-cookie"].lower()
 
     def test_tampered_signature_returns_401(self):
         """A cookie whose HMAC signature has been modified is rejected."""
@@ -989,28 +1013,56 @@ def _make_async_client_mock(get_return=None, post_return=None):
 
 class TestEncodeDecodeOAuthState:
     def test_encode_returns_base64url_string(self):
-        result = oauth_encode_state("https://example.com/dashboard")
+        result = oauth_encode_state("https://example.com/dashboard", "test-nonce")
         assert isinstance(result, str)
         assert "+" not in result
         assert "/" not in result
 
     def test_round_trip(self):
         url = "https://example.com/after-login?next=/home"
-        assert oauth_decode_state(oauth_encode_state(url), fallback="/") == url
+        nonce = "test-nonce"
+        assert (
+            oauth_decode_state(
+                oauth_encode_state(url, nonce), expected_nonce=nonce, fallback="/"
+            )
+            == url
+        )
 
     def test_decode_none_returns_fallback(self):
-        assert oauth_decode_state(None, fallback="/home") == "/home"
+        assert (
+            oauth_decode_state(None, expected_nonce="any", fallback="/home") == "/home"
+        )
 
     def test_decode_null_string_returns_fallback(self):
-        assert oauth_decode_state("null", fallback="/home") == "/home"
+        assert (
+            oauth_decode_state("null", expected_nonce="any", fallback="/home")
+            == "/home"
+        )
 
     def test_decode_invalid_base64_returns_fallback(self):
-        assert oauth_decode_state("!!!notbase64!!!", fallback="/home") == "/home"
+        assert (
+            oauth_decode_state(
+                "!!!notbase64!!!", expected_nonce="any", fallback="/home"
+            )
+            == "/home"
+        )
 
     def test_decode_handles_missing_padding(self):
         url = "https://example.com/x"
-        encoded = oauth_encode_state(url).rstrip("=")
-        assert oauth_decode_state(encoded, fallback="/") == url
+        nonce = "test-nonce"
+        encoded = oauth_encode_state(url, nonce).rstrip("=")
+        assert oauth_decode_state(encoded, expected_nonce=nonce, fallback="/") == url
+
+    def test_decode_wrong_nonce_returns_fallback(self):
+        url = "https://example.com/dashboard"
+        encoded = oauth_encode_state(url, "correct-nonce")
+        assert (
+            oauth_decode_state(encoded, expected_nonce="wrong-nonce", fallback="/")
+            == "/"
+        )
+
+    def test_generate_nonce_is_random(self):
+        assert oauth_generate_nonce() != oauth_generate_nonce()
 
 
 class TestBuildAuthorizationRedirect:
@@ -1023,16 +1075,19 @@ class TestBuildAuthorizationRedirect:
             scopes="openid email",
             redirect_uri="https://app.example.com/callback",
             destination="https://app.example.com/dashboard",
+            nonce="test-nonce",
         )
         assert isinstance(response, RedirectResponse)
 
     def test_redirect_location_contains_all_params(self):
+        nonce = "test-nonce"
         response = oauth_build_authorization_redirect(
             "https://auth.example.com/authorize",
             client_id="my-client",
             scopes="openid email",
             redirect_uri="https://app.example.com/callback",
             destination="https://app.example.com/dashboard",
+            nonce=nonce,
         )
         location = response.headers["location"]
         parsed = urlparse(location)
@@ -1046,7 +1101,7 @@ class TestBuildAuthorizationRedirect:
         assert params["scope"] == ["openid email"]
         assert params["redirect_uri"] == ["https://app.example.com/callback"]
         assert (
-            oauth_decode_state(params["state"][0], fallback="")
+            oauth_decode_state(params["state"][0], expected_nonce=nonce, fallback="")
             == "https://app.example.com/dashboard"
         )
 
@@ -1178,3 +1233,99 @@ class TestFetchUserinfo:
             "https://auth.example.com/userinfo",
             headers={"Authorization": "Bearer tok123"},
         )
+
+    @pytest.mark.anyio
+    async def test_raises_on_unsupported_token_type(self):
+        token_resp = MagicMock()
+        token_resp.raise_for_status = MagicMock()
+        token_resp.json.return_value = {"access_token": "tok123", "token_type": "mac"}
+
+        cm, _ = _make_async_client_mock(post_return=token_resp, get_return=MagicMock())
+
+        with patch("httpx.AsyncClient", return_value=cm):
+            with pytest.raises(ValueError, match="unsupported token_type"):
+                await oauth_fetch_userinfo(
+                    token_url="https://auth.example.com/token",
+                    userinfo_url="https://auth.example.com/userinfo",
+                    code="authcode123",
+                    client_id="client-id",
+                    client_secret="client-secret",
+                    redirect_uri="https://app.example.com/callback",
+                )
+
+    @pytest.mark.anyio
+    async def test_accepts_bearer_token_type_case_insensitive(self):
+        token_resp = MagicMock()
+        token_resp.raise_for_status = MagicMock()
+        token_resp.json.return_value = {
+            "access_token": "tok123",
+            "token_type": "Bearer",
+        }
+
+        userinfo_resp = MagicMock()
+        userinfo_resp.raise_for_status = MagicMock()
+        userinfo_resp.json.return_value = {"sub": "user-1"}
+
+        cm, _ = _make_async_client_mock(
+            post_return=token_resp, get_return=userinfo_resp
+        )
+
+        with patch("httpx.AsyncClient", return_value=cm):
+            result = await oauth_fetch_userinfo(
+                token_url="https://auth.example.com/token",
+                userinfo_url="https://auth.example.com/userinfo",
+                code="authcode123",
+                client_id="client-id",
+                client_secret="client-secret",
+                redirect_uri="https://app.example.com/callback",
+            )
+        assert result == {"sub": "user-1"}
+
+    @pytest.mark.anyio
+    async def test_raises_when_required_scopes_not_granted(self):
+        token_resp = MagicMock()
+        token_resp.raise_for_status = MagicMock()
+        token_resp.json.return_value = {"access_token": "tok123", "scope": "openid"}
+
+        cm, _ = _make_async_client_mock(post_return=token_resp, get_return=MagicMock())
+
+        with patch("httpx.AsyncClient", return_value=cm):
+            with pytest.raises(ValueError, match="required scopes"):
+                await oauth_fetch_userinfo(
+                    token_url="https://auth.example.com/token",
+                    userinfo_url="https://auth.example.com/userinfo",
+                    code="authcode123",
+                    client_id="client-id",
+                    client_secret="client-secret",
+                    redirect_uri="https://app.example.com/callback",
+                    required_scopes="openid email profile",
+                )
+
+    @pytest.mark.anyio
+    async def test_passes_when_all_required_scopes_granted(self):
+        token_resp = MagicMock()
+        token_resp.raise_for_status = MagicMock()
+        token_resp.json.return_value = {
+            "access_token": "tok123",
+            "scope": "openid email profile",
+        }
+
+        userinfo_resp = MagicMock()
+        userinfo_resp.raise_for_status = MagicMock()
+        userinfo_resp.json.return_value = {"sub": "user-1", "email": "a@b.com"}
+
+        cm, _ = _make_async_client_mock(
+            post_return=token_resp, get_return=userinfo_resp
+        )
+
+        with patch("httpx.AsyncClient", return_value=cm):
+            result = await oauth_fetch_userinfo(
+                token_url="https://auth.example.com/token",
+                userinfo_url="https://auth.example.com/userinfo",
+                code="authcode123",
+                client_id="client-id",
+                client_secret="client-secret",
+                redirect_uri="https://app.example.com/callback",
+                required_scopes="openid email",
+            )
+        assert result["email"] == "a@b.com"

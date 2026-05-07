@@ -36,6 +36,9 @@ class CookieAuth(AuthSource):
             cookie value is passed to the validator as-is.
         ttl: Cookie lifetime in seconds (default 24 h).  Only used when
             ``secret_key`` is set.
+        secure: Set the ``Secure`` flag on the cookie so it is only transmitted
+            over HTTPS (default ``True``).  Set to ``False`` only in local
+            development environments where HTTPS is unavailable.
         **kwargs: Extra keyword arguments forwarded to the validator on every
             call (e.g. ``role=Role.ADMIN``).
     """
@@ -47,12 +50,14 @@ class CookieAuth(AuthSource):
         *,
         secret_key: str | None = None,
         ttl: int = 86400,
+        secure: bool = True,
         **kwargs: Any,
     ) -> None:
         self._name = name
         self._validator = _ensure_async(validator)
         self._secret_key = secret_key
         self._ttl = ttl
+        self._secure = secure
         self._kwargs = kwargs
         self._scheme = APIKeyCookie(name=name, auto_error=False)
 
@@ -120,6 +125,7 @@ class CookieAuth(AuthSource):
             self._validator,
             secret_key=self._secret_key,
             ttl=self._ttl,
+            secure=self._secure,
             **{**self._kwargs, **kwargs},
         )
 
@@ -131,9 +137,12 @@ class CookieAuth(AuthSource):
             cookie_value,
             httponly=True,
             samesite="lax",
+            secure=self._secure,
             max_age=self._ttl,
         )
 
     def delete_cookie(self, response: Response) -> None:
         """Clear the session cookie (logout)."""
-        response.delete_cookie(self._name, httponly=True, samesite="lax")
+        response.delete_cookie(
+            self._name, httponly=True, samesite="lax", secure=self._secure
+        )
