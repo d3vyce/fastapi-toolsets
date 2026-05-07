@@ -5,18 +5,15 @@ import binascii
 import hmac
 import json
 import secrets
-import time as _time
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+from async_lru import alru_cache
 from fastapi.responses import RedirectResponse
 
-_discovery_cache: dict[str, tuple[dict[str, Any], float]] = {}
-_DISCOVERY_TTL_SECONDS = 3600  # 1 hour
-_DISCOVERY_CACHE_MAX = 32
 
-
+@alru_cache(maxsize=32)
 async def oauth_resolve_provider_urls(
     discovery_url: str,
 ) -> tuple[str, str, str | None]:
@@ -29,17 +26,10 @@ async def oauth_resolve_provider_urls(
         A ``(authorization_url, token_url, userinfo_url)`` tuple.
         *userinfo_url* is ``None`` when the provider does not advertise one.
     """
-    now = _time.time()
-    cached = _discovery_cache.get(discovery_url)
-    if cached is None or now - cached[1] > _DISCOVERY_TTL_SECONDS:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(discovery_url)
-            resp.raise_for_status()
-        if len(_discovery_cache) >= _DISCOVERY_CACHE_MAX:
-            oldest = min(_discovery_cache, key=lambda k: _discovery_cache[k][1])
-            del _discovery_cache[oldest]
-        _discovery_cache[discovery_url] = (resp.json(), now)
-    cfg = _discovery_cache[discovery_url][0]
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(discovery_url)
+        resp.raise_for_status()
+    cfg = resp.json()
     return (
         cfg["authorization_endpoint"],
         cfg["token_endpoint"],

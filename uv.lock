@@ -34,6 +34,15 @@ wheels = [
 ]
 
 [[package]]
+name = "async-lru"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/1f/989ecfef8e64109a489fff357450cb73fa73a865a92bd8c272170a6922c2/async_lru-2.3.0.tar.gz", hash = "sha256:89bdb258a0140d7313cf8f4031d816a042202faa61d0ab310a0a538baa1c24b6", size = 16332, upload-time = "2026-03-19T01:04:32.413Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/e2/c2e3abf398f80732e58b03be77bde9022550d221dd8781bf586bd4d97cc1/async_lru-2.3.0-py3-none-any.whl", hash = "sha256:eea27b01841909316f2cc739807acea1c623df2be8c5cfad7583286397bb8315", size = 8403, upload-time = "2026-03-19T01:04:30.883Z" },
+]
+
+[[package]]
 name = "asyncpg"
 version = "0.31.0"
 source = { registry = "https://pypi.org/simple" }
@@ -332,6 +341,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "async-lru" },
     { name = "httpx" },
     { name = "prometheus-client" },
     { name = "pytest" },
@@ -349,9 +359,14 @@ pytest = [
     { name = "pytest" },
     { name = "pytest-xdist" },
 ]
+security = [
+    { name = "async-lru" },
+    { name = "httpx" },
+]
 
 [package.dev-dependencies]
 dev = [
+    { name = "async-lru" },
     { name = "bcrypt" },
     { name = "coverage" },
     { name = "fastapi-toolsets", extra = ["all"] },
@@ -376,6 +391,7 @@ docs-src = [
     { name = "bcrypt" },
 ]
 tests = [
+    { name = "async-lru" },
     { name = "coverage" },
     { name = "httpx" },
     { name = "pytest" },
@@ -386,10 +402,12 @@ tests = [
 
 [package.metadata]
 requires-dist = [
+    { name = "async-lru", marker = "extra == 'security'", specifier = ">=1.0" },
     { name = "asyncpg", specifier = ">=0.29.0" },
     { name = "fastapi", specifier = ">=0.100.0" },
-    { name = "fastapi-toolsets", extras = ["cli", "metrics", "pytest"], marker = "extra == 'all'" },
+    { name = "fastapi-toolsets", extras = ["cli", "metrics", "pytest", "security"], marker = "extra == 'all'" },
     { name = "httpx", marker = "extra == 'pytest'", specifier = ">=0.25.0" },
+    { name = "httpx", marker = "extra == 'security'", specifier = ">=0.25.0" },
     { name = "prometheus-client", marker = "extra == 'metrics'", specifier = ">=0.20.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'pytest'", specifier = ">=8.0.0" },
@@ -397,10 +415,11 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9.0" },
 ]
-provides-extras = ["cli", "metrics", "pytest", "all"]
+provides-extras = ["cli", "metrics", "security", "pytest", "all"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "async-lru", specifier = ">=1.0" },
     { name = "bcrypt", specifier = ">=4.0.0" },
     { name = "coverage", specifier = ">=7.0.0" },
     { name = "fastapi-toolsets", extras = ["all"] },
@@ -423,6 +442,7 @@ docs = [
 ]
 docs-src = [{ name = "bcrypt", specifier = ">=4.0.0" }]
 tests = [
+    { name = "async-lru", specifier = ">=1.0" },
     { name = "coverage", specifier = ">=7.0.0" },
     { name = "httpx", specifier = ">=0.25.0" },
     { name = "pytest", specifier = ">=8.0.0" },

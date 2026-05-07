@@ -1123,11 +1123,11 @@ class TestResolveProviderUrls:
         mock_resp.json.return_value = self._discovery()
         cm, mock_client = _make_async_client_mock(get_return=mock_resp)
 
-        with patch("fastapi_toolsets.security.oauth._discovery_cache", {}):
-            with patch("httpx.AsyncClient", return_value=cm):
-                auth_url, token_url, userinfo_url = await oauth_resolve_provider_urls(
-                    "https://auth.example.com/.well-known/openid-configuration"
-                )
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            auth_url, token_url, userinfo_url = await oauth_resolve_provider_urls(
+                "https://auth.example.com/.well-known/openid-configuration"
+            )
 
         assert auth_url == "https://auth.example.com/authorize"
         assert token_url == "https://auth.example.com/token"
@@ -1140,11 +1140,11 @@ class TestResolveProviderUrls:
         mock_resp.json.return_value = self._discovery(userinfo=False)
         cm, mock_client = _make_async_client_mock(get_return=mock_resp)
 
-        with patch("fastapi_toolsets.security.oauth._discovery_cache", {}):
-            with patch("httpx.AsyncClient", return_value=cm):
-                _, _, userinfo_url = await oauth_resolve_provider_urls(
-                    "https://auth.example.com/.well-known/openid-configuration"
-                )
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            _, _, userinfo_url = await oauth_resolve_provider_urls(
+                "https://auth.example.com/.well-known/openid-configuration"
+            )
 
         assert userinfo_url is None
 
@@ -1156,10 +1156,10 @@ class TestResolveProviderUrls:
         cm, mock_client = _make_async_client_mock(get_return=mock_resp)
 
         url = "https://auth.example.com/.well-known/openid-configuration"
-        with patch("fastapi_toolsets.security.oauth._discovery_cache", {}):
-            with patch("httpx.AsyncClient", return_value=cm):
-                await oauth_resolve_provider_urls(url)
-                await oauth_resolve_provider_urls(url)
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            await oauth_resolve_provider_urls(url)
+            await oauth_resolve_provider_urls(url)
 
         assert mock_client.get.call_count == 1
 
