@@ -12,6 +12,7 @@ from fastapi_toolsets.exceptions import (
     NotFoundError,
     ConflictError,
     NoSearchableFieldsError,
+    InvalidSearchColumnError,
     InvalidFacetFilterError,
     InvalidOrderFieldError,
     generate_error_responses,
@@ -30,6 +31,8 @@ from fastapi_toolsets.exceptions import (
 ## ::: fastapi_toolsets.exceptions.exceptions.ConflictError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.NoSearchableFieldsError
+
+## ::: fastapi_toolsets.exceptions.exceptions.InvalidSearchColumnError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError
 

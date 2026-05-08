@@ -130,7 +130,7 @@ Pass `next_cursor` as the `cursor` query parameter on the next request to advanc
 
 !!! info "Added in `v2.3.0`"
 
-[`paginate()`](../module/crud.md#unified-paginate--both-strategies-on-one-endpoint) lets a single endpoint support both strategies via a `pagination_type` query parameter. The `pagination_type` field in the response acts as a discriminator for frontend tooling.
+[`paginate()`](../module/crud.md#unified-endpoint-both-strategies) lets a single endpoint support both strategies via a `pagination_type` query parameter. The `pagination_type` field in the response acts as a discriminator for frontend tooling.
 
 ```python title="routes.py:61:79"
 --8<-- "docs_src/examples/pagination_search/routes.py:61:79"
