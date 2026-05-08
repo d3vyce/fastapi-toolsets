@@ -116,13 +116,8 @@ class TestCreateDbDependency:
         await engine.dispose()
 
     @pytest.mark.anyio
-    async def test_update_after_lock_tables_is_persisted(self):
-        """Changes made after lock_tables exits (before endpoint returns) are committed.
-
-        Regression: without the auto-begin fix, lock_tables would start and commit a
-        real outer transaction, leaving the session idle. Any modifications after that
-        point were silently dropped.
-        """
+    async def test_data_inside_lock_is_committed(self):
+        """Changes made inside lock_tables are committed when the context exits."""
         engine = create_async_engine(DATABASE_URL, echo=False)
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -130,21 +125,12 @@ class TestCreateDbDependency:
             await conn.run_sync(Base.metadata.create_all)
 
         try:
-            get_db = create_db_dependency(session_factory)
-
-            async for session in get_db():
-                async with lock_tables(session, [Role]):
-                    role = Role(name="lock_then_update")
-                    session.add(role)
-                    await session.flush()
-                # lock_tables has exited — outer transaction must still be open
-                assert session.in_transaction()
-                role.name = "updated_after_lock"
+            async with lock_tables(session_factory, [Role]) as session:
+                role = Role(name="lock_committed")
+                session.add(role)
 
             async with session_factory() as verify:
-                result = await RoleCrud.first(
-                    verify, [Role.name == "updated_after_lock"]
-                )
+                result = await RoleCrud.first(verify, [Role.name == "lock_committed"])
                 assert result is not None
         finally:
             async with engine.begin() as conn:
@@ -287,54 +273,55 @@ class TestLockTables:
     """Tests for lock_tables context manager (PostgreSQL-specific)."""
 
     @pytest.mark.anyio
-    async def test_lock_single_table(self, db_session: AsyncSession):
-        """Lock a single table."""
-        async with lock_tables(db_session, [Role]):
-            # Inside the lock, we can still perform operations
+    async def test_lock_single_table(self, session_maker):
+        """Lock a single table; changes inside are committed on context exit."""
+        async with lock_tables(session_maker, [Role]) as session:
             role = Role(name="locked_role")
-            db_session.add(role)
-            await db_session.flush()
+            session.add(role)
 
-        # After lock is released, verify the data was committed
-        result = await RoleCrud.first(db_session, [Role.name == "locked_role"])
-        assert result is not None
+        async with session_maker() as verify:
+            result = await RoleCrud.first(verify, [Role.name == "locked_role"])
+            assert result is not None
 
     @pytest.mark.anyio
-    async def test_lock_multiple_tables(self, db_session: AsyncSession):
+    async def test_lock_multiple_tables(self, session_maker):
         """Lock multiple tables."""
-        async with lock_tables(db_session, [Role, User]):
+        async with lock_tables(session_maker, [Role, User]) as session:
             role = Role(name="multi_lock_role")
-            db_session.add(role)
-            await db_session.flush()
+            session.add(role)
 
-        result = await RoleCrud.first(db_session, [Role.name == "multi_lock_role"])
-        assert result is not None
+        async with session_maker() as verify:
+            result = await RoleCrud.first(verify, [Role.name == "multi_lock_role"])
+            assert result is not None
 
     @pytest.mark.anyio
-    async def test_lock_with_custom_mode(self, db_session: AsyncSession):
+    async def test_lock_with_custom_mode(self, session_maker):
         """Lock with custom lock mode."""
-        async with lock_tables(db_session, [Role], mode=LockMode.EXCLUSIVE):
+        async with lock_tables(
+            session_maker, [Role], mode=LockMode.EXCLUSIVE
+        ) as session:
             role = Role(name="exclusive_lock_role")
-            db_session.add(role)
-            await db_session.flush()
+            session.add(role)
 
-        result = await RoleCrud.first(db_session, [Role.name == "exclusive_lock_role"])
-        assert result is not None
+        async with session_maker() as verify:
+            result = await RoleCrud.first(verify, [Role.name == "exclusive_lock_role"])
+            assert result is not None
 
     @pytest.mark.anyio
-    async def test_lock_rollback_on_exception(self, db_session: AsyncSession):
+    async def test_lock_rollback_on_exception(self, session_maker):
         """Lock context rolls back on exception."""
         try:
-            async with lock_tables(db_session, [Role]):
+            async with lock_tables(session_maker, [Role]) as session:
                 role = Role(name="lock_rollback_role")
-                db_session.add(role)
-                await db_session.flush()
+                session.add(role)
+                await session.flush()
                 raise ValueError("Simulated error")
         except ValueError:
             pass
 
-        result = await RoleCrud.first(db_session, [Role.name == "lock_rollback_role"])
-        assert result is None
+        async with session_maker() as verify:
+            result = await RoleCrud.first(verify, [Role.name == "lock_rollback_role"])
+            assert result is None
 
 
 class TestWaitForRowChange:
@@ -643,29 +630,30 @@ class TestM2MAdd:
             await m2m_add(db_session, user, User.role, role)
 
     @pytest.mark.anyio
-    async def test_works_inside_lock_tables(self, db_session: AsyncSession):
-        """m2m_add works correctly inside a lock_tables nested transaction."""
-        user = User(username="m2m_lock_author", email="m2m_lock@test.com")
-        db_session.add(user)
-        await db_session.flush()
+    async def test_works_inside_lock_tables(self, session_maker):
+        """m2m_add works correctly inside a lock_tables context."""
+        async with lock_tables(session_maker, [Tag]) as session:
+            user = User(username="m2m_lock_author", email="m2m_lock@test.com")
+            session.add(user)
+            await session.flush()
 
-        async with lock_tables(db_session, [Tag]):
             tag = Tag(name="locked_tag")
-            db_session.add(tag)
-            await db_session.flush()
+            session.add(tag)
+            await session.flush()
 
             post = Post(title="Post Lock", author_id=user.id)
-            db_session.add(post)
-            await db_session.flush()
+            session.add(post)
+            await session.flush()
 
-            await m2m_add(db_session, post, Post.tags, tag)
+            await m2m_add(session, post, Post.tags, tag)
 
-        result = await db_session.execute(
-            select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
-        )
-        loaded = result.scalar_one()
-        assert len(loaded.tags) == 1
-        assert loaded.tags[0].name == "locked_tag"
+        async with session_maker() as verify:
+            result = await verify.execute(
+                select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
+            )
+            loaded = result.scalar_one()
+            assert len(loaded.tags) == 1
+            assert loaded.tags[0].name == "locked_tag"
 
 
 class _LocalBase(DeclarativeBase):

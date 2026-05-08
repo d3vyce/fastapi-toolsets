@@ -147,6 +147,7 @@ Examples = [
 
 [[project.nav]]
 Migration = [
+    {"v4.0" = "migration/v4.md"},
     {"v3.0" = "migration/v3.md"},
     {"v2.0" = "migration/v2.md"},
 ]

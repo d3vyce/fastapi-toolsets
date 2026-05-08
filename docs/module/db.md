@@ -57,12 +57,12 @@ async def create_user_with_role(session=session):
 
 ## Table locking
 
-[`lock_tables`](../reference/db.md#fastapi_toolsets.db.lock_tables) acquires PostgreSQL table-level locks before executing critical sections:
+[`lock_tables`](../reference/db.md#fastapi_toolsets.db.lock_tables) acquires PostgreSQL table-level locks before executing critical sections. It opens a **dedicated session** internally and yields it to the caller, so the lock is guaranteed to be released when the context exits:
 
 ```python
-from fastapi_toolsets.db import lock_tables
+from fastapi_toolsets.db import lock_tables, LockMode
 
-async with lock_tables(session=session, tables=[User], mode="EXCLUSIVE"):
+async with lock_tables(session_maker=session_maker, tables=[User], mode=LockMode.EXCLUSIVE) as session:
     # No other transaction can modify User until this block exits
     ...
 ```
@@ -129,7 +129,7 @@ SQLAlchemy's ORM collection API triggers lazy-loads when you append to a relatio
 ```python
 from fastapi_toolsets.db import lock_tables, m2m_add
 
-async with lock_tables(session, [Tag]):
+async with lock_tables(session_maker, [Tag]) as session:
     tag = await TagCrud.create(session, TagCreate(name="python"))
     await m2m_add(session, post, Post.tags, tag)
 ```
