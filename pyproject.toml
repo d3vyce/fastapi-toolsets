@@ -50,13 +50,17 @@ cli = [
 metrics = [
     "prometheus_client>=0.20.0",
 ]
+security = [
+    "async-lru>=1.0",
+    "httpx>=0.25.0",
+]
 pytest = [
     "httpx>=0.25.0",
     "pytest-xdist>=3.0.0",
     "pytest>=8.0.0",
 ]
 all = [
-    "fastapi-toolsets[cli,metrics,pytest]",
+    "fastapi-toolsets[cli,metrics,pytest,security]",
 ]
 
 [project.scripts]
@@ -66,12 +70,14 @@ manager = "fastapi_toolsets.cli.app:cli"
 dev = [
     {include-group = "tests"},
     {include-group = "docs"},
+    {include-group = "docs-src"},
     "fastapi-toolsets[all]",
     "prek>=0.3.8",
     "ruff>=0.1.0",
     "ty>=0.0.1a0",
 ]
 tests = [
+    "async-lru>=1.0",
     "coverage>=7.0.0",
     "httpx>=0.25.0",
     "pytest-anyio>=0.0.0",
@@ -83,6 +89,9 @@ docs = [
     "mike",
     "mkdocstrings-python>=2.0.2",
     "zensical>=0.0.30",
+]
+docs-src = [
+    "bcrypt>=4.0.0",
 ]
 
 [build-system]

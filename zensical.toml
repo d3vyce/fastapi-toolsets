@@ -121,6 +121,7 @@ Modules = [
     {Models = "module/models.md"},
     {Pytest = "module/pytest.md"},
     {Schemas = "module/schemas.md"},
+    {Security = "module/security.md"},
 ]
 
 [[project.nav]]
@@ -136,6 +137,7 @@ Reference = [
     {Models = "reference/models.md"},
     {Pytest = "reference/pytest.md"},
     {Schemas = "reference/schemas.md"},
+    {Security = "reference/security.md"},
 ]
 
 [[project.nav]]

@@ -31,6 +31,7 @@ Install only the extras you need:
 ```bash
 uv add "fastapi-toolsets[cli]"
 uv add "fastapi-toolsets[metrics]"
+uv add "fastapi-toolsets[security]"
 uv add "fastapi-toolsets[pytest]"
 ```
 
@@ -56,6 +57,7 @@ uv add "fastapi-toolsets[all]"
 
 ### Optional
 
+- **Security**: Composable authentication sources (`BearerTokenAuth`, `CookieAuth`, `APIKeyHeaderAuth`, `MultiAuth`) with HMAC-signed cookies and OAuth 2.0 / OIDC helpers
 - **CLI**: Django-like command-line interface with fixture management and custom commands support
 - **Metrics**: Prometheus metrics endpoint with provider/collector registry
 - **Pytest Helpers**: Async test client, database session management, `pytest-xdist` support, and table cleanup utilities
