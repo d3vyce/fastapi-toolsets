@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, ClassVar, Generic, Literal, Self, cast, overload
+from typing import Any, ClassVar, Generic, Literal, Self, TypeAlias, cast, overload
 
 from fastapi import Query
 from pydantic import BaseModel
@@ -50,6 +50,19 @@ from .search import (
     facet_keys,
     search_field_keys,
 )
+
+
+_ForUpdateMode: TypeAlias = bool | Literal["nowait", "skip_locked"]
+
+
+def _apply_for_update(q: Any, mode: _ForUpdateMode) -> Any:
+    if not mode:
+        return q
+    if mode == "nowait":
+        return q.with_for_update(nowait=True)
+    if mode == "skip_locked":
+        return q.with_for_update(skip_locked=True)
+    return q.with_for_update()
 
 
 class _CursorDirection(str, Enum):
@@ -733,7 +746,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: type[SchemaType],
     ) -> Response[SchemaType]: ...
@@ -747,7 +760,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: None = ...,
     ) -> ModelType: ...
@@ -760,7 +773,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: type[BaseModel] | None = None,
     ) -> ModelType | Response[Any]:
@@ -805,7 +818,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: type[SchemaType],
     ) -> Response[SchemaType] | None: ...
@@ -819,7 +832,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: None = ...,
     ) -> ModelType | None: ...
@@ -832,7 +845,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: type[BaseModel] | None = None,
     ) -> ModelType | Response[Any] | None:
@@ -864,8 +877,7 @@ class AsyncCrud(Generic[ModelType]):
         q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
-        if with_for_update:
-            q = q.with_for_update()
+        q = _apply_for_update(q, with_for_update)
         result = await session.execute(q)
         item = result.unique().scalar_one_or_none()
         if item is None:
@@ -884,7 +896,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: type[SchemaType],
     ) -> Response[SchemaType] | None: ...
@@ -898,7 +910,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: None = ...,
     ) -> ModelType | None: ...
@@ -911,7 +923,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         joins: JoinType | None = None,
         outer_join: bool = False,
-        with_for_update: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         schema: type[BaseModel] | None = None,
     ) -> ModelType | Response[Any] | None:
@@ -937,8 +949,7 @@ class AsyncCrud(Generic[ModelType]):
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
-        if with_for_update:
-            q = q.with_for_update()
+        q = _apply_for_update(q, with_for_update)
         result = await session.execute(q)
         item = result.unique().scalars().first()
         if item is None:
@@ -956,6 +967,7 @@ class AsyncCrud(Generic[ModelType]):
         filters: list[Any] | None = None,
         joins: JoinType | None = None,
         outer_join: bool = False,
+        with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
         order_by: OrderByClause | None = None,
         limit: int | None = None,
@@ -968,6 +980,9 @@ class AsyncCrud(Generic[ModelType]):
             filters: List of SQLAlchemy filter conditions
             joins: List of (model, condition) tuples for joining related tables
             outer_join: Use LEFT OUTER JOIN instead of INNER JOIN
+            with_for_update: Lock rows for update. ``True`` for plain ``FOR UPDATE``,
+                ``"nowait"`` for ``FOR UPDATE NOWAIT``, ``"skip_locked"`` for
+                ``FOR UPDATE SKIP LOCKED``.
             load_options: SQLAlchemy loader options
             order_by: Column or list of columns to order by
             limit: Max number of rows to return
@@ -982,6 +997,7 @@ class AsyncCrud(Generic[ModelType]):
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
+        q = _apply_for_update(q, with_for_update)
         if order_by is not None:
             q = q.order_by(order_by)
         if offset is not None:
@@ -1001,6 +1017,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         exclude_unset: bool = True,
         exclude_none: bool = False,
+        with_for_update: _ForUpdateMode = False,
         schema: type[SchemaType],
     ) -> Response[SchemaType]: ...
 
@@ -1014,6 +1031,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         exclude_unset: bool = True,
         exclude_none: bool = False,
+        with_for_update: _ForUpdateMode = False,
         schema: None = ...,
     ) -> ModelType: ...
 
@@ -1026,6 +1044,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         exclude_unset: bool = True,
         exclude_none: bool = False,
+        with_for_update: _ForUpdateMode = False,
         schema: type[BaseModel] | None = None,
     ) -> ModelType | Response[Any]:
         """Update a record in the database.
@@ -1036,6 +1055,9 @@ class AsyncCrud(Generic[ModelType]):
             filters: List of SQLAlchemy filter conditions
             exclude_unset: Exclude fields not explicitly set in the schema
             exclude_none: Exclude fields with None value
+            with_for_update: Lock the row before updating. ``True`` for plain
+                ``FOR UPDATE``, ``"nowait"`` for ``FOR UPDATE NOWAIT``,
+                ``"skip_locked"`` for ``FOR UPDATE SKIP LOCKED``.
             schema: Pydantic schema to serialize the result into. When provided,
                 the result is automatically wrapped in a ``Response[schema]``.
 
@@ -1059,6 +1081,7 @@ class AsyncCrud(Generic[ModelType]):
             db_model = await cls.get(
                 session=session,
                 filters=filters,
+                with_for_update=with_for_update,
                 load_options=m2m_load_options or None,
             )
             values = obj.model_dump(

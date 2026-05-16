@@ -141,6 +141,37 @@ Use `first` when you only care about any one match and don't need uniqueness:
 user = await UserCrud.first(session=session, filters=[User.is_active == True])
 ```
 
+## Row locking
+
+`get`, `get_or_none`, `first`, `get_multi`, and `update` all accept a `with_for_update` parameter that appends a `FOR UPDATE` clause to the underlying `SELECT`, preventing concurrent transactions from modifying the matched rows until the current transaction commits.
+
+| Value | SQL clause |
+|---|---|
+| `False` (default) | no locking |
+| `True` | `FOR UPDATE` |
+| `"nowait"` | `FOR UPDATE NOWAIT` |
+| `"skip_locked"` | `FOR UPDATE SKIP LOCKED` |
+
+```python
+# Lock before reading — typical read-modify-write pattern
+user = await UserCrud.get(session, [User.id == user_id], with_for_update=True)
+
+# Raise immediately if another transaction holds the lock
+user = await UserCrud.get(session, [User.id == user_id], with_for_update="nowait")
+
+# Skip rows already locked by another transaction (e.g. job queues)
+rows = await JobCrud.get_multi(session, filters=[Job.status == "pending"], with_for_update="skip_locked")
+
+# Lock atomically as part of update (prevents race between SELECT and UPDATE)
+user = await UserCrud.update(session, UserUpdate(credits=10), [User.id == user_id], with_for_update=True)
+```
+
+!!! warning
+    `with_for_update` requires an open transaction. Wrap your call in `async with session.begin()` or use the `get_transaction` helper if you are not already inside one.
+
+!!! note
+    `NOWAIT` raises `sqlalchemy.exc.OperationalError` immediately if the row is locked rather than waiting.
+
 ## Pagination
 
 !!! info "Added in `v1.1` (only offset_pagination via `paginate` if `<v1.1`)"
