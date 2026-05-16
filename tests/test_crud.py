@@ -670,6 +670,28 @@ class TestCrudFirst:
         assert role is not None
         assert role.name == "admin"
 
+    @pytest.mark.anyio
+    async def test_first_with_for_update_nowait(self, db_session: AsyncSession):
+        """First with with_for_update='nowait' emits FOR UPDATE NOWAIT."""
+        await RoleCrud.create(db_session, RoleCreate(name="nowait_first"))
+
+        role = await RoleCrud.first(
+            db_session, [Role.name == "nowait_first"], with_for_update="nowait"
+        )
+        assert role is not None
+        assert role.name == "nowait_first"
+
+    @pytest.mark.anyio
+    async def test_first_with_for_update_skip_locked(self, db_session: AsyncSession):
+        """First with with_for_update='skip_locked' emits FOR UPDATE SKIP LOCKED."""
+        await RoleCrud.create(db_session, RoleCreate(name="skip_first"))
+
+        role = await RoleCrud.first(
+            db_session, [Role.name == "skip_first"], with_for_update="skip_locked"
+        )
+        assert role is not None
+        assert role.name == "skip_first"
+
 
 class TestCrudGetMulti:
     """Tests for CRUD get_multi operations."""
@@ -735,6 +757,45 @@ class TestCrudGetMulti:
         names = [r.name for r in roles]
         assert names == ["alpha", "bravo", "charlie"]
 
+    @pytest.mark.anyio
+    async def test_get_multi_with_for_update(self, db_session: AsyncSession):
+        """get_multi() with with_for_update=True locks the rows."""
+        await RoleCrud.create(db_session, RoleCreate(name="lock1"))
+        await RoleCrud.create(db_session, RoleCreate(name="lock2"))
+
+        roles = await RoleCrud.get_multi(
+            db_session,
+            filters=[Role.name.in_(["lock1", "lock2"])],
+            with_for_update=True,
+        )
+        assert len(roles) == 2
+
+    @pytest.mark.anyio
+    async def test_get_multi_with_for_update_nowait(self, db_session: AsyncSession):
+        """get_multi() with with_for_update='nowait' emits FOR UPDATE NOWAIT."""
+        await RoleCrud.create(db_session, RoleCreate(name="nowait_multi"))
+
+        roles = await RoleCrud.get_multi(
+            db_session,
+            filters=[Role.name == "nowait_multi"],
+            with_for_update="nowait",
+        )
+        assert len(roles) == 1
+
+    @pytest.mark.anyio
+    async def test_get_multi_with_for_update_skip_locked(
+        self, db_session: AsyncSession
+    ):
+        """get_multi() with with_for_update='skip_locked' emits FOR UPDATE SKIP LOCKED."""
+        await RoleCrud.create(db_session, RoleCreate(name="skip_multi"))
+
+        roles = await RoleCrud.get_multi(
+            db_session,
+            filters=[Role.name == "skip_multi"],
+            with_for_update="skip_locked",
+        )
+        assert len(roles) == 1
+
 
 class TestCrudUpdate:
     """Tests for CRUD update operations."""
@@ -780,6 +841,48 @@ class TestCrudUpdate:
         assert updated.username == "johnny"
         assert updated.email == "john@test.com"
         assert updated.is_active is True
+
+    @pytest.mark.anyio
+    async def test_update_with_for_update(self, db_session: AsyncSession):
+        """update() with with_for_update=True locks the row before writing."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="before"))
+
+        updated = await RoleCrud.update(
+            db_session,
+            RoleUpdate(name="after"),
+            [Role.id == role.id],
+            with_for_update=True,
+        )
+
+        assert updated.name == "after"
+
+    @pytest.mark.anyio
+    async def test_update_with_for_update_nowait(self, db_session: AsyncSession):
+        """update() with with_for_update='nowait' locks the row with NOWAIT."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="before_nowait"))
+
+        updated = await RoleCrud.update(
+            db_session,
+            RoleUpdate(name="after_nowait"),
+            [Role.id == role.id],
+            with_for_update="nowait",
+        )
+
+        assert updated.name == "after_nowait"
+
+    @pytest.mark.anyio
+    async def test_update_with_for_update_skip_locked(self, db_session: AsyncSession):
+        """update() with with_for_update='skip_locked' locks the row with SKIP LOCKED."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="before_skip"))
+
+        updated = await RoleCrud.update(
+            db_session,
+            RoleUpdate(name="after_skip"),
+            [Role.id == role.id],
+            with_for_update="skip_locked",
+        )
+
+        assert updated.name == "after_skip"
 
 
 class TestCrudDelete:
@@ -2610,7 +2713,7 @@ class TestCursorPaginateSearchJoins:
 
 
 class TestGetWithForUpdate:
-    """Tests for get() with with_for_update=True."""
+    """Tests for get/get_or_none with_for_update variants."""
 
     @pytest.mark.anyio
     async def test_get_with_for_update(self, db_session: AsyncSession):
@@ -2625,6 +2728,105 @@ class TestGetWithForUpdate:
 
         assert result.id == role.id
         assert result.name == "locked"
+
+    @pytest.mark.anyio
+    async def test_get_with_for_update_nowait(self, db_session: AsyncSession):
+        """get() with with_for_update='nowait' emits FOR UPDATE NOWAIT."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="nowait"))
+
+        result = await RoleCrud.get(
+            db_session,
+            filters=[Role.id == role.id],
+            with_for_update="nowait",
+        )
+
+        assert result.id == role.id
+
+    @pytest.mark.anyio
+    async def test_get_with_for_update_skip_locked(self, db_session: AsyncSession):
+        """get() with with_for_update='skip_locked' emits FOR UPDATE SKIP LOCKED."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="skip"))
+
+        result = await RoleCrud.get(
+            db_session,
+            filters=[Role.id == role.id],
+            with_for_update="skip_locked",
+        )
+
+        assert result.id == role.id
+
+    @pytest.mark.anyio
+    async def test_get_or_none_with_for_update(self, db_session: AsyncSession):
+        """get_or_none() with with_for_update=True locks the row."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="locked2"))
+
+        result = await RoleCrud.get_or_none(
+            db_session,
+            [Role.id == role.id],
+            with_for_update=True,
+        )
+
+        assert result is not None
+        assert result.id == role.id
+
+    @pytest.mark.anyio
+    async def test_get_or_none_with_for_update_nowait(self, db_session: AsyncSession):
+        """get_or_none() with with_for_update='nowait' emits FOR UPDATE NOWAIT."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="nowait2"))
+
+        result = await RoleCrud.get_or_none(
+            db_session,
+            [Role.id == role.id],
+            with_for_update="nowait",
+        )
+
+        assert result is not None
+        assert result.id == role.id
+
+    @pytest.mark.anyio
+    async def test_get_or_none_with_for_update_skip_locked(
+        self, db_session: AsyncSession
+    ):
+        """get_or_none() with with_for_update='skip_locked' emits FOR UPDATE SKIP LOCKED."""
+        role = await RoleCrud.create(db_session, RoleCreate(name="skip2"))
+
+        result = await RoleCrud.get_or_none(
+            db_session,
+            [Role.id == role.id],
+            with_for_update="skip_locked",
+        )
+
+        assert result is not None
+        assert result.id == role.id
+
+    def test_for_update_sql_clauses(self):
+        """Verify _apply_for_update emits the correct SQL FOR UPDATE clauses."""
+        from sqlalchemy import select
+        from sqlalchemy.dialects import postgresql
+
+        from fastapi_toolsets.crud.factory import _apply_for_update
+
+        base = select(Role)
+
+        plain = str(_apply_for_update(base, True).compile(dialect=postgresql.dialect()))
+        assert "FOR UPDATE" in plain
+        assert "NOWAIT" not in plain
+        assert "SKIP LOCKED" not in plain
+
+        nowait = str(
+            _apply_for_update(base, "nowait").compile(dialect=postgresql.dialect())
+        )
+        assert "FOR UPDATE NOWAIT" in nowait
+
+        skip = str(
+            _apply_for_update(base, "skip_locked").compile(dialect=postgresql.dialect())
+        )
+        assert "FOR UPDATE SKIP LOCKED" in skip
+
+        no_lock = str(
+            _apply_for_update(base, False).compile(dialect=postgresql.dialect())
+        )
+        assert "FOR UPDATE" not in no_lock
 
 
 class TestCursorPaginateColumnTypes:
