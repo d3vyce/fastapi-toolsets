@@ -16,6 +16,7 @@ from .exceptions import NotFoundError
 
 __all__ = [
     "LockMode",
+    "advisory_lock",
     "cleanup_tables",
     "create_database",
     "create_db_context",
@@ -202,6 +203,78 @@ def lock_tables(
                 raise
 
     return _lock()
+
+
+@asynccontextmanager
+async def advisory_lock(
+    session: AsyncSession,
+    key: int | tuple[int, int],
+    *,
+    shared: bool = False,
+    nowait: bool = False,
+    timeout: str | None = None,
+) -> AsyncGenerator[bool, None]:
+    """Acquire a PostgreSQL session-level advisory lock.
+
+    Args:
+        session: AsyncSession instance.
+        key: Lock key — a single ``int`` (bigint) or a ``(int, int)`` pair for namespacing.
+        shared: Acquire a shared lock (multiple holders allowed). Default is exclusive.
+        nowait: Return ``False`` immediately if the lock is unavailable instead of waiting.
+        timeout: Maximum wait time (e.g. ``"5s"``, ``"500ms"``). Raises ``DBAPIError``
+            if exceeded. Ignored when *nowait* is ``True``.
+
+    Yields:
+        ``True`` if the lock was acquired, ``False`` if *nowait* is ``True`` and the lock
+        is already held.
+
+    Raises:
+        sqlalchemy.exc.DBAPIError: If *timeout* is set and the lock cannot be acquired
+            in time.
+
+    Example:
+        ```python
+        from fastapi_toolsets.db import advisory_lock
+
+        async with advisory_lock(session, 42):
+            ...
+
+        async with advisory_lock(session, 42, nowait=True) as acquired:
+            if not acquired:
+                raise HTTPException(409, "Resource is locked")
+
+        async with advisory_lock(session, 42, timeout="5s"):
+            ...
+
+        async with advisory_lock(session, (1, user_id), shared=True):
+            ...
+        ```
+    """
+    suffix = "_shared" if shared else ""
+    acquire_fn = f"{'pg_try_advisory_lock' if nowait else 'pg_advisory_lock'}{suffix}"
+    release_fn = f"pg_advisory_unlock{suffix}"
+
+    if isinstance(key, tuple):
+        k1, k2 = key
+        args = "CAST(:k1 AS integer), CAST(:k2 AS integer)"
+        params: dict[str, int] = {"k1": k1, "k2": k2}
+    else:
+        args = ":k"
+        params = {"k": key}
+
+    acquire_sql = text(f"SELECT {acquire_fn}({args})")
+    release_sql = text(f"SELECT {release_fn}({args})")
+
+    if timeout is not None and not nowait:
+        await session.execute(text(f"SET LOCAL lock_timeout='{timeout}'"))
+
+    result = await session.execute(acquire_sql, params)
+    acquired = result.scalar() if nowait else True
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            await session.execute(release_sql, params)
 
 
 async def create_database(

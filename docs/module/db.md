@@ -1,13 +1,13 @@
 # DB
 
-SQLAlchemy async session management with transactions, table locking, and row-change polling.
+SQLAlchemy async session management with transactions, table locking, advisory locking, and row-change polling.
 
 !!! info
     This module has been coded and tested to be compatible with PostgreSQL only.
 
 ## Overview
 
-The `db` module provides helpers to create FastAPI dependencies and context managers for `AsyncSession`, along with utilities for nested transactions, table lock and polling for row changes.
+The `db` module provides helpers to create FastAPI dependencies and context managers for `AsyncSession`, along with utilities for nested transactions, table locks, advisory locks, and polling for row changes.
 
 ## Session dependency
 
@@ -68,6 +68,38 @@ async with lock_tables(session_maker=session_maker, tables=[User], mode=LockMode
 ```
 
 Available lock modes are defined in [`LockMode`](../reference/db.md#fastapi_toolsets.db.LockMode): `ACCESS_SHARE`, `ROW_SHARE`, `ROW_EXCLUSIVE`, `SHARE_UPDATE_EXCLUSIVE`, `SHARE`, `SHARE_ROW_EXCLUSIVE`, `EXCLUSIVE`, `ACCESS_EXCLUSIVE`.
+
+## Advisory locking
+
+[`advisory_lock`](../reference/db.md#fastapi_toolsets.db.advisory_lock) acquires a PostgreSQL session-level advisory lock. The lock is released explicitly when the context exits, regardless of whether the transaction has committed.
+
+```python
+from fastapi_toolsets.db import advisory_lock
+
+# Blocking exclusive lock — waits until the lock is free
+async with advisory_lock(session=session, key=42):
+    ...
+
+# Non-blocking — yields False immediately if already held
+async with advisory_lock(session=session, key=42, nowait=True) as acquired:
+    if not acquired:
+        raise HTTPException(409, "Resource is locked")
+
+# Blocking with a timeout — raises DBAPIError if not acquired in time
+async with advisory_lock(session=session, key=42, timeout="5s"):
+    ...
+
+# Shared — multiple readers allowed simultaneously, blocks exclusive writers
+async with advisory_lock(session=session, key=42, shared=True):
+    ...
+
+# Two-integer key for namespacing (e.g. lock_type + resource_id)
+async with advisory_lock(session=session, key=(1, user_id)):
+    ...
+```
+
+!!! note
+    Advisory locks use PostgreSQL session-level functions (`pg_advisory_lock` / `pg_advisory_unlock`). The lock is tied to the database connection, not the SQLAlchemy transaction — it is released when the context exits, even if the surrounding transaction is still open.
 
 ## Row-change polling
 
