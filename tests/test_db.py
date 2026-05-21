@@ -27,6 +27,7 @@ from sqlalchemy.orm import (
 
 from fastapi_toolsets.db import (
     LockMode,
+    advisory_lock,
     cleanup_tables,
     create_database,
     create_db_context,
@@ -322,6 +323,95 @@ class TestLockTables:
         async with session_maker() as verify:
             result = await RoleCrud.first(verify, [Role.name == "lock_rollback_role"])
             assert result is None
+
+
+class TestAdvisoryLock:
+    """Tests for advisory_lock context manager (PostgreSQL-specific)."""
+
+    @pytest.mark.anyio
+    async def test_blocking_exclusive_acquires(self, db_session: AsyncSession):
+        """Blocking exclusive lock acquires and yields True."""
+        async with advisory_lock(db_session, 1001) as acquired:
+            assert acquired is True
+
+    @pytest.mark.anyio
+    async def test_nowait_returns_true_when_free(self, db_session: AsyncSession):
+        """nowait=True yields True when the lock is available."""
+        async with advisory_lock(db_session, 1002, nowait=True) as acquired:
+            assert acquired is True
+
+    @pytest.mark.anyio
+    async def test_nowait_returns_false_when_contended(self, session_maker):
+        """nowait=True yields False when another session holds the lock."""
+        async with session_maker() as holder:
+            async with holder.begin():
+                async with advisory_lock(holder, 1003):
+                    async with session_maker() as contender:
+                        async with contender.begin():
+                            async with advisory_lock(
+                                contender, 1003, nowait=True
+                            ) as acquired:
+                                assert acquired is False
+
+    @pytest.mark.anyio
+    async def test_shared_allows_concurrent_readers(self, session_maker):
+        """Two shared locks on the same key are both acquired."""
+        async with session_maker() as s1, session_maker() as s2:
+            async with s1.begin(), s2.begin():
+                async with advisory_lock(s1, 1004, shared=True) as a1:
+                    async with advisory_lock(s2, 1004, shared=True, nowait=True) as a2:
+                        assert a1 is True
+                        assert a2 is True
+
+    @pytest.mark.anyio
+    async def test_tuple_key(self, db_session: AsyncSession):
+        """(int, int) key variant acquires the lock."""
+        async with advisory_lock(db_session, (7, 42)) as acquired:
+            assert acquired is True
+
+    @pytest.mark.anyio
+    async def test_tuple_key_nowait_contended(self, session_maker):
+        """Tuple key nowait returns False when contended."""
+        async with session_maker() as holder:
+            async with holder.begin():
+                async with advisory_lock(holder, (7, 99)):
+                    async with session_maker() as contender:
+                        async with contender.begin():
+                            async with advisory_lock(
+                                contender, (7, 99), nowait=True
+                            ) as acquired:
+                                assert acquired is False
+
+    @pytest.mark.anyio
+    async def test_lock_released_at_context_exit(self, session_maker):
+        """Lock is released when the context exits, even while the transaction is still open."""
+        async with session_maker() as s1:
+            async with s1.begin():
+                async with advisory_lock(s1, 1005):
+                    pass  # lock released here — transaction still active
+
+                async with session_maker() as s2:
+                    async with s2.begin():
+                        async with advisory_lock(s2, 1005, nowait=True) as acquired:
+                            assert (
+                                acquired is True
+                            )  # s1 still in transaction but lock is free
+
+    @pytest.mark.anyio
+    async def test_timeout_raises_when_contended(self, session_maker):
+        """timeout= raises when the lock cannot be acquired within the interval."""
+        from sqlalchemy.exc import DBAPIError
+
+        async with session_maker() as holder:
+            async with holder.begin():
+                async with advisory_lock(holder, 1006):
+                    async with session_maker() as contender:
+                        async with contender.begin():
+                            with pytest.raises(DBAPIError):
+                                async with advisory_lock(
+                                    contender, 1006, timeout="10ms"
+                                ):
+                                    pass
 
 
 class TestWaitForRowChange:
