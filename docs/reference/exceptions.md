@@ -15,6 +15,8 @@ from fastapi_toolsets.exceptions import (
     InvalidSearchColumnError,
     InvalidFacetFilterError,
     InvalidOrderFieldError,
+    PoolExhaustedError,
+    LockTimeoutError,
     generate_error_responses,
     init_exceptions_handlers,
 )
@@ -37,6 +39,10 @@ from fastapi_toolsets.exceptions import (
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError
+
+## ::: fastapi_toolsets.exceptions.exceptions.PoolExhaustedError
+
+## ::: fastapi_toolsets.exceptions.exceptions.LockTimeoutError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.generate_error_responses
 

@@ -10,7 +10,9 @@ from fastapi_toolsets.exceptions import (
     ConflictError,
     ForbiddenError,
     InvalidOrderFieldError,
+    LockTimeoutError,
     NotFoundError,
+    PoolExhaustedError,
     UnauthorizedError,
     generate_error_responses,
     init_exceptions_handlers,
@@ -214,6 +216,70 @@ class TestApiExceptionGuard:
 
         err = ConcreteError()
         assert err.api_error.code == 404
+
+
+class TestDbExceptions:
+    """Tests for database-related exception classes."""
+
+    def test_pool_exhausted_error_attributes(self):
+        """PoolExhaustedError has 503 status and DB-503-POOL error code."""
+        error = PoolExhaustedError()
+        assert error.api_error.code == 503
+        assert error.api_error.err_code == "DB-503-POOL"
+        assert error.api_error.msg == "Service Unavailable"
+
+    def test_pool_exhausted_error_with_detail(self):
+        """PoolExhaustedError accepts a detail string that overrides msg."""
+        error = PoolExhaustedError("pool full")
+        assert error.api_error.msg == "pool full"
+        assert PoolExhaustedError.api_error.msg == "Service Unavailable"
+
+    def test_lock_timeout_error_attributes(self):
+        """LockTimeoutError has 503 status and DB-503-LOCK error code."""
+        error = LockTimeoutError()
+        assert error.api_error.code == 503
+        assert error.api_error.err_code == "DB-503-LOCK"
+        assert error.api_error.msg == "Service Unavailable"
+
+    def test_lock_timeout_error_with_detail(self):
+        """LockTimeoutError accepts a detail string that overrides msg."""
+        error = LockTimeoutError("contended")
+        assert error.api_error.msg == "contended"
+        assert LockTimeoutError.api_error.msg == "Service Unavailable"
+
+    def test_pool_exhausted_handled_as_503(self):
+        """init_exceptions_handlers turns PoolExhaustedError into a 503 response."""
+        from fastapi import FastAPI
+        from fastapi_toolsets.exceptions import init_exceptions_handlers
+
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/db")
+        async def endpoint():
+            raise PoolExhaustedError()
+
+        client = TestClient(app)
+        response = client.get("/db")
+        assert response.status_code == 503
+        assert response.json()["error_code"] == "DB-503-POOL"
+
+    def test_lock_timeout_handled_as_503(self):
+        """init_exceptions_handlers turns LockTimeoutError into a 503 response."""
+        from fastapi import FastAPI
+        from fastapi_toolsets.exceptions import init_exceptions_handlers
+
+        app = FastAPI()
+        init_exceptions_handlers(app)
+
+        @app.get("/lock")
+        async def endpoint():
+            raise LockTimeoutError()
+
+        client = TestClient(app)
+        response = client.get("/lock")
+        assert response.status_code == 503
+        assert response.json()["error_code"] == "DB-503-LOCK"
 
 
 class TestBuiltInExceptions:

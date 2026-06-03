@@ -223,6 +223,35 @@ class InvalidOrderFieldError(ApiException):
         )
 
 
+class PoolExhaustedError(ApiException):
+    """HTTP 503 - Database connection pool is exhausted."""
+
+    api_error = ApiError(
+        code=503,
+        msg="Service Unavailable",
+        desc=(
+            "The database connection pool is exhausted. "
+            "Too many concurrent requests are holding connections. "
+            "Retry shortly or contact support if the issue persists."
+        ),
+        err_code="DB-503-POOL",
+    )
+
+
+class LockTimeoutError(ApiException):
+    """HTTP 503 - A database lock could not be acquired within the timeout."""
+
+    api_error = ApiError(
+        code=503,
+        msg="Service Unavailable",
+        desc=(
+            "A database lock could not be acquired within the allowed timeout. "
+            "The resource is under heavy contention. Retry shortly."
+        ),
+        err_code="DB-503-LOCK",
+    )
+
+
 def generate_error_responses(
     *errors: type[ApiException],
 ) -> dict[int | str, dict[str, Any]]:
