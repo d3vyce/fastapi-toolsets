@@ -39,6 +39,8 @@ It also patches `app.openapi()` to replace the default Pydantic 422 schema with 
 | [`NoSearchableFieldsError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.NoSearchableFieldsError) | 400 | No Searchable Fields |
 | [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) | 400 | Invalid Facet Filter |
 | [`InvalidOrderFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError) | 422 | Invalid Order Field |
+| [`PoolExhaustedError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.PoolExhaustedError) | 503 | Service Unavailable |
+| [`LockTimeoutError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.LockTimeoutError) | 503 | Service Unavailable |
 
 ### Per-instance overrides
 

@@ -69,6 +69,13 @@ async with lock_tables(session_maker=session_maker, tables=[User], mode=LockMode
 
 Available lock modes are defined in [`LockMode`](../reference/db.md#fastapi_toolsets.db.LockMode): `ACCESS_SHARE`, `ROW_SHARE`, `ROW_EXCLUSIVE`, `SHARE_UPDATE_EXCLUSIVE`, `SHARE`, `SHARE_ROW_EXCLUSIVE`, `EXCLUSIVE`, `ACCESS_EXCLUSIVE`.
 
+Pass `timeout` to limit how long the lock waits before giving up. On timeout, a [`LockTimeoutError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.LockTimeoutError) is raised instead of a raw database error:
+
+```python
+async with lock_tables(session_maker, [Order], timeout="2s") as session:
+    ...
+```
+
 ## Advisory locking
 
 [`advisory_lock`](../reference/db.md#fastapi_toolsets.db.advisory_lock) acquires a PostgreSQL session-level advisory lock. The lock is released explicitly when the context exits, regardless of whether the transaction has committed.
@@ -85,7 +92,7 @@ async with advisory_lock(session=session, key=42, nowait=True) as acquired:
     if not acquired:
         raise HTTPException(409, "Resource is locked")
 
-# Blocking with a timeout — raises DBAPIError if not acquired in time
+# Blocking with a timeout — raises LockTimeoutError if not acquired in time
 async with advisory_lock(session=session, key=42, timeout="5s"):
     ...
 

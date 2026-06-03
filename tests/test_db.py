@@ -39,7 +39,11 @@ from fastapi_toolsets.db import (
     m2m_set,
     wait_for_row_change,
 )
-from fastapi_toolsets.exceptions import NotFoundError
+from fastapi_toolsets.exceptions import (
+    LockTimeoutError,
+    NotFoundError,
+    PoolExhaustedError,
+)
 from fastapi_toolsets.pytest import create_db_session
 
 from .conftest import DATABASE_URL, Base, Post, Role, RoleCrud, Tag, User, UserCrud
@@ -399,15 +403,13 @@ class TestAdvisoryLock:
 
     @pytest.mark.anyio
     async def test_timeout_raises_when_contended(self, session_maker):
-        """timeout= raises when the lock cannot be acquired within the interval."""
-        from sqlalchemy.exc import DBAPIError
-
+        """timeout= raises LockTimeoutError when the lock cannot be acquired."""
         async with session_maker() as holder:
             async with holder.begin():
                 async with advisory_lock(holder, 1006):
                     async with session_maker() as contender:
                         async with contender.begin():
-                            with pytest.raises(DBAPIError):
+                            with pytest.raises(LockTimeoutError):
                                 async with advisory_lock(
                                     contender, 1006, timeout="10ms"
                                 ):
@@ -744,6 +746,53 @@ class TestM2MAdd:
             loaded = result.scalar_one()
             assert len(loaded.tags) == 1
             assert loaded.tags[0].name == "locked_tag"
+
+
+class TestDbErrors:
+    """Tests for structured error handling in db utilities."""
+
+    @pytest.mark.anyio
+    async def test_pool_exhausted_on_get_db_raises_pool_exhausted_error(self):
+        """PoolExhaustedError is raised when the connection pool is exhausted on get_db."""
+        engine = create_async_engine(
+            DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1
+        )
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        get_db = create_db_dependency(session_factory)
+
+        try:
+            async with session_factory() as holder:
+                await holder.connection()  # check out the single available connection
+                with pytest.raises(PoolExhaustedError):
+                    async for _ in get_db():
+                        pass
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_pool_exhausted_on_lock_tables_raises_pool_exhausted_error(self):
+        """PoolExhaustedError is raised when the connection pool is exhausted on lock_tables."""
+        engine = create_async_engine(
+            DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1
+        )
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+        try:
+            async with session_factory() as holder:
+                await holder.connection()  # check out the single available connection
+                with pytest.raises(PoolExhaustedError):
+                    async with lock_tables(session_factory, [Role]) as _:
+                        pass
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_lock_timeout_raises_lock_timeout_error(self, session_maker):
+        """LockTimeoutError is raised when a table lock cannot be acquired within timeout."""
+        async with lock_tables(session_maker, [Role]) as _:
+            with pytest.raises(LockTimeoutError):
+                async with lock_tables(session_maker, [Role], timeout="100ms") as _:
+                    pass
 
 
 class _LocalBase(DeclarativeBase):

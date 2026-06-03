@@ -6,13 +6,22 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from enum import Enum
 from typing import Any, TypeVar, cast
 
+import asyncpg
 from sqlalchemy import Table, delete, text, tuple_
+from sqlalchemy import exc as sa_exc
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, QueryableAttribute
 from sqlalchemy.orm.relationships import RelationshipProperty
 
-from .exceptions import NotFoundError
+from .exceptions import LockTimeoutError, NotFoundError, PoolExhaustedError
+
+
+def _is_lock_not_available(e: sa_exc.DBAPIError) -> bool:
+    return e.orig is not None and isinstance(
+        e.orig.__cause__, asyncpg.exceptions.LockNotAvailableError
+    )
+
 
 __all__ = [
     "LockMode",
@@ -65,7 +74,10 @@ def create_db_dependency(
 
     async def get_db() -> AsyncGenerator[_SessionT, None]:
         async with session_maker() as session:
-            await session.connection()
+            try:
+                await session.connection()
+            except sa_exc.TimeoutError as e:
+                raise PoolExhaustedError() from e
             yield session
             if session.in_transaction():
                 await session.commit()
@@ -198,6 +210,18 @@ def lock_tables(
                 await session.execute(text(f"LOCK {table_names} IN {mode.value} MODE"))
                 yield session
                 await session.commit()
+            except sa_exc.TimeoutError as e:
+                await session.rollback()
+                raise PoolExhaustedError(
+                    f"Connection pool exhausted while locking '{table_names}'. "
+                ) from e
+            except sa_exc.DBAPIError as e:
+                await session.rollback()
+                if _is_lock_not_available(e):
+                    raise LockTimeoutError(
+                        f"Lock on '{table_names}' could not be acquired within {timeout}."
+                    ) from e
+                raise  # pragma: no cover
             except BaseException:
                 await session.rollback()
                 raise
@@ -229,8 +253,7 @@ async def advisory_lock(
         is already held.
 
     Raises:
-        sqlalchemy.exc.DBAPIError: If *timeout* is set and the lock cannot be acquired
-            in time.
+        LockTimeoutError: If *timeout* is set and the lock cannot be acquired in time.
 
     Example:
         ```python
@@ -268,7 +291,14 @@ async def advisory_lock(
     if timeout is not None and not nowait:
         await session.execute(text(f"SET LOCAL lock_timeout='{timeout}'"))
 
-    result = await session.execute(acquire_sql, params)
+    try:
+        result = await session.execute(acquire_sql, params)
+    except sa_exc.DBAPIError as e:
+        if _is_lock_not_available(e):
+            raise LockTimeoutError(
+                f"Advisory lock {key!r} could not be acquired within {timeout}."
+            ) from e
+        raise  # pragma: no cover
     acquired = result.scalar() if nowait else True
     try:
         yield acquired
