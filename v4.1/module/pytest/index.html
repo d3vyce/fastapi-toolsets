@@ -865,10 +865,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#overview" class="md-nav__link">
+  <a href="#async-client" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Overview
+        Async client
       </span>
     </span>
   </a>
@@ -876,24 +876,30 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#creating-an-async-client" class="md-nav__link">
+  <a href="#database-sessions" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Creating an async client
+        Database sessions
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Database sessions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#engine-and-session-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Engine and session options
       </span>
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#database-sessions-in-tests" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Database sessions in tests
-      </span>
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -909,10 +915,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cleaning-up-tables" class="md-nav__link">
+  <a href="#manual-table-cleanup" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Cleaning up tables
+        Manual table cleanup
       </span>
     </span>
   </a>
@@ -1708,10 +1714,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#overview" class="md-nav__link">
+  <a href="#async-client" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Overview
+        Async client
       </span>
     </span>
   </a>
@@ -1719,24 +1725,30 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#creating-an-async-client" class="md-nav__link">
+  <a href="#database-sessions" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Creating an async client
+        Database sessions
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Database sessions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#engine-and-session-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Engine and session options
       </span>
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#database-sessions-in-tests" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Database sessions in tests
-      </span>
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1752,10 +1764,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cleaning-up-tables" class="md-nav__link">
+  <a href="#manual-table-cleanup" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Cleaning up tables
+        Manual table cleanup
       </span>
     </span>
   </a>
@@ -1868,7 +1880,7 @@
 
 
 <h1 id="pytest">Pytest<a class="headerlink" href="#pytest" title="Permanent link">&para;</a></h1>
-<p>Testing helpers for FastAPI applications with async client, database sessions, and parallel worker support.</p>
+<p>Testing helpers for FastAPI applications: async HTTP client, database sessions, and parallel worker support.</p>
 <h2 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h2>
 <div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">uv</label><label for="__tabbed_1_2">pip</label></div>
 <div class="tabbed-content">
@@ -1882,10 +1894,8 @@
 </div>
 </div>
 </div>
-<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
-<p>The <code>pytest</code> module provides utilities for setting up async test clients, managing test database sessions, and supporting parallel test execution with <code>pytest-xdist</code>.</p>
-<h2 id="creating-an-async-client">Creating an async client<a class="headerlink" href="#creating-an-async-client" title="Permanent link">&para;</a></h2>
-<p>Use <a href="../../reference/pytest/#fastapi_toolsets.pytest.utils.create_async_client"><code>create_async_client</code></a> to get an <code>httpx.AsyncClient</code> configured for your FastAPI app:</p>
+<h2 id="async-client">Async client<a class="headerlink" href="#async-client" title="Permanent link">&para;</a></h2>
+<p>Use <a href="../../reference/pytest/#fastapi_toolsets.pytest.utils.create_async_client"><code>create_async_client</code></a> to get an <code>httpx.AsyncClient</code> bound to your FastAPI app:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.pytest</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_async_client</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span>
@@ -1900,45 +1910,65 @@
 </span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">c</span><span class="p">:</span>
 </span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="k">yield</span> <span class="n">c</span>
 </span></code></pre></div>
-<h2 id="database-sessions-in-tests">Database sessions in tests<a class="headerlink" href="#database-sessions-in-tests" title="Permanent link">&para;</a></h2>
-<p>Use <a href="../../reference/pytest/#fastapi_toolsets.pytest.utils.create_db_session"><code>create_db_session</code></a> to create an isolated <code>AsyncSession</code> for a test, combined with <a href="../../reference/pytest/#fastapi_toolsets.pytest.utils.create_worker_database"><code>create_worker_database</code></a> to set up a per-worker database:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.pytest</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_worker_database</span><span class="p">,</span> <span class="n">create_db_session</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span><span class="p">(</span><span class="n">scope</span><span class="o">=</span><span class="s2">&quot;session&quot;</span><span class="p">)</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">worker_db_url</span><span class="p">():</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">create_worker_database</span><span class="p">(</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        <span class="n">database_url</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">SQLALCHEMY_DATABASE_URI</span><span class="p">)</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">url</span><span class="p">:</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>        <span class="k">yield</span> <span class="n">url</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">db_session</span><span class="p">(</span><span class="n">worker_db_url</span><span class="p">):</span>
-</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">create_db_session</span><span class="p">(</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>        <span class="n">database_url</span><span class="o">=</span><span class="n">worker_db_url</span><span class="p">,</span> <span class="n">base</span><span class="o">=</span><span class="n">Base</span><span class="p">,</span> <span class="n">cleanup</span><span class="o">=</span><span class="kc">True</span>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
-</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>        <span class="k">yield</span> <span class="n">session</span>
+<p>Any extra keyword arguments are forwarded to <code>httpx.AsyncClient</code>, so you can set default headers, authentication, timeouts, and more:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">async</span> <span class="k">with</span> <span class="n">create_async_client</span><span class="p">(</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">app</span><span class="o">=</span><span class="n">app</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">headers</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;X-Api-Key&quot;</span><span class="p">:</span> <span class="s2">&quot;secret&quot;</span><span class="p">},</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="p">)</span> <span class="k">as</span> <span class="n">c</span><span class="p">:</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="o">...</span>
 </span></code></pre></div>
+<h2 id="database-sessions">Database sessions<a class="headerlink" href="#database-sessions" title="Permanent link">&para;</a></h2>
+<p>Use <a href="../../reference/pytest/#fastapi_toolsets.pytest.utils.create_worker_database"><code>create_worker_database</code></a> + <a href="../../reference/pytest/#fastapi_toolsets.pytest.utils.create_db_session"><code>create_db_session</code></a> to get a fully isolated <code>AsyncSession</code> for each test:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.pytest</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_worker_database</span><span class="p">,</span> <span class="n">create_db_session</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span><span class="p">(</span><span class="n">scope</span><span class="o">=</span><span class="s2">&quot;session&quot;</span><span class="p">)</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">worker_db_url</span><span class="p">():</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">create_worker_database</span><span class="p">(</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        <span class="n">database_url</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">SQLALCHEMY_DATABASE_URI</span><span class="p">)</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">url</span><span class="p">:</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>        <span class="k">yield</span> <span class="n">url</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">db_session</span><span class="p">(</span><span class="n">worker_db_url</span><span class="p">):</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">create_db_session</span><span class="p">(</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>        <span class="n">database_url</span><span class="o">=</span><span class="n">worker_db_url</span><span class="p">,</span> <span class="n">base</span><span class="o">=</span><span class="n">Base</span><span class="p">,</span> <span class="n">cleanup</span><span class="o">=</span><span class="kc">True</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>        <span class="k">yield</span> <span class="n">session</span>
+</span></code></pre></div>
+<p><code>create_worker_database</code> connects without specifying a database (asyncpg falls back to the username), so the target test database does not need to exist beforehand.</p>
 <div class="admonition info">
 <p class="admonition-title">Info</p>
-<p>In this example, the database is reset between each test using the argument <code>cleanup=True</code>.</p>
+<p><code>cleanup=True</code> truncates all tables between tests via <code>TRUNCATE … RESTART IDENTITY CASCADE</code>, which is faster than dropping and recreating tables.</p>
 </div>
-<p>Use <a href="../../reference/pytest/#fastapi_toolsets.pytest.utils.worker_database_url"><code>worker_database_url</code></a> to derive the per-worker URL manually if needed:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.pytest</span><span class="w"> </span><span class="kn">import</span> <span class="n">worker_database_url</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">url</span> <span class="o">=</span> <span class="n">worker_database_url</span><span class="p">(</span><span class="s2">&quot;postgresql+asyncpg://user:pass@localhost/test_db&quot;</span><span class="p">,</span> <span class="n">default_test_db</span><span class="o">=</span><span class="s2">&quot;test&quot;</span><span class="p">)</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># e.g. &quot;postgresql+asyncpg://user:pass@localhost/test_db_gw0&quot; under xdist</span>
+<h3 id="engine-and-session-options">Engine and session options<a class="headerlink" href="#engine-and-session-options" title="Permanent link">&para;</a></h3>
+<p>Pass <code>engine_kwargs</code> or <code>session_kwargs</code> to forward options to the underlying SQLAlchemy primitives:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">async</span> <span class="k">with</span> <span class="n">create_db_session</span><span class="p">(</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">database_url</span><span class="o">=</span><span class="n">worker_db_url</span><span class="p">,</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">base</span><span class="o">=</span><span class="n">Base</span><span class="p">,</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">engine_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;pool_size&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span> <span class="s2">&quot;connect_args&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;timeout&quot;</span><span class="p">:</span> <span class="mi">10</span><span class="p">}},</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">session_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;autoflush&quot;</span><span class="p">:</span> <span class="kc">False</span><span class="p">},</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">)</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="o">...</span>
 </span></code></pre></div>
 <h2 id="parallel-testing-with-pytest-xdist">Parallel testing with pytest-xdist<a class="headerlink" href="#parallel-testing-with-pytest-xdist" title="Permanent link">&para;</a></h2>
-<p>The examples above are already compatible with parallel test execution with <code>pytest-xdist</code>.</p>
-<h2 id="cleaning-up-tables">Cleaning up tables<a class="headerlink" href="#cleaning-up-tables" title="Permanent link">&para;</a></h2>
-<p>If you want to manually clean up a database you can use <a href="../../reference/db/#fastapi_toolsets.db.cleanup_tables"><code>cleanup_tables</code></a>, this will truncate all tables between tests for fast isolation:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">cleanup_tables</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span><span class="p">(</span><span class="n">autouse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">clean</span><span class="p">(</span><span class="n">db_session</span><span class="p">):</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="k">yield</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="k">await</span> <span class="n">cleanup_tables</span><span class="p">(</span><span class="n">session</span><span class="o">=</span><span class="n">db_session</span><span class="p">,</span> <span class="n">base</span><span class="o">=</span><span class="n">Base</span><span class="p">)</span>
+<p>The fixtures above work with <code>pytest-xdist</code> out of the box. Each worker gets its own database suffixed with the worker name (e.g. <code>myapp_gw0</code>, <code>myapp_gw1</code>).</p>
+<p>Use <a href="../../reference/pytest/#fastapi_toolsets.pytest.utils.worker_database_url"><code>worker_database_url</code></a> to derive the per-worker URL manually if needed:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.pytest</span><span class="w"> </span><span class="kn">import</span> <span class="n">worker_database_url</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">url</span> <span class="o">=</span> <span class="n">worker_database_url</span><span class="p">(</span><span class="s2">&quot;postgresql+asyncpg://user:pass@localhost/myapp&quot;</span><span class="p">,</span> <span class="n">default_test_db</span><span class="o">=</span><span class="s2">&quot;test&quot;</span><span class="p">)</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># → &quot;postgresql+asyncpg://user:pass@localhost/myapp_gw0&quot; under xdist</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="c1"># → &quot;postgresql+asyncpg://user:pass@localhost/myapp_test&quot; otherwise</span>
+</span></code></pre></div>
+<h2 id="manual-table-cleanup">Manual table cleanup<a class="headerlink" href="#manual-table-cleanup" title="Permanent link">&para;</a></h2>
+<p><a href="../../reference/db/#fastapi_toolsets.db.cleanup_tables"><code>cleanup_tables</code></a> truncates all tables in a single statement and can be called directly when you need more control:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">cleanup_tables</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span><span class="p">(</span><span class="n">autouse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">clean</span><span class="p">(</span><span class="n">db_session</span><span class="p">):</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    <span class="k">yield</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    <span class="k">await</span> <span class="n">cleanup_tables</span><span class="p">(</span><span class="n">session</span><span class="o">=</span><span class="n">db_session</span><span class="p">,</span> <span class="n">base</span><span class="o">=</span><span class="n">Base</span><span class="p">)</span>
 </span></code></pre></div>
 <hr />
 <p><a href="../../reference/pytest/"><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M7 7H5a2 2 0 0 0-2 2v8h2v-4h2v4h2V9a2 2 0 0 0-2-2m0 4H5V9h2m7-2h-4v10h2v-4h2a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2m0 4h-2V9h2m6 0v6h1v2h-4v-2h1V9h-1V7h4v2Z"/></svg></span> API Reference</a></p>

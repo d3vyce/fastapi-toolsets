@@ -2016,7 +2016,7 @@ Dependencies are resolved via pytest fixture dependencies.</p>
 
 
 <h2 id="fastapi_toolsets.pytest.utils.create_async_client" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_async_client</span><span class="p">(</span><span class="n">app</span><span class="p">,</span> <span class="n">base_url</span><span class="o">=</span><span class="s1">&#39;http://test&#39;</span><span class="p">,</span> <span class="n">dependency_overrides</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_async_client</span><span class="p">(</span><span class="n">app</span><span class="p">,</span> <span class="n">base_url</span><span class="o">=</span><span class="s1">&#39;http://test&#39;</span><span class="p">,</span> <span class="n">dependency_overrides</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-async"><code>async</code></small>
@@ -2089,6 +2089,24 @@ before yielding and cleaned up after.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>**kwargs</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Additional keyword arguments forwarded to
+:class:<code>httpx.AsyncClient</code> (e.g. <code>headers</code>, <code>cookies</code>,
+<code>auth</code>, <code>timeout</code>).</p>
+              </div>
+            </td>
+            <td>
+                  <code>{}</code>
             </td>
           </tr>
       </tbody>
@@ -2166,7 +2184,7 @@ before yielding and cleaned up after.</p>
 
 
 <h2 id="fastapi_toolsets.pytest.utils.create_db_session" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_db_session</span><span class="p">(</span><span class="n">database_url</span><span class="p">,</span> <span class="n">base</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">echo</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expire_on_commit</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">drop_tables</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">cleanup</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_db_session</span><span class="p">(</span><span class="n">database_url</span><span class="p">,</span> <span class="n">base</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">echo</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">expire_on_commit</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">drop_tables</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">cleanup</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">engine_kwargs</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">session_kwargs</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-async"><code>async</code></small>
@@ -2288,6 +2306,42 @@ Each call creates a fresh engine and session for test isolation.</p>
             </td>
             <td>
                   <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>engine_kwargs</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#dict">dict</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a>, <a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Additional keyword arguments forwarded to
+:func:<code>sqlalchemy.ext.asyncio.create_async_engine</code>
+(e.g. <code>pool_size</code>, <code>connect_args</code>).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>session_kwargs</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#dict">dict</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a>, <a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Additional keyword arguments forwarded to
+:class:<code>sqlalchemy.ext.asyncio.async_sessionmaker</code>
+(e.g. <code>autoflush</code>, <code>class_</code>).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -2440,7 +2494,7 @@ variable (set automatically by xdist in each worker process).</p>
 
 
 <h2 id="fastapi_toolsets.pytest.utils.create_worker_database" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_worker_database</span><span class="p">(</span><span class="n">database_url</span><span class="p">,</span> <span class="n">default_test_db</span><span class="o">=</span><span class="s1">&#39;test_db&#39;</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_worker_database</span><span class="p">(</span><span class="n">database_url</span><span class="p">,</span> <span class="n">default_test_db</span><span class="o">=</span><span class="s1">&#39;test_db&#39;</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">server_url</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-async"><code>async</code></small>
@@ -2479,8 +2533,8 @@ name (e.g. <code>_gw0</code>).  Otherwise it is suffixed with <em>default_test_d
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Original database connection URL (used as the server
-connection and as the base for the worker database name).</p>
+                <p>Original database connection URL (used as the base for
+the worker database name).</p>
               </div>
             </td>
             <td>
@@ -2502,6 +2556,24 @@ connection and as the base for the worker database name).</p>
             </td>
             <td>
                   <code>&#39;test_db&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>server_url</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>URL used for server-level DDL (must point to an existing
+database on the same server).  Defaults to <em>database_url</em> with the
+database omitted, letting asyncpg fall back to the username.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -2535,7 +2607,7 @@ connection and as the base for the worker database name).</p>
   <summary>Example</summary>
   <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.pytest</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_worker_database</span><span class="p">,</span> <span class="n">create_db_session</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">DATABASE_URL</span> <span class="o">=</span> <span class="s2">&quot;postgresql+asyncpg://postgres:postgres@localhost/test_db&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">DATABASE_URL</span> <span class="o">=</span> <span class="s2">&quot;postgresql+asyncpg://postgres:postgres@localhost/myapp&quot;</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span><span class="p">(</span><span class="n">scope</span><span class="o">=</span><span class="s2">&quot;session&quot;</span><span class="p">)</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">worker_db_url</span><span class="p">():</span>
