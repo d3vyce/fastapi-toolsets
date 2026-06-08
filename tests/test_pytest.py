@@ -278,6 +278,21 @@ class TestCreateAsyncClient:
         # Overrides should be cleaned up
         assert original_dep not in app.dependency_overrides
 
+    @pytest.mark.anyio
+    async def test_kwargs_forwarded_to_async_client(self):
+        """Extra kwargs are forwarded to AsyncClient (e.g. default headers)."""
+        from fastapi import Request
+
+        app = FastAPI()
+
+        @app.get("/headers")
+        async def headers_endpoint(request: Request):
+            return {"x-custom": request.headers.get("x-custom")}
+
+        async with create_async_client(app, headers={"X-Custom": "sentinel"}) as client:
+            response = await client.get("/headers")
+            assert response.json() == {"x-custom": "sentinel"}
+
 
 class TestCreateDbSession:
     """Tests for create_db_session helper."""
@@ -354,6 +369,22 @@ class TestCreateDbSession:
         async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
             result = await session.execute(select(Role))
             assert result.all() == []
+
+    @pytest.mark.anyio
+    async def test_engine_kwargs_forwarded(self):
+        """engine_kwargs are forwarded to create_async_engine."""
+        async with create_db_session(
+            DATABASE_URL, Base, engine_kwargs={"pool_pre_ping": True}
+        ) as session:
+            assert isinstance(session, AsyncSession)
+
+    @pytest.mark.anyio
+    async def test_session_kwargs_forwarded(self):
+        """session_kwargs are forwarded to async_sessionmaker."""
+        async with create_db_session(
+            DATABASE_URL, Base, session_kwargs={"autoflush": False}
+        ) as session:
+            assert session.autoflush is False
 
     @pytest.mark.anyio
     async def test_get_transaction_commits_visible_to_separate_session(self):
@@ -534,6 +565,66 @@ class TestCreateWorkerDatabase:
             )
             assert result.scalar() is None
         await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_works_when_database_url_db_does_not_exist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Succeeds even when the database named in database_url does not exist.
+
+        Regression test: the old code connected the DDL engine to database_url
+        itself, which failed when that database had not been created yet.
+        """
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_noexist")
+        nonexistent_url = (
+            make_url(DATABASE_URL)
+            .set(database="no_such_db")
+            .render_as_string(hide_password=False)
+        )
+        expected_db = make_url(
+            worker_database_url(nonexistent_url, default_test_db="unused")
+        ).database
+
+        async with create_worker_database(nonexistent_url) as url:
+            assert make_url(url).database == expected_db
+
+            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                    {"name": expected_db},
+                )
+                assert result.scalar() == 1
+            await engine.dispose()
+
+        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": expected_db},
+            )
+            assert result.scalar() is None
+        await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_explicit_server_url(self, monkeypatch: pytest.MonkeyPatch):
+        """Explicit server_url is used instead of the auto-derived one."""
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_explicit_srv")
+        expected_db = make_url(
+            worker_database_url(DATABASE_URL, default_test_db="unused")
+        ).database
+
+        async with create_worker_database(DATABASE_URL, server_url=DATABASE_URL) as url:
+            assert make_url(url).database == expected_db
+
+            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                    {"name": expected_db},
+                )
+                assert result.scalar() == 1
+            await engine.dispose()
 
 
 class _LocalBase(DeclarativeBase):
