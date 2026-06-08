@@ -7,7 +7,7 @@ from typing import Any
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -63,6 +63,8 @@ def worker_database_url(database_url: str, default_test_db: str) -> str:
 async def create_worker_database(
     database_url: str,
     default_test_db: str = "test_db",
+    *,
+    server_url: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Create and drop a per-worker database for pytest-xdist isolation.
 
@@ -74,10 +76,13 @@ async def create_worker_database(
     name (e.g. ``_gw0``).  Otherwise it is suffixed with *default_test_db*.
 
     Args:
-        database_url: Original database connection URL (used as the server
-            connection and as the base for the worker database name).
+        database_url: Original database connection URL (used as the base for
+            the worker database name).
         default_test_db: Suffix appended to the database name when
             ``PYTEST_XDIST_WORKER`` is not set. Defaults to ``"test_db"``.
+        server_url: URL used for server-level DDL (must point to an existing
+            database on the same server).  Defaults to *database_url* with the
+            database omitted, letting asyncpg fall back to the username.
 
     Yields:
         The worker-specific database URL.
@@ -86,7 +91,7 @@ async def create_worker_database(
         ```python
         from fastapi_toolsets.pytest import create_worker_database, create_db_session
 
-        DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/test_db"
+        DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/myapp"
 
         @pytest.fixture(scope="session")
         async def worker_db_url():
@@ -107,11 +112,21 @@ async def create_worker_database(
     worker_db_name = make_url(worker_url).database
     assert worker_db_name is not None
 
-    engine = create_async_engine(database_url, isolation_level="AUTOCOMMIT")
+    _parsed = make_url(database_url)
+    _server_url = server_url or URL.create(
+        drivername=_parsed.drivername,
+        username=_parsed.username,
+        password=_parsed.password,
+        host=_parsed.host,
+        port=_parsed.port,
+        query=_parsed.query,
+    ).render_as_string(hide_password=False)
+
+    engine = create_async_engine(_server_url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
             await conn.execute(text(f"DROP DATABASE IF EXISTS {worker_db_name}"))
-        await create_database(db_name=worker_db_name, server_url=database_url)
+        await create_database(db_name=worker_db_name, server_url=_server_url)
 
         yield worker_url
 
@@ -126,6 +141,7 @@ async def create_async_client(
     app: Any,
     base_url: str = "http://test",
     dependency_overrides: dict[Callable[..., Any], Callable[..., Any]] | None = None,
+    **kwargs: Any,
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create an async httpx client for testing FastAPI applications.
 
@@ -135,6 +151,9 @@ async def create_async_client(
         dependency_overrides: Optional mapping of original dependencies to
             their test replacements. Applied via ``app.dependency_overrides``
             before yielding and cleaned up after.
+        **kwargs: Additional keyword arguments forwarded to
+            :class:`httpx.AsyncClient` (e.g. ``headers``, ``cookies``,
+            ``auth``, ``timeout``).
 
     Yields:
         An AsyncClient configured for the app.
@@ -182,7 +201,9 @@ async def create_async_client(
 
     transport = ASGITransport(app=app)
     try:
-        async with AsyncClient(transport=transport, base_url=base_url) as client:
+        async with AsyncClient(
+            transport=transport, base_url=base_url, **kwargs
+        ) as client:
             yield client
     finally:
         if dependency_overrides:
@@ -199,6 +220,8 @@ async def create_db_session(
     expire_on_commit: bool = False,
     drop_tables: bool = True,
     cleanup: bool = False,
+    engine_kwargs: dict[str, Any] | None = None,
+    session_kwargs: dict[str, Any] | None = None,
 ) -> AsyncGenerator[AsyncSession, None]:
     """Create a database session for testing.
 
@@ -213,6 +236,12 @@ async def create_db_session(
         drop_tables: Drop tables after test. Defaults to True.
         cleanup: Truncate all tables after test using
             :func:`cleanup_tables`. Defaults to False.
+        engine_kwargs: Additional keyword arguments forwarded to
+            :func:`sqlalchemy.ext.asyncio.create_async_engine`
+            (e.g. ``pool_size``, ``connect_args``).
+        session_kwargs: Additional keyword arguments forwarded to
+            :class:`sqlalchemy.ext.asyncio.async_sessionmaker`
+            (e.g. ``autoflush``, ``class_``).
 
     Yields:
         An AsyncSession ready for database operations.
@@ -237,15 +266,17 @@ async def create_db_session(
             await db_session.commit()
         ```
     """
-    engine = create_async_engine(database_url, echo=echo)
+    engine = create_async_engine(database_url, echo=echo, **(engine_kwargs or {}))
 
     try:
-        # Create tables
         async with engine.begin() as conn:
             await conn.run_sync(base.metadata.create_all)
 
         session_maker = async_sessionmaker(
-            engine, expire_on_commit=expire_on_commit, class_=EventSession
+            engine,
+            expire_on_commit=expire_on_commit,
+            class_=EventSession,
+            **(session_kwargs or {}),
         )
         async with session_maker() as session:
             yield session

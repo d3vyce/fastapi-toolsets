@@ -1,6 +1,6 @@
 # Pytest
 
-Testing helpers for FastAPI applications with async client, database sessions, and parallel worker support.
+Testing helpers for FastAPI applications: async HTTP client, database sessions, and parallel worker support.
 
 ## Installation
 
@@ -14,13 +14,9 @@ Testing helpers for FastAPI applications with async client, database sessions, a
     pip install "fastapi-toolsets[pytest]"
     ```
 
-## Overview
+## Async client
 
-The `pytest` module provides utilities for setting up async test clients, managing test database sessions, and supporting parallel test execution with `pytest-xdist`.
-
-## Creating an async client
-
-Use [`create_async_client`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_async_client) to get an `httpx.AsyncClient` configured for your FastAPI app:
+Use [`create_async_client`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_async_client) to get an `httpx.AsyncClient` bound to your FastAPI app:
 
 ```python
 from fastapi_toolsets.pytest import create_async_client
@@ -38,9 +34,20 @@ async def http_client(db_session):
         yield c
 ```
 
-## Database sessions in tests
+Any extra keyword arguments are forwarded to `httpx.AsyncClient`, so you can set default headers, authentication, timeouts, and more:
 
-Use [`create_db_session`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_db_session) to create an isolated `AsyncSession` for a test, combined with [`create_worker_database`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_worker_database) to set up a per-worker database:
+```python
+async with create_async_client(
+    app=app,
+    headers={"X-Api-Key": "secret"},
+    timeout=10,
+) as c:
+    ...
+```
+
+## Database sessions
+
+Use [`create_worker_database`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_worker_database) + [`create_db_session`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_db_session) to get a fully isolated `AsyncSession` for each test:
 
 ```python
 from fastapi_toolsets.pytest import create_worker_database, create_db_session
@@ -61,25 +68,42 @@ async def db_session(worker_db_url):
         yield session
 ```
 
+`create_worker_database` connects without specifying a database (asyncpg falls back to the username), so the target test database does not need to exist beforehand.
+
 !!! info
-    In this example, the database is reset between each test using the argument `cleanup=True`.
+    `cleanup=True` truncates all tables between tests via `TRUNCATE … RESTART IDENTITY CASCADE`, which is faster than dropping and recreating tables.
+
+### Engine and session options
+
+Pass `engine_kwargs` or `session_kwargs` to forward options to the underlying SQLAlchemy primitives:
+
+```python
+async with create_db_session(
+    database_url=worker_db_url,
+    base=Base,
+    engine_kwargs={"pool_size": 5, "connect_args": {"timeout": 10}},
+    session_kwargs={"autoflush": False},
+) as session:
+    ...
+```
+
+## Parallel testing with pytest-xdist
+
+The fixtures above work with `pytest-xdist` out of the box. Each worker gets its own database suffixed with the worker name (e.g. `myapp_gw0`, `myapp_gw1`).
 
 Use [`worker_database_url`](../reference/pytest.md#fastapi_toolsets.pytest.utils.worker_database_url) to derive the per-worker URL manually if needed:
 
 ```python
 from fastapi_toolsets.pytest import worker_database_url
 
-url = worker_database_url("postgresql+asyncpg://user:pass@localhost/test_db", default_test_db="test")
-# e.g. "postgresql+asyncpg://user:pass@localhost/test_db_gw0" under xdist
+url = worker_database_url("postgresql+asyncpg://user:pass@localhost/myapp", default_test_db="test")
+# → "postgresql+asyncpg://user:pass@localhost/myapp_gw0" under xdist
+# → "postgresql+asyncpg://user:pass@localhost/myapp_test" otherwise
 ```
 
-## Parallel testing with pytest-xdist
+## Manual table cleanup
 
-The examples above are already compatible with parallel test execution with `pytest-xdist`.
-
-## Cleaning up tables
-
-If you want to manually clean up a database you can use [`cleanup_tables`](../reference/db.md#fastapi_toolsets.db.cleanup_tables), this will truncate all tables between tests for fast isolation:
+[`cleanup_tables`](../reference/db.md#fastapi_toolsets.db.cleanup_tables) truncates all tables in a single statement and can be called directly when you need more control:
 
 ```python
 from fastapi_toolsets.db import cleanup_tables
