@@ -626,6 +626,35 @@ class TestCreateWorkerDatabase:
                 assert result.scalar() == 1
             await engine.dispose()
 
+    @pytest.mark.anyio
+    async def test_drops_database_with_active_connections(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """DROP DATABASE succeeds even when a connection is still open to it."""
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_active_conn")
+        expected_db = make_url(
+            worker_database_url(DATABASE_URL, default_test_db="unused")
+        ).database
+
+        lingering_engine = None
+        async with create_worker_database(DATABASE_URL) as url:
+            # Open a connection to the worker DB and intentionally leave it open.
+            lingering_engine = create_async_engine(url)
+            async with lingering_engine.connect():
+                pass  # connection returned to pool but engine not disposed
+
+        # If WITH (FORCE) is absent the DROP above would raise; reaching here means it worked.
+        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": expected_db},
+            )
+            assert result.scalar() is None
+        await engine.dispose()
+        if lingering_engine:
+            await lingering_engine.dispose()
+
 
 class _LocalBase(DeclarativeBase):
     pass

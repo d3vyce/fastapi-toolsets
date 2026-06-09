@@ -125,13 +125,17 @@ async def create_worker_database(
     engine = create_async_engine(_server_url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
-            await conn.execute(text(f"DROP DATABASE IF EXISTS {worker_db_name}"))
+            await conn.execute(
+                text(f"DROP DATABASE IF EXISTS {worker_db_name} WITH (FORCE)")
+            )
         await create_database(db_name=worker_db_name, server_url=_server_url)
 
         yield worker_url
 
         async with engine.connect() as conn:
-            await conn.execute(text(f"DROP DATABASE IF EXISTS {worker_db_name}"))
+            await conn.execute(
+                text(f"DROP DATABASE IF EXISTS {worker_db_name} WITH (FORCE)")
+            )
     finally:
         await engine.dispose()
 
