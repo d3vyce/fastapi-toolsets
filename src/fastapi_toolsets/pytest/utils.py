@@ -34,12 +34,18 @@ def _get_xdist_worker(default_test_db: str) -> str:
     return os.environ.get("PYTEST_XDIST_WORKER", default_test_db)
 
 
-def worker_database_url(database_url: str, default_test_db: str) -> str:
+def worker_database_url(
+    database_url: str,
+    default_test_db: str,
+    *,
+    prefix: str | None = None,
+) -> str:
     """Derive a per-worker database URL for pytest-xdist parallel runs.
 
-    Appends ``_{worker_name}`` to the database name so each xdist worker
-    operates on its own database.  When not running under xdist,
-    ``_{default_test_db}`` is appended instead.
+    Sets the database name to the worker name so each xdist worker operates
+    on its own database.  When not running under xdist, *default_test_db* is
+    used instead.  When *prefix* is provided, the name becomes
+    ``{prefix}_{worker}``.
 
     The worker name is read from the ``PYTEST_XDIST_WORKER`` environment
     variable (set automatically by xdist in each worker process).
@@ -48,6 +54,9 @@ def worker_database_url(database_url: str, default_test_db: str) -> str:
         database_url: Original database connection URL.
         default_test_db: Suffix appended to the database name when
             ``PYTEST_XDIST_WORKER`` is not set.
+        prefix: Optional prefix prepended to the worker name
+            (e.g. ``"test"`` → ``"test_gw0"``).  Without it, the database
+            name is just the worker name (e.g. ``"gw0"``).
 
     Returns:
         A database URL with a worker- or default-specific database name.
@@ -55,7 +64,8 @@ def worker_database_url(database_url: str, default_test_db: str) -> str:
     worker = _get_xdist_worker(default_test_db=default_test_db)
 
     url = make_url(database_url)
-    url = url.set(database=f"{url.database}_{worker}")
+    db_name = f"{prefix}_{worker}" if prefix else worker
+    url = url.set(database=db_name)
     return url.render_as_string(hide_password=False)
 
 
@@ -64,6 +74,7 @@ async def create_worker_database(
     database_url: str,
     default_test_db: str = "test_db",
     *,
+    prefix: str | None = None,
     server_url: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Create and drop a per-worker database for pytest-xdist isolation.
@@ -80,6 +91,9 @@ async def create_worker_database(
             the worker database name).
         default_test_db: Suffix appended to the database name when
             ``PYTEST_XDIST_WORKER`` is not set. Defaults to ``"test_db"``.
+        prefix: Optional prefix prepended to the worker name
+            (e.g. ``prefix="test"`` → ``"test_gw0"``).  Without it, the
+            database name is just the worker name (e.g. ``"gw0"``).
         server_url: URL used for server-level DDL (must point to an existing
             database on the same server).  Defaults to *database_url* with the
             database omitted, letting asyncpg fall back to the username.
@@ -107,7 +121,7 @@ async def create_worker_database(
         ```
     """
     worker_url = worker_database_url(
-        database_url=database_url, default_test_db=default_test_db
+        database_url=database_url, default_test_db=default_test_db, prefix=prefix
     )
     worker_db_name = make_url(worker_url).database
     assert worker_db_name is not None

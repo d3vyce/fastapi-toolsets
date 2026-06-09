@@ -442,21 +442,19 @@ class TestGetXdistWorker:
 class TestWorkerDatabaseUrl:
     """Tests for worker_database_url helper."""
 
-    def test_appends_default_test_db_without_xdist(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """default_test_db is appended when not running under xdist."""
+    def test_uses_default_test_db_without_xdist(self, monkeypatch: pytest.MonkeyPatch):
+        """default_test_db is used as the database name when not running under xdist."""
         monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
         url = "postgresql+asyncpg://user:pass@localhost:5432/mydb"
         result = worker_database_url(url, default_test_db="fallback")
-        assert make_url(result).database == "mydb_fallback"
+        assert make_url(result).database == "fallback"
 
-    def test_appends_worker_id_to_database_name(self, monkeypatch: pytest.MonkeyPatch):
-        """Worker name is appended to the database name."""
+    def test_uses_worker_id_as_database_name(self, monkeypatch: pytest.MonkeyPatch):
+        """Worker name is used as the database name."""
         monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
         url = "postgresql+asyncpg://user:pass@localhost:5432/db"
         result = worker_database_url(url, default_test_db="unused")
-        assert make_url(result).database == "db_gw0"
+        assert make_url(result).database == "gw0"
 
     def test_preserves_url_components(self, monkeypatch: pytest.MonkeyPatch):
         """Host, port, username, password, and driver are preserved."""
@@ -469,7 +467,21 @@ class TestWorkerDatabaseUrl:
         assert result.password == "secret"
         assert result.host == "dbhost"
         assert result.port == 6543
-        assert result.database == "testdb_gw2"
+        assert result.database == "gw2"
+
+    def test_prefix_with_xdist(self, monkeypatch: pytest.MonkeyPatch):
+        """prefix is prepended to the worker name when running under xdist."""
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+        url = "postgresql+asyncpg://user:pass@localhost:5432/mydb"
+        result = worker_database_url(url, default_test_db="unused", prefix="myapp")
+        assert make_url(result).database == "myapp_gw0"
+
+    def test_prefix_without_xdist(self, monkeypatch: pytest.MonkeyPatch):
+        """prefix is prepended to default_test_db when not running under xdist."""
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+        url = "postgresql+asyncpg://user:pass@localhost:5432/mydb"
+        result = worker_database_url(url, default_test_db="test", prefix="myapp")
+        assert make_url(result).database == "myapp_test"
 
 
 class TestCreateWorkerDatabase:
@@ -479,7 +491,7 @@ class TestCreateWorkerDatabase:
     async def test_creates_default_db_without_xdist(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """Without xdist, creates a database suffixed with default_test_db."""
+        """Without xdist, creates a database named after default_test_db."""
         monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
         default_test_db = "no_xdist_default"
         expected_db = make_url(
@@ -654,6 +666,36 @@ class TestCreateWorkerDatabase:
         await engine.dispose()
         if lingering_engine:
             await lingering_engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_prefix_names_database(self, monkeypatch: pytest.MonkeyPatch):
+        """prefix is prepended to the worker name in the created database."""
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_prefix")
+        expected_db = make_url(
+            worker_database_url(DATABASE_URL, default_test_db="unused", prefix="pfx")
+        ).database
+        assert expected_db == "pfx_gw_prefix"
+
+        async with create_worker_database(DATABASE_URL, prefix="pfx") as url:
+            assert make_url(url).database == expected_db
+
+            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                    {"name": expected_db},
+                )
+                assert result.scalar() == 1
+            await engine.dispose()
+
+        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": expected_db},
+            )
+            assert result.scalar() is None
+        await engine.dispose()
 
 
 class _LocalBase(DeclarativeBase):
