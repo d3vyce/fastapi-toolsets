@@ -89,7 +89,7 @@ async with create_db_session(
 
 ## Parallel testing with pytest-xdist
 
-The fixtures above work with `pytest-xdist` out of the box. Each worker gets its own database suffixed with the worker name (e.g. `myapp_gw0`, `myapp_gw1`).
+The fixtures above work with `pytest-xdist` out of the box. Each worker gets its own database named after the worker (e.g. `gw0`, `gw1`). Pass `prefix` to namespace the database (e.g. `prefix="myapp"` → `myapp_gw0`).
 
 Use [`worker_database_url`](../reference/pytest.md#fastapi_toolsets.pytest.utils.worker_database_url) to derive the per-worker URL manually if needed:
 
@@ -97,6 +97,10 @@ Use [`worker_database_url`](../reference/pytest.md#fastapi_toolsets.pytest.utils
 from fastapi_toolsets.pytest import worker_database_url
 
 url = worker_database_url("postgresql+asyncpg://user:pass@localhost/myapp", default_test_db="test")
+# → "postgresql+asyncpg://user:pass@localhost/gw0" under xdist
+# → "postgresql+asyncpg://user:pass@localhost/test" otherwise
+
+url = worker_database_url("postgresql+asyncpg://user:pass@localhost/myapp", default_test_db="test", prefix="myapp")
 # → "postgresql+asyncpg://user:pass@localhost/myapp_gw0" under xdist
 # → "postgresql+asyncpg://user:pass@localhost/myapp_test" otherwise
 ```
