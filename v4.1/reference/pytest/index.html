@@ -2400,7 +2400,7 @@ Each call creates a fresh engine and session for test isolation.</p>
 
 
 <h2 id="fastapi_toolsets.pytest.utils.worker_database_url" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">worker_database_url</span><span class="p">(</span><span class="n">database_url</span><span class="p">,</span> <span class="n">default_test_db</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">worker_database_url</span><span class="p">(</span><span class="n">database_url</span><span class="p">,</span> <span class="n">default_test_db</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#fastapi_toolsets.pytest.utils.worker_database_url" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -2408,9 +2408,10 @@ Each call creates a fresh engine and session for test isolation.</p>
     <div class="doc doc-contents first">
 
         <p>Derive a per-worker database URL for pytest-xdist parallel runs.</p>
-<p>Appends <code>_{worker_name}</code> to the database name so each xdist worker
-operates on its own database.  When not running under xdist,
-<code>_{default_test_db}</code> is appended instead.</p>
+<p>Sets the database name to the worker name so each xdist worker operates
+on its own database.  When not running under xdist, <em>default_test_db</em> is
+used instead.  When <em>prefix</em> is provided, the name becomes
+<code>{prefix}_{worker}</code>.</p>
 <p>The worker name is read from the <code>PYTEST_XDIST_WORKER</code> environment
 variable (set automatically by xdist in each worker process).</p>
 
@@ -2459,6 +2460,24 @@ variable (set automatically by xdist in each worker process).</p>
                 <em>required</em>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>prefix</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional prefix prepended to the worker name
+(e.g. <code>"test"</code> → <code>"test_gw0"</code>).  Without it, the database
+name is just the worker name (e.g. <code>"gw0"</code>).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -2494,7 +2513,7 @@ variable (set automatically by xdist in each worker process).</p>
 
 
 <h2 id="fastapi_toolsets.pytest.utils.create_worker_database" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_worker_database</span><span class="p">(</span><span class="n">database_url</span><span class="p">,</span> <span class="n">default_test_db</span><span class="o">=</span><span class="s1">&#39;test_db&#39;</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">server_url</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_worker_database</span><span class="p">(</span><span class="n">database_url</span><span class="p">,</span> <span class="n">default_test_db</span><span class="o">=</span><span class="s1">&#39;test_db&#39;</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">server_url</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-async"><code>async</code></small>
@@ -2556,6 +2575,24 @@ the worker database name).</p>
             </td>
             <td>
                   <code>&#39;test_db&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>prefix</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional prefix prepended to the worker name
+(e.g. <code>prefix="test"</code> → <code>"test_gw0"</code>).  Without it, the
+database name is just the worker name (e.g. <code>"gw0"</code>).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
