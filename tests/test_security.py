@@ -1405,6 +1405,7 @@ class TestBuildAuthorizationRedirect:
 class TestResolveProviderUrls:
     def _discovery(self, *, userinfo=True):
         doc = {
+            "issuer": "https://auth.example.com",
             "authorization_endpoint": "https://auth.example.com/authorize",
             "token_endpoint": "https://auth.example.com/token",
         }
@@ -1458,6 +1459,219 @@ class TestResolveProviderUrls:
             await oauth_resolve_provider_urls(url)
 
         assert mock_client.get.call_count == 1
+
+
+class TestOAuthHttpsEnforcement:
+    """client_secret / codes / tokens must never travel over plaintext HTTP."""
+
+    def _discovery(self, **overrides):
+        doc = {
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+            "userinfo_endpoint": "https://auth.example.com/userinfo",
+        }
+        doc.update(overrides)
+        return doc
+
+    @pytest.mark.anyio
+    async def test_http_discovery_url_rejected_before_fetch(self):
+        cm, mock_client = _make_async_client_mock()
+
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            with pytest.raises(ValueError, match="discovery URL must use https"):
+                await oauth_resolve_provider_urls(
+                    "http://auth.example.com/.well-known/openid-configuration"
+                )
+
+        mock_client.get.assert_not_called()
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "endpoint",
+        ["authorization_endpoint", "token_endpoint", "userinfo_endpoint"],
+    )
+    async def test_http_endpoint_in_discovery_document_rejected(self, endpoint):
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self._discovery(
+            **{endpoint: "http://attacker.example.com/endpoint"}
+        )
+        cm, _ = _make_async_client_mock(get_return=mock_resp)
+
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            with pytest.raises(ValueError, match=f"{endpoint} must use https"):
+                await oauth_resolve_provider_urls(
+                    "https://auth.example.com/.well-known/openid-configuration"
+                )
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+    async def test_http_loopback_discovery_allowed(self, host):
+        """Local development IdPs over plain HTTP keep working."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self._discovery(
+            issuer=f"http://{host}:8080",
+            authorization_endpoint=f"http://{host}:8080/authorize",
+            token_endpoint=f"http://{host}:8080/token",
+            userinfo_endpoint=f"http://{host}:8080/userinfo",
+        )
+        cm, _ = _make_async_client_mock(get_return=mock_resp)
+
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            auth_url, token_url, userinfo_url = await oauth_resolve_provider_urls(
+                f"http://{host}:8080/.well-known/openid-configuration"
+            )
+
+        assert auth_url == f"http://{host}:8080/authorize"
+        assert token_url == f"http://{host}:8080/token"
+        assert userinfo_url == f"http://{host}:8080/userinfo"
+
+    @pytest.mark.anyio
+    async def test_issuer_mismatch_rejected(self):
+        """OIDC Discovery §4.3: the document must claim the expected issuer."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self._discovery(
+            issuer="https://attacker.example.com"
+        )
+        cm, _ = _make_async_client_mock(get_return=mock_resp)
+
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            with pytest.raises(ValueError, match="issuer"):
+                await oauth_resolve_provider_urls(
+                    "https://auth.example.com/.well-known/openid-configuration"
+                )
+
+    @pytest.mark.anyio
+    async def test_missing_issuer_rejected(self):
+        doc = self._discovery()
+        del doc["issuer"]
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = doc
+        cm, _ = _make_async_client_mock(get_return=mock_resp)
+
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            with pytest.raises(ValueError, match="issuer"):
+                await oauth_resolve_provider_urls(
+                    "https://auth.example.com/.well-known/openid-configuration"
+                )
+
+    @pytest.mark.anyio
+    async def test_issuer_trailing_slash_accepted(self):
+        """Auth0-style issuers carry a trailing slash — still the same issuer."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self._discovery(
+            issuer="https://auth.example.com/"
+        )
+        cm, _ = _make_async_client_mock(get_return=mock_resp)
+
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            _, token_url, _ = await oauth_resolve_provider_urls(
+                "https://auth.example.com/.well-known/openid-configuration"
+            )
+        assert token_url == "https://auth.example.com/token"
+
+    @pytest.mark.anyio
+    async def test_issuer_with_path_accepted(self):
+        """Keycloak/Microsoft-style issuers include a path component."""
+        issuer = "https://auth.example.com/realms/myrealm"
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self._discovery(issuer=issuer)
+        cm, _ = _make_async_client_mock(get_return=mock_resp)
+
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            _, token_url, _ = await oauth_resolve_provider_urls(
+                f"{issuer}/.well-known/openid-configuration"
+            )
+        assert token_url == "https://auth.example.com/token"
+
+    @pytest.mark.anyio
+    async def test_nonstandard_discovery_url_skips_issuer_check(self):
+        """No expected issuer can be derived from a non-standard layout."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self._discovery(
+            issuer="https://unrelated.example.com"
+        )
+        cm, _ = _make_async_client_mock(get_return=mock_resp)
+
+        oauth_resolve_provider_urls.cache_clear()
+        with patch("httpx.AsyncClient", return_value=cm):
+            _, token_url, _ = await oauth_resolve_provider_urls(
+                "https://auth.example.com/custom/discovery.json"
+            )
+        assert token_url == "https://auth.example.com/token"
+
+    @pytest.mark.anyio
+    async def test_fetch_userinfo_http_token_url_rejected_before_request(self):
+        cm, mock_client = _make_async_client_mock()
+
+        with patch("httpx.AsyncClient", return_value=cm):
+            with pytest.raises(ValueError, match="token_url must use https"):
+                await oauth_fetch_userinfo(
+                    token_url="http://auth.example.com/token",
+                    userinfo_url="https://auth.example.com/userinfo",
+                    code="authcode123",
+                    client_id="client-id",
+                    client_secret="client-secret",
+                    redirect_uri="https://app.example.com/callback",
+                )
+
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_fetch_userinfo_http_userinfo_url_rejected_before_request(self):
+        cm, mock_client = _make_async_client_mock()
+
+        with patch("httpx.AsyncClient", return_value=cm):
+            with pytest.raises(ValueError, match="userinfo_url must use https"):
+                await oauth_fetch_userinfo(
+                    token_url="https://auth.example.com/token",
+                    userinfo_url="http://auth.example.com/userinfo",
+                    code="authcode123",
+                    client_id="client-id",
+                    client_secret="client-secret",
+                    redirect_uri="https://app.example.com/callback",
+                )
+
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_fetch_userinfo_http_loopback_allowed(self):
+        token_resp = MagicMock()
+        token_resp.raise_for_status = MagicMock()
+        token_resp.json.return_value = {"access_token": "tok123"}
+
+        userinfo_resp = MagicMock()
+        userinfo_resp.raise_for_status = MagicMock()
+        userinfo_resp.json.return_value = {"sub": "user-1"}
+
+        cm, _ = _make_async_client_mock(
+            post_return=token_resp, get_return=userinfo_resp
+        )
+
+        with patch("httpx.AsyncClient", return_value=cm):
+            result = await oauth_fetch_userinfo(
+                token_url="http://localhost:8080/token",
+                userinfo_url="http://127.0.0.1:8080/userinfo",
+                code="authcode123",
+                client_id="client-id",
+                client_secret="client-secret",
+                redirect_uri="http://localhost:8000/callback",
+            )
+        assert result == {"sub": "user-1"}
 
 
 class TestFetchUserinfo:

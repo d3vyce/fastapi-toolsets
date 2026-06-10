@@ -6,11 +6,36 @@ import hmac
 import json
 import secrets
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from async_lru import alru_cache
 from fastapi.responses import RedirectResponse
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_DISCOVERY_SUFFIX = "/.well-known/openid-configuration"
+
+
+def _validate_issuer(discovery_url: str, issuer: Any) -> None:
+    """Check the discovery document claims the issuer it was fetched from."""
+    if not discovery_url.endswith(_DISCOVERY_SUFFIX):
+        return
+    expected = discovery_url.removesuffix(_DISCOVERY_SUFFIX).rstrip("/")
+    if not isinstance(issuer, str) or issuer.rstrip("/") != expected:
+        raise ValueError(
+            f"discovery document issuer {issuer!r} does not match the "
+            f"expected issuer {expected!r} derived from the discovery URL"
+        )
+
+
+def _require_https(url: str, description: str) -> str:
+    """Reject OAuth URLs that would send credentials over plaintext HTTP."""
+    parsed = urlsplit(url)
+    if parsed.scheme == "https":
+        return url
+    if parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS:
+        return url
+    raise ValueError(f"{description} must use https:// (got {url!r})")
 
 
 @alru_cache(maxsize=32)
@@ -25,15 +50,25 @@ async def oauth_resolve_provider_urls(
     Returns:
         A ``(authorization_url, token_url, userinfo_url)`` tuple.
         *userinfo_url* is ``None`` when the provider does not advertise one.
+
+    Raises:
+        ValueError: If *discovery_url* or any endpoint in the discovery
+            document is not HTTPS (loopback hosts excepted), or if the
+            document's ``issuer`` does not match the discovery URL.
     """
+    _require_https(discovery_url, "OIDC discovery URL")
     async with httpx.AsyncClient() as client:
         resp = await client.get(discovery_url)
         resp.raise_for_status()
     cfg = resp.json()
+    _validate_issuer(discovery_url, cfg.get("issuer"))
+    userinfo_url = cfg.get("userinfo_endpoint")
+    if userinfo_url is not None:
+        _require_https(userinfo_url, "OIDC userinfo_endpoint")
     return (
-        cfg["authorization_endpoint"],
-        cfg["token_endpoint"],
-        cfg.get("userinfo_endpoint"),
+        _require_https(cfg["authorization_endpoint"], "OIDC authorization_endpoint"),
+        _require_https(cfg["token_endpoint"], "OIDC token_endpoint"),
+        userinfo_url,
     )
 
 
@@ -64,9 +99,12 @@ async def oauth_fetch_userinfo(
         The JSON payload returned by the userinfo endpoint as a plain ``dict``.
 
     Raises:
-        ValueError: If the provider granted a different token type than ``bearer``
-            or did not grant all ``required_scopes``.
+        ValueError: If *token_url* or *userinfo_url* is not HTTPS (loopback
+            hosts excepted), if the provider granted a different token type
+            than ``bearer``, or if it did not grant all ``required_scopes``.
     """
+    _require_https(token_url, "OAuth token_url")
+    _require_https(userinfo_url, "OAuth userinfo_url")
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
             token_url,
