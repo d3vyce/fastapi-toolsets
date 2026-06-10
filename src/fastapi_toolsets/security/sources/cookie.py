@@ -13,7 +13,13 @@ from fastapi.security import APIKeyCookie, SecurityScopes
 
 from fastapi_toolsets.exceptions import UnauthorizedError
 
-from ..abc import AuthSource, _ensure_async
+from ..abc import (
+    AuthSource,
+    _accepts_scopes,
+    _ensure_async,
+    _reject_scopes_kwarg,
+    _scope_kwargs,
+)
 
 
 class CookieAuth(AuthSource):
@@ -53,8 +59,10 @@ class CookieAuth(AuthSource):
         secure: bool = True,
         **kwargs: Any,
     ) -> None:
+        _reject_scopes_kwarg(kwargs)
         self._name = name
         self._validator = _ensure_async(validator)
+        self._accepts_scopes = _accepts_scopes(validator)
         self._secret_key = secret_key
         self._ttl = ttl
         self._secure = secure
@@ -62,13 +70,12 @@ class CookieAuth(AuthSource):
         self._scheme = APIKeyCookie(name=name, auto_error=False)
 
         async def _call(
-            security_scopes: SecurityScopes,  # noqa: ARG001
+            security_scopes: SecurityScopes,
             value: Annotated[str | None, Depends(self._scheme)] = None,
         ) -> Any:
             if value is None:
                 raise UnauthorizedError()
-            plain = self._verify(value)
-            return await self._validator(plain, **self._kwargs)
+            return await self.authenticate_scoped(value, security_scopes.scopes)
 
         self._call_fn = _call
         self.__signature__ = inspect.signature(_call)
@@ -115,8 +122,13 @@ class CookieAuth(AuthSource):
         return request.cookies.get(self._name)
 
     async def authenticate(self, credential: str) -> Any:
+        return await self.authenticate_scoped(credential, [])
+
+    async def authenticate_scoped(self, credential: str, scopes: list[str]) -> Any:
+        """Verify the cookie, forwarding route-declared scopes to the validator."""
         plain = self._verify(credential)
-        return await self._validator(plain, **self._kwargs)
+        extra = _scope_kwargs(self, self._accepts_scopes, scopes)
+        return await self._validator(plain, **extra, **self._kwargs)
 
     def require(self, **kwargs: Any) -> "CookieAuth":
         """Return a new instance with additional (or overriding) validator kwargs."""

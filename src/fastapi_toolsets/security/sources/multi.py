@@ -23,13 +23,15 @@ class MultiAuth:
 
         async def _call(
             request: Request,
-            security_scopes: SecurityScopes,  # noqa: ARG001
+            security_scopes: SecurityScopes,
             **kwargs: Any,  # noqa: ARG001  — absorbs scheme values injected by FastAPI
         ) -> Any:
             for source in self._sources:
                 credential = await source.extract(request)
                 if credential is not None:
-                    return await source.authenticate(credential)
+                    return await source.authenticate_scoped(
+                        credential, security_scopes.scopes
+                    )
             raise UnauthorizedError()
 
         self._call_fn = _call

@@ -906,6 +906,263 @@ class TestCookieAuthSigned:
         assert "session" in response.headers["set-cookie"]
 
 
+class TestSecurityScopes:
+    """Scopes declared via Security(..., scopes=[...]) are enforced, not ignored."""
+
+    def test_scopes_declared_without_scopes_param_raises(self):
+        """Fail closed: validator can't receive scopes → RuntimeError, not silent authz skip."""
+        bearer = BearerTokenAuth(simple_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(bearer, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        with pytest.raises(RuntimeError, match="security scopes"):
+            client.get("/admin", headers={"Authorization": f"Bearer {VALID_TOKEN}"})
+
+    def test_scopes_passed_to_bearer_validator(self):
+        received: list[list[str]] = []
+
+        async def scoped_validator(credential: str, scopes: list[str]) -> dict:
+            if credential != VALID_TOKEN:
+                raise UnauthorizedError()
+            received.append(scopes)
+            return {"user": "alice"}
+
+        bearer = BearerTokenAuth(scoped_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(bearer, scopes=["admin", "billing"])):
+                return user
+
+        client = TestClient(_app(setup))
+        response = client.get(
+            "/admin", headers={"Authorization": f"Bearer {VALID_TOKEN}"}
+        )
+        assert response.status_code == 200
+        assert received == [["admin", "billing"]]
+
+    def test_no_scopes_declared_passes_empty_list(self):
+        received: list[list[str]] = []
+
+        async def scoped_validator(credential: str, *, scopes: list[str]) -> dict:
+            received.append(scopes)
+            return {"user": "alice"}
+
+        bearer = BearerTokenAuth(scoped_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/me")
+            async def me(user=Security(bearer)):
+                return user
+
+        client = TestClient(_app(setup))
+        response = client.get("/me", headers={"Authorization": f"Bearer {VALID_TOKEN}"})
+        assert response.status_code == 200
+        assert received == [[]]
+
+    def test_scoped_validator_can_reject(self):
+        """A validator enforcing scopes turns missing scopes into a 401."""
+
+        async def scoped_validator(credential: str, scopes: list[str]) -> dict:
+            if credential != VALID_TOKEN or "admin" in scopes:
+                raise UnauthorizedError()
+            return {"user": "alice"}
+
+        bearer = BearerTokenAuth(scoped_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(bearer, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        response = client.get(
+            "/admin", headers={"Authorization": f"Bearer {VALID_TOKEN}"}
+        )
+        assert response.status_code == 401
+
+    def test_scopes_passed_to_cookie_validator(self):
+        received: list[list[str]] = []
+
+        async def scoped_validator(value: str, scopes: list[str]) -> dict:
+            received.append(scopes)
+            return {"session": value}
+
+        auth = CookieAuth("session", scoped_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(auth, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        response = client.get("/admin", cookies={"session": VALID_COOKIE})
+        assert response.status_code == 200
+        assert received == [["admin"]]
+
+    def test_cookie_scopes_declared_without_scopes_param_raises(self):
+        auth = CookieAuth("session", cookie_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(auth, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        with pytest.raises(RuntimeError, match="security scopes"):
+            client.get("/admin", cookies={"session": VALID_COOKIE})
+
+    def test_scopes_passed_to_api_key_validator(self):
+        received: list[list[str]] = []
+
+        async def scoped_validator(api_key: str, scopes: list[str]) -> dict:
+            received.append(scopes)
+            return {"user": "alice"}
+
+        auth = APIKeyHeaderAuth("X-API-Key", scoped_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(auth, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        response = client.get("/admin", headers={"X-API-Key": VALID_TOKEN})
+        assert response.status_code == 200
+        assert received == [["admin"]]
+
+    def test_api_key_scopes_declared_without_scopes_param_raises(self):
+        auth = APIKeyHeaderAuth("X-API-Key", simple_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(auth, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        with pytest.raises(RuntimeError, match="security scopes"):
+            client.get("/admin", headers={"X-API-Key": VALID_TOKEN})
+
+    def test_multi_auth_forwards_scopes_to_matched_source(self):
+        received: list[list[str]] = []
+
+        async def scoped_validator(credential: str, scopes: list[str]) -> dict:
+            received.append(scopes)
+            return {"user": "alice"}
+
+        bearer = BearerTokenAuth(scoped_validator)
+        cookie = CookieAuth("session", cookie_validator)
+        multi = MultiAuth(bearer, cookie)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(multi, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        response = client.get(
+            "/admin", headers={"Authorization": f"Bearer {VALID_TOKEN}"}
+        )
+        assert response.status_code == 200
+        assert received == [["admin"]]
+
+    def test_multi_auth_scopes_fail_closed_on_unscoped_source(self):
+        bearer = BearerTokenAuth(simple_validator)
+        multi = MultiAuth(bearer)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(multi, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        with pytest.raises(RuntimeError, match="security scopes"):
+            client.get("/admin", headers={"Authorization": f"Bearer {VALID_TOKEN}"})
+
+    def test_custom_source_default_fails_closed(self):
+        """AuthSource.authenticate_scoped default raises when scopes are declared."""
+        auth = _HeaderAuth(secret="s3cr3t")
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(auth, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        with pytest.raises(RuntimeError, match="security scopes"):
+            client.get("/admin", headers={"X-Token": "s3cr3t"})
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda: BearerTokenAuth(simple_validator, scopes=["admin"]),
+            lambda: CookieAuth("session", cookie_validator, scopes=["admin"]),
+            lambda: APIKeyHeaderAuth("X-API-Key", simple_validator, scopes=["admin"]),
+        ],
+        ids=["bearer", "cookie", "api-key"],
+    )
+    def test_scopes_kwarg_rejected_at_init(self, factory):
+        """'scopes' is reserved for route-declared scopes — fail at startup."""
+        with pytest.raises(ValueError, match="reserved"):
+            factory()
+
+    def test_scopes_kwarg_rejected_via_require(self):
+        """require() goes through __init__, so the same guard applies."""
+        bearer = BearerTokenAuth(simple_validator)
+        with pytest.raises(ValueError, match="reserved"):
+            bearer.require(scopes=["admin"])
+
+    def test_accepts_scopes_non_introspectable_callable(self):
+        """Callables without an inspectable signature are treated as scope-less."""
+        from typing import Any, Callable, cast
+
+        from fastapi_toolsets.security.abc import _accepts_scopes
+
+        not_introspectable = cast(Callable[..., Any], object())
+        assert _accepts_scopes(not_introspectable) is False
+
+    @pytest.mark.anyio
+    async def test_bearer_authenticate_passes_no_scopes(self):
+        """authenticate() remains the scope-less entry point."""
+        bearer = BearerTokenAuth(simple_validator)
+        assert await bearer.authenticate(VALID_TOKEN) == {"user": "alice"}
+
+    @pytest.mark.anyio
+    async def test_cookie_authenticate_passes_no_scopes(self):
+        auth = CookieAuth("session", cookie_validator)
+        assert await auth.authenticate(VALID_COOKIE) == {"session": VALID_COOKIE}
+
+    @pytest.mark.anyio
+    async def test_api_key_authenticate_passes_no_scopes(self):
+        auth = APIKeyHeaderAuth("X-API-Key", simple_validator)
+        assert await auth.authenticate(VALID_TOKEN) == {"user": "alice"}
+
+    def test_sync_validator_with_scopes(self):
+        received: list[list[str]] = []
+
+        def sync_scoped_validator(credential: str, scopes: list[str]) -> dict:
+            received.append(scopes)
+            return {"user": "alice"}
+
+        bearer = BearerTokenAuth(sync_scoped_validator)
+
+        def setup(app: FastAPI):
+            @app.get("/admin")
+            async def admin(user=Security(bearer, scopes=["admin"])):
+                return user
+
+        client = TestClient(_app(setup))
+        response = client.get(
+            "/admin", headers={"Authorization": f"Bearer {VALID_TOKEN}"}
+        )
+        assert response.status_code == 200
+        assert received == [["admin"]]
+
+
 # Minimal concrete subclass used only in tests below.
 class _HeaderAuth(AuthSource):
     """Reads a custom X-Token header — no FastAPI security scheme."""

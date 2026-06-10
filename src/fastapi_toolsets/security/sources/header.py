@@ -8,7 +8,13 @@ from fastapi.security import APIKeyHeader, SecurityScopes
 
 from fastapi_toolsets.exceptions import UnauthorizedError
 
-from ..abc import AuthSource, _ensure_async
+from ..abc import (
+    AuthSource,
+    _accepts_scopes,
+    _ensure_async,
+    _reject_scopes_kwarg,
+    _scope_kwargs,
+)
 
 
 class APIKeyHeaderAuth(AuthSource):
@@ -34,18 +40,20 @@ class APIKeyHeaderAuth(AuthSource):
         validator: Callable[..., Any],
         **kwargs: Any,
     ) -> None:
+        _reject_scopes_kwarg(kwargs)
         self._name = name
         self._validator = _ensure_async(validator)
+        self._accepts_scopes = _accepts_scopes(validator)
         self._kwargs = kwargs
         self._scheme = APIKeyHeader(name=name, auto_error=False)
 
         async def _call(
-            security_scopes: SecurityScopes,  # noqa: ARG001
+            security_scopes: SecurityScopes,
             api_key: Annotated[str | None, Depends(self._scheme)] = None,
         ) -> Any:
             if api_key is None:
                 raise UnauthorizedError()
-            return await self._validator(api_key, **self._kwargs)
+            return await self.authenticate_scoped(api_key, security_scopes.scopes)
 
         self._call_fn = _call
         self.__signature__ = inspect.signature(_call)
@@ -56,7 +64,12 @@ class APIKeyHeaderAuth(AuthSource):
 
     async def authenticate(self, credential: str) -> Any:
         """Validate a credential and return the identity."""
-        return await self._validator(credential, **self._kwargs)
+        return await self.authenticate_scoped(credential, [])
+
+    async def authenticate_scoped(self, credential: str, scopes: list[str]) -> Any:
+        """Validate a credential, forwarding route-declared scopes to the validator."""
+        extra = _scope_kwargs(self, self._accepts_scopes, scopes)
+        return await self._validator(credential, **extra, **self._kwargs)
 
     def require(self, **kwargs: Any) -> "APIKeyHeaderAuth":
         """Return a new instance with additional (or overriding) validator kwargs."""

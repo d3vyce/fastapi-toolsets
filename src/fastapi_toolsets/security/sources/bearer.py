@@ -9,7 +9,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, SecurityS
 
 from fastapi_toolsets.exceptions import UnauthorizedError
 
-from ..abc import AuthSource, _ensure_async
+from ..abc import (
+    AuthSource,
+    _accepts_scopes,
+    _ensure_async,
+    _reject_scopes_kwarg,
+    _scope_kwargs,
+)
 
 
 class BearerTokenAuth(AuthSource):
@@ -42,29 +48,32 @@ class BearerTokenAuth(AuthSource):
         prefix: str | None = None,
         **kwargs: Any,
     ) -> None:
+        _reject_scopes_kwarg(kwargs)
         self._validator = _ensure_async(validator)
+        self._accepts_scopes = _accepts_scopes(validator)
         self._prefix = prefix
         self._kwargs = kwargs
         self._scheme = HTTPBearer(auto_error=False)
 
         async def _call(
-            security_scopes: SecurityScopes,  # noqa: ARG001
+            security_scopes: SecurityScopes,
             credentials: Annotated[
                 HTTPAuthorizationCredentials | None, Depends(self._scheme)
             ] = None,
         ) -> Any:
             if credentials is None:
                 raise UnauthorizedError()
-            return await self._validate(credentials.credentials)
+            return await self._validate(credentials.credentials, security_scopes.scopes)
 
         self._call_fn = _call
         self.__signature__ = inspect.signature(_call)
 
-    async def _validate(self, token: str) -> Any:
-        """Check prefix and call the validator."""
+    async def _validate(self, token: str, scopes: list[str]) -> Any:
+        """Check prefix and call the validator, forwarding declared scopes."""
         if self._prefix is not None and not token.startswith(self._prefix):
             raise UnauthorizedError()
-        return await self._validator(token, **self._kwargs)
+        extra = _scope_kwargs(self, self._accepts_scopes, scopes)
+        return await self._validator(token, **extra, **self._kwargs)
 
     async def extract(self, request: Request) -> str | None:
         """Extract the raw credential from the request without validating.
@@ -89,7 +98,11 @@ class BearerTokenAuth(AuthSource):
         Calls ``await validator(credential, **kwargs)`` where ``kwargs`` are
         the extra keyword arguments provided at instantiation.
         """
-        return await self._validate(credential)
+        return await self._validate(credential, [])
+
+    async def authenticate_scoped(self, credential: str, scopes: list[str]) -> Any:
+        """Validate a credential, forwarding route-declared scopes to the validator."""
+        return await self._validate(credential, scopes)
 
     def require(self, **kwargs: Any) -> "BearerTokenAuth":
         """Return a new instance with additional (or overriding) validator kwargs."""

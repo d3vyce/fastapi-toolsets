@@ -154,6 +154,22 @@ bearer = BearerTokenAuth(verify_token, role=Role.ADMIN, permission="billing:read
 
 Each auth instance is self-contained — create a separate instance per distinct requirement instead of passing requirements through `Security(scopes=[...])`.
 
+### Security scopes
+
+Scopes declared on a route via `Security(auth, scopes=[...])` are never silently ignored. If the validator declares a `scopes` parameter, it receives the declared scopes (`list[str]`, empty when none are declared) and is responsible for enforcing them:
+
+```python
+async def verify_token(token: str, scopes: list[str]) -> User:
+    user = await decode_token(token)
+    if not set(scopes) <= user.scopes:
+        raise UnauthorizedError()
+    return user
+```
+
+If the validator does **not** declare a `scopes` parameter, declaring scopes on a route raises `RuntimeError` at request time — the route advertises an authorization check in OpenAPI that the auth source cannot enforce. Custom `AuthSource` subclasses get the same fail-closed behaviour by default; override `authenticate_scoped(credential, scopes)` to support scopes.
+
+Because `scopes` is injected automatically, it is reserved: passing it as a validator kwarg at instantiation (or through `.require()`) raises `ValueError` at startup. Use a different keyword name for instance-bound requirements.
+
 ### Using `.require()` inline
 
 If declaring a new top-level variable per role feels verbose, use `.require()` to create a configured clone directly in the route decorator. The original instance is not mutated:
