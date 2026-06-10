@@ -96,6 +96,8 @@ async def me(user: User = Security(cookie_auth)):
 
 Pass `secret_key` to enable HMAC-SHA256 signed, tamper-proof cookies. The cookie payload includes an expiry timestamp (`ttl`, default 24 h). No database entry is required — the signature is self-contained.
 
+The signing key is derived from `secret_key` *and* the cookie name, so several `CookieAuth` instances can safely share one `secret_key`: a cookie issued as `session` is never accepted as `admin_session`.
+
 Use `set_cookie()` to issue the signed cookie on login and `delete_cookie()` to clear it on logout:
 
 ```python

@@ -64,6 +64,11 @@ class CookieAuth(AuthSource):
         self._validator = _ensure_async(validator)
         self._accepts_scopes = _accepts_scopes(validator)
         self._secret_key = secret_key
+        self._signing_key = (
+            hmac.new(secret_key.encode(), name.encode(), hashlib.sha256).digest()
+            if secret_key is not None
+            else None
+        )
         self._ttl = ttl
         self._secure = secure
         self._kwargs = kwargs
@@ -81,11 +86,9 @@ class CookieAuth(AuthSource):
         self.__signature__ = inspect.signature(_call)
 
     def _hmac(self, data: str) -> str:
-        if self._secret_key is None:
+        if self._signing_key is None:
             raise RuntimeError("_hmac called without secret_key configured")
-        return hmac.new(
-            self._secret_key.encode(), data.encode(), hashlib.sha256
-        ).hexdigest()
+        return hmac.new(self._signing_key, data.encode(), hashlib.sha256).hexdigest()
 
     def _sign(self, value: str) -> str:
         data = base64.urlsafe_b64encode(

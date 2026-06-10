@@ -757,6 +757,14 @@ class TestCookieAuthSigned:
 
     SECRET = "test-hmac-secret"
 
+    def _sig(self, data: str, name: str = "session") -> str:
+        """Signature as CookieAuth computes it: key derived from secret + name."""
+        import hashlib as _hashlib
+        import hmac as _hmac
+
+        key = _hmac.new(self.SECRET.encode(), name.encode(), _hashlib.sha256).digest()
+        return _hmac.new(key, data.encode(), _hashlib.sha256).hexdigest()
+
     def test_valid_signed_cookie_via_set_cookie(self):
         """set_cookie signs the value; the signed cookie is verified on read."""
         from fastapi import Response
@@ -825,8 +833,6 @@ class TestCookieAuthSigned:
     def test_expired_signed_cookie_returns_401(self):
         """A signed cookie past its expiry timestamp is rejected."""
         import base64 as _b64
-        import hashlib as _hashlib
-        import hmac as _hmac
         import json as _json
         import time as _time
 
@@ -841,17 +847,12 @@ class TestCookieAuthSigned:
         data = _b64.urlsafe_b64encode(
             _json.dumps({"v": VALID_COOKIE, "exp": int(_time.time()) - 1}).encode()
         ).decode()
-        sig = _hmac.new(
-            self.SECRET.encode(), data.encode(), _hashlib.sha256
-        ).hexdigest()
-        response = client.get("/me", cookies={"session": f"{data}.{sig}"})
+        response = client.get("/me", cookies={"session": f"{data}.{self._sig(data)}"})
         assert response.status_code == 401
 
     def test_invalid_json_payload_returns_401(self):
         """A signed cookie whose payload is not valid JSON is rejected."""
         import base64 as _b64
-        import hashlib as _hashlib
-        import hmac as _hmac
 
         auth = CookieAuth("session", cookie_validator, secret_key=self.SECRET)
 
@@ -862,11 +863,39 @@ class TestCookieAuthSigned:
 
         client = TestClient(_app(setup))
         data = _b64.urlsafe_b64encode(b"not-valid-json").decode()
-        sig = _hmac.new(
-            self.SECRET.encode(), data.encode(), _hashlib.sha256
-        ).hexdigest()
-        response = client.get("/me", cookies={"session": f"{data}.{sig}"})
+        response = client.get("/me", cookies={"session": f"{data}.{self._sig(data)}"})
         assert response.status_code == 401
+
+    def test_cookie_signed_for_other_name_returns_401(self):
+        """Same secret_key, different cookie name → signature must not transfer."""
+        session_auth = CookieAuth("session", cookie_validator, secret_key=self.SECRET)
+        admin_auth = CookieAuth(
+            "admin_session", cookie_validator, secret_key=self.SECRET
+        )
+
+        def setup(app: FastAPI):
+            @app.get("/me")
+            async def me(user=Security(session_auth)):
+                return user
+
+        client = TestClient(_app(setup))
+        # A cookie minted by the admin_session instance, replayed under the
+        # session cookie name, must be rejected despite the shared secret.
+        forged = admin_auth._sign(VALID_COOKIE)
+        response = client.get("/me", cookies={"session": forged})
+        assert response.status_code == 401
+
+        # Control: the same value signed by the session instance is accepted.
+        response = client.get(
+            "/me", cookies={"session": session_auth._sign(VALID_COOKIE)}
+        )
+        assert response.status_code == 200
+
+    def test_signing_key_is_name_bound(self):
+        """The derived signing key differs per cookie name for the same secret."""
+        a = CookieAuth("session", cookie_validator, secret_key=self.SECRET)
+        b = CookieAuth("admin_session", cookie_validator, secret_key=self.SECRET)
+        assert a._signing_key != b._signing_key
 
     def test_malformed_cookie_no_dot_returns_401(self):
         """A signed cookie without the dot separator is rejected."""
