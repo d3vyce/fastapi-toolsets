@@ -92,9 +92,11 @@ class TestAppSessionDep:
     @pytest.mark.anyio
     async def test_get_db_yields_async_session(self):
         """get_db yields a real AsyncSession when called directly."""
+        from starlette.requests import Request
+
         from docs_src.examples.pagination_search.db import get_db
 
-        gen = get_db()
+        gen = get_db(Request({"type": "http", "headers": []}))
         session = await gen.__anext__()
         assert isinstance(session, AsyncSession)
         await gen.aclose()

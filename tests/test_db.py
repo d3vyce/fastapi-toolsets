@@ -4,6 +4,9 @@ import asyncio
 import uuid
 
 import pytest
+from fastapi import Depends, FastAPI
+from fastapi.responses import StreamingResponse
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import (
     Column,
     ForeignKey,
@@ -24,8 +27,11 @@ from sqlalchemy.orm import (
     relationship,
     selectinload,
 )
+from starlette.requests import Request
 
 from fastapi_toolsets.db import (
+    DB_SESSION_STATE_ATTR,
+    CommitOnResponseMiddleware,
     LockMode,
     advisory_lock,
     cleanup_tables,
@@ -46,7 +52,22 @@ from fastapi_toolsets.exceptions import (
 )
 from fastapi_toolsets.pytest import create_db_session
 
-from .conftest import DATABASE_URL, Base, Post, Role, RoleCrud, Tag, User, UserCrud
+from .conftest import (
+    DATABASE_URL,
+    Base,
+    Post,
+    Role,
+    RoleCreate,
+    RoleCrud,
+    Tag,
+    User,
+    UserCrud,
+)
+
+
+def _make_request() -> Request:
+    """Minimal ASGI HTTP request for exercising the get_db dependency directly."""
+    return Request({"type": "http", "headers": []})
 
 
 class TestCreateDbDependency:
@@ -59,7 +80,7 @@ class TestCreateDbDependency:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         get_db = create_db_dependency(session_factory)
 
-        async for session in get_db():
+        async for session in get_db(_make_request()):
             assert isinstance(session, AsyncSession)
             break
 
@@ -77,7 +98,7 @@ class TestCreateDbDependency:
         try:
             get_db = create_db_dependency(session_factory)
 
-            async for session in get_db():
+            async for session in get_db(_make_request()):
                 role = Role(name="test_role_dep")
                 session.add(role)
                 await session.flush()
@@ -99,7 +120,7 @@ class TestCreateDbDependency:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         get_db = create_db_dependency(session_factory)
 
-        async for session in get_db():
+        async for session in get_db(_make_request()):
             assert session.in_transaction()
             break
 
@@ -112,11 +133,39 @@ class TestCreateDbDependency:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         get_db = create_db_dependency(session_factory)
 
-        async for session in get_db():
+        async for session in get_db(_make_request()):
             # Manually commit — session exits the transaction
             await session.commit()
             assert not session.in_transaction()
             # The dependency's post-yield path must not call commit again (no error)
+
+        await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_stashes_session_on_request_state(self):
+        """Dependency exposes the session on request.state for the commit middleware."""
+        engine = create_async_engine(DATABASE_URL, echo=False)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        get_db = create_db_dependency(session_factory)
+        request = _make_request()
+
+        async for session in get_db(request):
+            assert getattr(request.state, DB_SESSION_STATE_ATTR) is session
+            break
+
+        await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_custom_state_attr(self):
+        """state_attr controls where the session is stashed."""
+        engine = create_async_engine(DATABASE_URL, echo=False)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        get_db = create_db_dependency(session_factory, state_attr="my_session")
+        request = _make_request()
+
+        async for session in get_db(request):
+            assert request.state.my_session is session
+            break
 
         await engine.dispose()
 
@@ -183,6 +232,39 @@ class TestCreateDbContext:
         finally:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.drop_all)
+            await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_no_commit_when_not_in_transaction(self):
+        """Context skips commit if the session is no longer in a transaction on exit."""
+        engine = create_async_engine(DATABASE_URL, echo=False)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        get_db_context = create_db_context(session_factory)
+
+        async with get_db_context() as session:
+            # Manually commit — session exits the transaction
+            await session.commit()
+            assert not session.in_transaction()
+            # The post-yield path must not call commit again (no error)
+
+        await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_pool_exhausted_raises_pool_exhausted_error(self):
+        """PoolExhaustedError is raised when the pool is exhausted on context entry."""
+        engine = create_async_engine(
+            DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1
+        )
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        get_db_context = create_db_context(session_factory)
+
+        try:
+            async with session_factory() as holder:
+                await holder.connection()  # check out the single available connection
+                with pytest.raises(PoolExhaustedError):
+                    async with get_db_context():
+                        pass
+        finally:
             await engine.dispose()
 
 
@@ -764,7 +846,7 @@ class TestDbErrors:
             async with session_factory() as holder:
                 await holder.connection()  # check out the single available connection
                 with pytest.raises(PoolExhaustedError):
-                    async for _ in get_db():
+                    async for _ in get_db(_make_request()):
                         pass
         finally:
             await engine.dispose()
@@ -1055,3 +1137,276 @@ class TestM2MSet:
 
         with pytest.raises(TypeError, match="Many-to-Many"):
             await m2m_set(db_session, user, User.role, role)
+
+
+class _FakeSession:
+    """Records commit() calls into a shared event log."""
+
+    def __init__(self, events: list[str], *, in_txn: bool = True) -> None:
+        self.events = events
+        self._in_txn = in_txn
+        self.commits = 0
+
+    def in_transaction(self) -> bool:
+        return self._in_txn
+
+    async def commit(self) -> None:
+        self.events.append("COMMIT")
+        self.commits += 1
+        self._in_txn = False
+
+
+async def _drive(app, scope, events: list[str]) -> list[str]:
+    """Run an ASGI app, appending the response messages it emits to *events*
+    (shared with the fake session so commit/response ordering is captured)."""
+
+    async def receive():  # pragma: no cover - not exercised
+        return {"type": "http.disconnect"}
+
+    async def send(message) -> None:
+        events.append(message["type"])
+
+    await app(scope, receive, send)
+    return events
+
+
+class TestCommitOrdering:
+    """The commit must precede the forwarded response, and be skipped otherwise."""
+
+    @pytest.mark.anyio
+    async def test_commits_before_response_start(self):
+        events: list[str] = []
+        session = _FakeSession(events)
+
+        async def inner(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        app = CommitOnResponseMiddleware(inner)
+        scope = {"type": "http", "state": {DB_SESSION_STATE_ATTR: session}}
+
+        result = await _drive(app, scope, events)
+
+        assert session.commits == 1
+        assert result == ["COMMIT", "http.response.start", "http.response.body"]
+
+    @pytest.mark.anyio
+    async def test_no_commit_when_not_in_transaction(self):
+        events: list[str] = []
+        session = _FakeSession(events, in_txn=False)
+
+        async def inner(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        app = CommitOnResponseMiddleware(inner)
+        scope = {"type": "http", "state": {DB_SESSION_STATE_ATTR: session}}
+
+        result = await _drive(app, scope, events)
+
+        assert session.commits == 0
+        assert result == ["http.response.start", "http.response.body"]
+
+    @pytest.mark.anyio
+    async def test_no_session_is_noop(self):
+        events: list[str] = []
+
+        async def inner(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        app = CommitOnResponseMiddleware(inner)
+        scope = {"type": "http", "state": {}}
+
+        result = await _drive(app, scope, events)
+
+        assert result == ["http.response.start", "http.response.body"]
+
+    @pytest.mark.anyio
+    async def test_non_http_scope_passes_through(self):
+        called = False
+
+        async def inner(scope, receive, send):
+            nonlocal called
+            called = True
+
+        async def receive():  # pragma: no cover - not exercised
+            return {"type": "lifespan.startup"}
+
+        async def send(message):  # pragma: no cover - not exercised
+            return None
+
+        app = CommitOnResponseMiddleware(inner)
+        await app({"type": "lifespan"}, receive, send)
+
+        assert called is True
+
+
+class _ProbeMiddleware:
+    """Outer middleware that records, at response start, whether a row created
+    in the request is already visible to a *separate* session."""
+
+    def __init__(self, app, *, session_maker, name: str, result: dict) -> None:
+        self.app = app
+        self.session_maker = session_maker
+        self.name = name
+        self.result = result
+
+    async def __call__(self, scope, receive, send):
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                async with self.session_maker() as probe:
+                    row = (
+                        await probe.execute(select(Role).where(Role.name == self.name))
+                    ).scalar_one_or_none()
+                    self.result["visible_at_start"] = row is not None
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+def _build_app(session_maker) -> FastAPI:
+    """A FastAPI app wired with the commit middleware and a few routes."""
+    app = FastAPI()
+    get_db = create_db_dependency(session_maker)
+
+    @app.post("/roles")
+    async def create_role(
+        body: RoleCreate, session: AsyncSession = Depends(get_db)
+    ) -> dict:
+        role = await RoleCrud.create(session, body)
+        return {"id": str(role.id), "name": role.name}
+
+    @app.post("/roles-then-boom")
+    async def create_then_raise(
+        body: RoleCreate, session: AsyncSession = Depends(get_db)
+    ) -> dict:
+        await RoleCrud.create(session, body)
+        raise RuntimeError("boom after write")
+
+    @app.post("/two-roles")
+    async def create_two_roles(
+        body: RoleCreate, session: AsyncSession = Depends(get_db)
+    ) -> dict:
+        # First write succeeds, second collides on the unique name and must
+        # take the whole request transaction down with it.
+        await RoleCrud.create(session, body)
+        await RoleCrud.create(session, body)
+        return {"ok": True}
+
+    @app.post("/roles-self-commit")
+    async def create_then_self_commit(
+        body: RoleCreate, session: AsyncSession = Depends(get_db)
+    ) -> dict:
+        # Endpoint commits explicitly; the middleware must not double-commit or
+        # error — it finds no open transaction and no-ops.
+        role = await RoleCrud.create(session, body)
+        await session.commit()
+        return {"id": str(role.id), "name": role.name}
+
+    @app.get("/roles-stream/{name}")
+    async def stream_role(
+        name: str, session: AsyncSession = Depends(get_db)
+    ) -> StreamingResponse:
+        # A write before the stream begins: the middleware commits it at
+        # response-start, before the generator runs.
+        await RoleCrud.create(session, RoleCreate(name=name))
+
+        async def gen():
+            # Read-only DB use during the stream, via the request session.
+            row = (
+                await session.execute(select(Role).where(Role.name == name))
+            ).scalar_one()
+            yield f"data: {row.name}\n\n".encode()
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    app.add_middleware(CommitOnResponseMiddleware)
+    return app
+
+
+async def _row_exists(session_maker, name: str) -> bool:
+    async with session_maker() as session:
+        row = (
+            await session.execute(select(Role).where(Role.name == name))
+        ).scalar_one_or_none()
+        return row is not None
+
+
+class TestCommitIntegration:
+    @pytest.mark.anyio
+    async def test_write_is_committed(self, session_maker):
+        app = _build_app(session_maker)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/roles", json={"name": "committed_role"})
+
+        assert resp.status_code == 200
+        assert await _row_exists(session_maker, "committed_role")
+
+    @pytest.mark.anyio
+    async def test_visible_at_response_start(self, session_maker):
+        """The write is visible to a separate session *before* the response is
+        sent — the read-after-write guarantee the middleware exists for."""
+        app = _build_app(session_maker)
+        result: dict = {}
+        app.add_middleware(
+            _ProbeMiddleware,
+            session_maker=session_maker,
+            name="probe_role",
+            result=result,
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/roles", json={"name": "probe_role"})
+
+        assert resp.status_code == 200
+        assert result.get("visible_at_start") is True
+
+    @pytest.mark.anyio
+    async def test_error_rolls_back(self, session_maker):
+        app = _build_app(session_maker)
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/roles-then-boom", json={"name": "ghost_role"})
+
+        assert resp.status_code == 500
+        assert not await _row_exists(session_maker, "ghost_role")
+
+    @pytest.mark.anyio
+    async def test_explicit_commit_in_endpoint(self, session_maker):
+        """An endpoint that commits itself works: the middleware no-ops (no
+        double commit / error) and the write is persisted."""
+        app = _build_app(session_maker)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/roles-self-commit", json={"name": "self_commit"})
+
+        assert resp.status_code == 200
+        assert await _row_exists(session_maker, "self_commit")
+
+    @pytest.mark.anyio
+    async def test_streaming_response_coexists(self, session_maker):
+        """A read-only streaming endpoint works alongside the middleware: the
+        commit fires at stream start, the pre-stream write is committed, and the
+        generator can keep reading via the request session."""
+        app = _build_app(session_maker)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/roles-stream/streamed_role")
+
+        assert resp.status_code == 200
+        assert "data: streamed_role" in resp.text
+        # The write made before the stream began is durably committed.
+        assert await _row_exists(session_maker, "streamed_role")
+
+    @pytest.mark.anyio
+    async def test_multi_write_atomicity(self, session_maker):
+        """When the 2nd write fails, the 1st must roll back too (one txn)."""
+        app = _build_app(session_maker)
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/two-roles", json={"name": "dup_role"})
+
+        assert resp.status_code >= 400
+        assert not await _row_exists(session_maker, "dup_role")

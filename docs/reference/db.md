@@ -16,6 +16,7 @@ from fastapi_toolsets.db import (
     lock_tables,
     m2m_add,
     m2m_remove,
+    CommitOnResponseMiddleware,
     m2m_set,
     wait_for_row_change,
 )
@@ -26,6 +27,8 @@ from fastapi_toolsets.db import (
 ## ::: fastapi_toolsets.db.create_db_dependency
 
 ## ::: fastapi_toolsets.db.create_db_context
+
+## ::: fastapi_toolsets.db.CommitOnResponseMiddleware
 
 ## ::: fastapi_toolsets.db.get_transaction
 

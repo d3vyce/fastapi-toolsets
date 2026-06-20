@@ -11,7 +11,7 @@ The `db` module provides helpers to create FastAPI dependencies and context mana
 
 ## Session dependency
 
-Use [`create_db_dependency`](../reference/db.md#fastapi_toolsets.db.create_db_dependency) to create a FastAPI dependency that yields a session and auto-commits on success:
+Use [`create_db_dependency`](../reference/db.md#fastapi_toolsets.db.create_db_dependency) to create a FastAPI dependency that yields a session and commits the request transaction on success:
 
 ```python
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -26,6 +26,61 @@ get_db = create_db_dependency(session_maker=session_maker)
 async def list_users(session: AsyncSession = Depends(get_db)):
     ...
 ```
+
+The whole request is a single transaction (CRUD writes use savepoints under it).
+The post-`yield` commit in the dependency is only a **fallback**: current
+Starlette/FastAPI runs dependency teardown *after* the response has been sent,
+so it does not guarantee read-after-write consistency. Install
+[`CommitOnResponseMiddleware`](#committing-before-the-response) to commit the
+request transaction *before* the response is sent.
+
+## Committing before the response
+
+!!! info "Added in `v4.2`"
+
+By default a `yield` dependency commits in its teardown, which current
+Starlette/FastAPI runs **after the response has been sent**. A client that reads
+its own just-created row on a follow-up request can therefore race the commit
+and see a `ForeignKeyViolation` or a missing parent.
+
+[`CommitOnResponseMiddleware`](../reference/db.md#fastapi_toolsets.db.CommitOnResponseMiddleware)
+closes that race: it commits the request's session when the response *starts* —
+after the endpoint returns, before the body reaches the client. It pairs with
+[`create_db_dependency`](../reference/db.md#fastapi_toolsets.db.create_db_dependency)
+(which stashes the session on `request.state`) and needs a single line to wire
+up, applied globally to every route:
+
+```python
+from fastapi import FastAPI
+from fastapi_toolsets.db import create_db_dependency, CommitOnResponseMiddleware
+
+app = FastAPI()
+get_db = create_db_dependency(session_maker=session_maker)
+
+app.add_middleware(CommitOnResponseMiddleware)
+```
+
+The transaction model is unchanged — the request stays one transaction, now
+committed before the response:
+
+- **Read-after-write** — a follow-up request sees the write.
+- **Atomicity** — multi-write endpoints still roll back as a unit on failure.
+- **Errors roll back** — on a raised exception the teardown rolls back; the
+  middleware finds no open transaction and does nothing.
+- **Commit failures** still surface as a `500` via the app's generic handler,
+  since the commit runs before the response starts. (A handler registered for
+  the *specific* exception type the commit raises is bypassed, as the response
+  has already started at the inner exception-handling layer.)
+
+!!! warning "Streaming / SSE endpoints"
+    For a `StreamingResponse` / `EventSourceResponse`, Starlette sends the
+    response start *before* running the body generator, so the commit fires at
+    the **start** of the stream. Read-only streams are unaffected, but a stream
+    that **writes** via the request session must instead open a short-lived
+    session per write with [`create_db_context`](#session-context-manager) — the
+    start-time commit will not flush writes made later during the stream. Using
+    `create_db_context` inside the generator also releases the pooled connection
+    between events instead of pinning it for the whole stream.
 
 ## Session context manager
 

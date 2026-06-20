@@ -13,6 +13,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, QueryableAttribute
 from sqlalchemy.orm.relationships import RelationshipProperty
+from starlette.requests import Request
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .exceptions import LockTimeoutError, NotFoundError, PoolExhaustedError
 
@@ -24,6 +26,7 @@ def _is_lock_not_available(e: sa_exc.DBAPIError) -> bool:
 
 
 __all__ = [
+    "CommitOnResponseMiddleware",
     "LockMode",
     "advisory_lock",
     "cleanup_tables",
@@ -41,30 +44,40 @@ __all__ = [
 
 _SessionT = TypeVar("_SessionT", bound=AsyncSession)
 
+DB_SESSION_STATE_ATTR = "ft_db_session"
+
 
 def create_db_dependency(
     session_maker: async_sessionmaker[_SessionT],
-) -> Callable[[], AsyncGenerator[_SessionT, None]]:
+    *,
+    state_attr: str = DB_SESSION_STATE_ATTR,
+) -> Callable[[Request], AsyncGenerator[_SessionT, None]]:
     """Create a FastAPI dependency for database sessions.
 
-    Creates a dependency function that yields a session and auto-commits
-    if a transaction is active when the request completes.
+    Creates a dependency function that yields a session and exposes it on
+    ``request.state`` so :class:`CommitOnResponseMiddleware` can commit it
+    *before* the response is sent.
 
     Args:
         session_maker: Async session factory from create_session_factory()
+        state_attr: ``request.state`` attribute used to expose the session to
+            the commit middleware.
 
     Returns:
         An async generator function usable with FastAPI's Depends()
 
     Example:
         ```python
-        from fastapi import Depends
+        from fastapi import Depends, FastAPI
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-        from fastapi_toolsets.db import create_db_dependency
+        from fastapi_toolsets.db import create_db_dependency, CommitOnResponseMiddleware
 
         engine = create_async_engine("postgresql+asyncpg://...")
         SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
         get_db = create_db_dependency(SessionLocal)
+
+        app = FastAPI()
+        app.add_middleware(CommitOnResponseMiddleware)
 
         @app.get("/users")
         async def list_users(session: AsyncSession = Depends(get_db)):
@@ -72,12 +85,13 @@ def create_db_dependency(
         ```
     """
 
-    async def get_db() -> AsyncGenerator[_SessionT, None]:
+    async def get_db(request: Request) -> AsyncGenerator[_SessionT, None]:
         async with session_maker() as session:
             try:
                 await session.connection()
             except sa_exc.TimeoutError as e:
                 raise PoolExhaustedError() from e
+            setattr(request.state, state_attr, session)
             yield session
             if session.in_transaction():
                 await session.commit()
@@ -91,7 +105,7 @@ def create_db_context(
     """Create a context manager for database sessions.
 
     Creates a context manager for use outside of FastAPI request handlers,
-    such as in background tasks, CLI commands, or tests.
+    such as in background tasks, CLI commands, websocket handlers, or tests.
 
     Args:
         session_maker: Async session factory from create_session_factory()
@@ -114,8 +128,62 @@ def create_db_context(
                 ...
         ```
     """
-    get_db = create_db_dependency(session_maker)
-    return asynccontextmanager(get_db)
+
+    @asynccontextmanager
+    async def _ctx() -> AsyncGenerator[_SessionT, None]:
+        async with session_maker() as session:
+            try:
+                await session.connection()
+            except sa_exc.TimeoutError as e:
+                raise PoolExhaustedError() from e
+            yield session
+            if session.in_transaction():
+                await session.commit()
+
+    return _ctx
+
+
+class CommitOnResponseMiddleware:
+    """Commit the request's DB session before the response is sent.
+
+    Args:
+        app: The next ASGI application in the middleware stack.
+        state_attr: ``request.state`` attribute the session is read from; must
+            match the ``state_attr`` passed to :func:`create_db_dependency`.
+
+    Example:
+        ```python
+        from fastapi import FastAPI
+        from fastapi_toolsets.db import create_db_dependency, CommitOnResponseMiddleware
+
+        app = FastAPI()
+        get_db = create_db_dependency(session_maker)
+        app.add_middleware(CommitOnResponseMiddleware)
+        ```
+    """
+
+    def __init__(
+        self, app: ASGIApp, *, state_attr: str = DB_SESSION_STATE_ATTR
+    ) -> None:
+        self.app = app
+        self.state_attr = state_attr
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                # ``scope["state"]`` is the same dict ``request.state`` writes to,
+                # so this is the session stashed by ``create_db_dependency``.
+                state = scope.get("state")
+                session = state.get(self.state_attr) if state else None
+                if session is not None and session.in_transaction():
+                    await session.commit()
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 @asynccontextmanager
