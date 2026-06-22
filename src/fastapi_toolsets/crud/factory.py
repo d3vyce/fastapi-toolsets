@@ -22,7 +22,7 @@ from sqlalchemy.orm import DeclarativeBase, QueryableAttribute, selectinload
 from sqlalchemy.sql.base import ExecutableOption
 from sqlalchemy.sql.roles import WhereHavingRole
 
-from ..db import get_transaction
+from ..db import transaction
 from ..exceptions import InvalidOrderFieldError, NotFoundError
 from ..schemas import (
     CursorPaginatedResponse,
@@ -716,7 +716,7 @@ class AsyncCrud(Generic[ModelType]):
         Returns:
             Created model instance, or ``Response[schema]`` when ``schema`` is given.
         """
-        async with get_transaction(session):
+        async with transaction(session):
             m2m_exclude = cls._m2m_schema_fields()
             data = (
                 obj.model_dump(exclude=m2m_exclude) if m2m_exclude else obj.model_dump()
@@ -1067,7 +1067,7 @@ class AsyncCrud(Generic[ModelType]):
         Raises:
             NotFoundError: If no record found
         """
-        async with get_transaction(session):
+        async with transaction(session):
             m2m_exclude = cls._m2m_schema_fields()
 
             # Eagerly load M2M relationships that will be updated so that
@@ -1127,7 +1127,7 @@ class AsyncCrud(Generic[ModelType]):
         Returns:
             Model instance
         """
-        async with get_transaction(session):
+        async with transaction(session):
             values = obj.model_dump(exclude_unset=True)
             q = insert(cls.model).values(**values)
             if set_:
@@ -1189,7 +1189,7 @@ class AsyncCrud(Generic[ModelType]):
         Returns:
             ``None``, or ``Response[None]`` when ``return_response=True``.
         """
-        async with get_transaction(session):
+        async with transaction(session):
             result = await session.execute(select(cls.model).where(and_(*filters)))
             objects = result.scalars().all()
             for obj in objects:

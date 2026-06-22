@@ -1506,8 +1506,8 @@ class TestListensFor:
         assert all(e["event"] == "change" for e in _listener_events)
 
 
-class TestEventSessionWithGetTransaction:
-    """Verify callbacks fire correctly when using get_transaction / lock_tables."""
+class TestEventSessionWithTransaction:
+    """Verify callbacks fire correctly when using transaction / lock_tables."""
 
     @pytest.fixture(autouse=True)
     def clear_events(self):
@@ -1517,10 +1517,10 @@ class TestEventSessionWithGetTransaction:
 
     @pytest.mark.anyio
     async def test_callbacks_fire_after_outer_commit_not_savepoint(self, mixin_session):
-        """get_transaction creates a savepoint; callbacks fire only on outer commit."""
-        from fastapi_toolsets.db import get_transaction
+        """transaction creates a savepoint; callbacks fire only on outer commit."""
+        from fastapi_toolsets.db import transaction
 
-        async with get_transaction(mixin_session):
+        async with transaction(mixin_session):
             obj = WatchedModel(status="active", other="x")
             mixin_session.add(obj)
 
@@ -1535,14 +1535,14 @@ class TestEventSessionWithGetTransaction:
 
     @pytest.mark.anyio
     async def test_nested_transactions_accumulate_events(self, mixin_session):
-        """Multiple get_transaction blocks accumulate events for a single commit."""
-        from fastapi_toolsets.db import get_transaction
+        """Multiple transaction blocks accumulate events for a single commit."""
+        from fastapi_toolsets.db import transaction
 
-        async with get_transaction(mixin_session):
+        async with transaction(mixin_session):
             obj1 = WatchedModel(status="first", other="x")
             mixin_session.add(obj1)
 
-        async with get_transaction(mixin_session):
+        async with transaction(mixin_session):
             obj2 = WatchedModel(status="second", other="y")
             mixin_session.add(obj2)
 
@@ -1556,14 +1556,14 @@ class TestEventSessionWithGetTransaction:
     @pytest.mark.anyio
     async def test_savepoint_rollback_suppresses_events(self, mixin_session):
         """Objects from a rolled-back savepoint don't fire callbacks."""
-        from fastapi_toolsets.db import get_transaction
+        from fastapi_toolsets.db import transaction
 
         survivor = WatchedModel(status="kept", other="x")
         mixin_session.add(survivor)
         await mixin_session.flush()
 
         try:
-            async with get_transaction(mixin_session):
+            async with transaction(mixin_session):
                 doomed = WatchedModel(status="doomed", other="y")
                 mixin_session.add(doomed)
                 await mixin_session.flush()
@@ -1590,9 +1590,9 @@ class TestEventSessionWithGetTransaction:
         assert len(creates) == 1
 
     @pytest.mark.anyio
-    async def test_update_inside_get_transaction(self, mixin_session):
-        """UPDATE events fire with correct changes after get_transaction commit."""
-        from fastapi_toolsets.db import get_transaction
+    async def test_update_inside_transaction(self, mixin_session):
+        """UPDATE events fire with correct changes after transaction commit."""
+        from fastapi_toolsets.db import transaction
 
         obj = WatchedModel(status="initial", other="x")
         mixin_session.add(obj)
@@ -1600,7 +1600,7 @@ class TestEventSessionWithGetTransaction:
 
         _test_events.clear()
 
-        async with get_transaction(mixin_session):
+        async with transaction(mixin_session):
             obj.status = "updated"
 
         await mixin_session.commit()
@@ -1696,7 +1696,7 @@ class TestEventSessionWithNullableFields:
 
 
 class TestEventSessionWithFastAPIDependency:
-    """Verify EventSession works when session comes from create_db_dependency."""
+    """Verify EventSession works when session comes from the Database dependency."""
 
     @pytest.fixture(autouse=True)
     def clear_events(self):
@@ -1706,31 +1706,24 @@ class TestEventSessionWithFastAPIDependency:
 
     @pytest.mark.anyio
     async def test_create_event_fires_via_dependency(self):
-        """CREATE callback fires when session is provided by create_db_dependency."""
+        """CREATE callback fires when session is provided by the Database dependency."""
         from fastapi import Depends, FastAPI
         from httpx import ASGITransport, AsyncClient
-        from sqlalchemy.ext.asyncio import (
-            AsyncSession,
-            async_sessionmaker,
-            create_async_engine,
-        )
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-        from fastapi_toolsets.db import create_db_dependency
+        from fastapi_toolsets.db import Database
         from fastapi_toolsets.models import EventSession
 
         engine = create_async_engine(DATABASE_URL, echo=False)
-        session_factory = async_sessionmaker(
-            engine, expire_on_commit=False, class_=EventSession
-        )
 
         async with engine.begin() as conn:
             await conn.run_sync(MixinBase.metadata.create_all)
 
-        get_db = create_db_dependency(session_factory)
+        db = Database(engine=engine, session_class=EventSession)
         app = FastAPI()
 
         @app.post("/watched")
-        async def create_watched(session: AsyncSession = Depends(get_db)):
+        async def create_watched(session: AsyncSession = Depends(db)):
             obj = WatchedModel(status="from-api", other="x")
             session.add(obj)
             return {"id": str(obj.id)}
@@ -1753,40 +1746,33 @@ class TestEventSessionWithFastAPIDependency:
 
     @pytest.mark.anyio
     async def test_update_event_fires_via_dependency(self):
-        """UPDATE callback fires when session is provided by create_db_dependency."""
+        """UPDATE callback fires when session is provided by the Database dependency."""
         from fastapi import Depends, FastAPI
         from httpx import ASGITransport, AsyncClient
-        from sqlalchemy.ext.asyncio import (
-            AsyncSession,
-            async_sessionmaker,
-            create_async_engine,
-        )
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-        from fastapi_toolsets.db import create_db_dependency
+        from fastapi_toolsets.db import Database
         from fastapi_toolsets.models import EventSession
 
         engine = create_async_engine(DATABASE_URL, echo=False)
-        session_factory = async_sessionmaker(
-            engine, expire_on_commit=False, class_=EventSession
-        )
 
         async with engine.begin() as conn:
             await conn.run_sync(MixinBase.metadata.create_all)
 
-        get_db = create_db_dependency(session_factory)
+        db = Database(engine=engine, session_class=EventSession)
         app = FastAPI()
 
         # Pre-seed an object.
-        async with session_factory() as seed_session:
+        async with db.session() as seed_session:
             obj = WatchedModel(status="initial", other="x")
             seed_session.add(obj)
-            await seed_session.commit()
+            await seed_session.flush()
             obj_id = obj.id
 
         _test_events.clear()
 
         @app.put("/watched/{item_id}")
-        async def update_watched(item_id: str, session: AsyncSession = Depends(get_db)):
+        async def update_watched(item_id: str, session: AsyncSession = Depends(db)):
             from sqlalchemy import select
 
             stmt = select(WatchedModel).where(WatchedModel.id == item_id)

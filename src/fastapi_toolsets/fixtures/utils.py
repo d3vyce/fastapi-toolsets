@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
-from ..db import get_transaction
+from ..db import transaction
 from ..logger import get_logger
 from ..types import ModelType
 from .enum import LoadStrategy
@@ -229,7 +229,7 @@ async def _load_ordered(
         model_name = type(instances[0]).__name__
         loaded: list[DeclarativeBase] = []
 
-        async with get_transaction(session):
+        async with transaction(session):
             for model_cls, group in _group_by_type(instances):
                 match strategy:
                     case LoadStrategy.INSERT:

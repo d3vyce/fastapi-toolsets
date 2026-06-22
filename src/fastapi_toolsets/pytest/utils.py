@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-from ..db import cleanup_tables, create_database
+from ..db.testing import cleanup_tables, create_database
 from ..models.watched import EventSession
 
 
