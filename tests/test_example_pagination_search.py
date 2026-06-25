@@ -91,13 +91,19 @@ async def seed(session: AsyncSession):
 class TestAppSessionDep:
     @pytest.mark.anyio
     async def test_get_db_yields_async_session(self):
-        """get_db yields a real AsyncSession when called directly."""
-        from docs_src.examples.pagination_search.db import get_db
+        """The Database dependency yields a real AsyncSession when called directly."""
+        from starlette.requests import Request
 
-        gen = get_db()
-        session = await gen.__anext__()
-        assert isinstance(session, AsyncSession)
-        await gen.aclose()
+        from fastapi_toolsets.db import Database
+
+        db = Database(DATABASE_URL)
+        try:
+            gen = db(Request({"type": "http", "headers": []}))
+            session = await gen.__anext__()
+            assert isinstance(session, AsyncSession)
+            await gen.aclose()
+        finally:
+            await db.engine.dispose()
 
 
 class TestOffsetPagination:

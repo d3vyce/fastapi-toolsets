@@ -167,7 +167,7 @@ user = await UserCrud.update(session, UserUpdate(credits=10), [User.id == user_i
 ```
 
 !!! warning
-    `with_for_update` requires an open transaction. Wrap your call in `async with session.begin()` or use the `get_transaction` helper if you are not already inside one.
+    `with_for_update` requires an open transaction. Wrap your call in `async with session.begin()` or use the `transaction` helper if you are not already inside one.
 
 !!! note
     `NOWAIT` raises `sqlalchemy.exc.OperationalError` immediately if the row is locked rather than waiting.

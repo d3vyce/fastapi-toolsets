@@ -107,10 +107,10 @@ url = worker_database_url("postgresql+asyncpg://user:pass@localhost/myapp", defa
 
 ## Manual table cleanup
 
-[`cleanup_tables`](../reference/db.md#fastapi_toolsets.db.cleanup_tables) truncates all tables in a single statement and can be called directly when you need more control:
+[`cleanup_tables`](../reference/db.md#fastapi_toolsets.db.testing.cleanup_tables) truncates all tables in a single statement and can be called directly when you need more control:
 
 ```python
-from fastapi_toolsets.db import cleanup_tables
+from fastapi_toolsets.pytest import cleanup_tables
 
 @pytest.fixture(autouse=True)
 async def clean(db_session):

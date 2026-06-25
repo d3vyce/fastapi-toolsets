@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, selectinload
 from sqlalchemy.orm.interfaces import ExecutableOption, ORMOption
 
-from ..db import get_transaction
+from ..db import transaction
 from ..fixtures import FixtureRegistry, LoadStrategy
 
 
@@ -106,7 +106,7 @@ def _create_fixture_function(
 
         loaded: list[DeclarativeBase] = []
 
-        async with get_transaction(session):
+        async with transaction(session):
             for instance in instances:
                 if strategy == LoadStrategy.INSERT:
                     session.add(instance)

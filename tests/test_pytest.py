@@ -11,7 +11,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from fastapi_toolsets.db import get_transaction
+from fastapi_toolsets.db import transaction
 from fastapi_toolsets.fixtures import Context, FixtureRegistry, LoadStrategy
 from fastapi_toolsets.pytest import (
     create_async_client,
@@ -387,14 +387,14 @@ class TestCreateDbSession:
             assert session.autoflush is False
 
     @pytest.mark.anyio
-    async def test_get_transaction_commits_visible_to_separate_session(self):
-        """Data written via get_transaction() is committed and visible to other sessions."""
+    async def test_transaction_commits_visible_to_separate_session(self):
+        """Data written via transaction() is committed and visible to other sessions."""
         role_id = uuid.uuid4()
 
         async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
-            # Simulate what _create_fixture_function does: insert via get_transaction
+            # Simulate what _create_fixture_function does: insert via transaction()
             # with no explicit commit afterward.
-            async with get_transaction(session):
+            async with transaction(session):
                 role = Role(id=role_id, name="visible_to_other_session")
                 session.add(role)
 
@@ -409,9 +409,9 @@ class TestCreateDbSession:
                     result = await other.execute(select(Role).where(Role.id == role_id))
                     fetched = result.scalar_one_or_none()
                     assert fetched is not None, (
-                        "Fixture data inserted via get_transaction() must be committed "
+                        "Fixture data inserted via transaction() must be committed "
                         "and visible to a separate session. If create_db_session uses "
-                        "create_db_context, auto-begin forces get_transaction() into "
+                        "db.session(), auto-begin forces transaction() into "
                         "savepoints instead of real commits."
                     )
                     assert fetched.name == "visible_to_other_session"
