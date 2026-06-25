@@ -330,7 +330,7 @@ wheels = [
 
 [[package]]
 name = "fastapi-toolsets"
-version = "4.1.3"
+version = "5.0.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
