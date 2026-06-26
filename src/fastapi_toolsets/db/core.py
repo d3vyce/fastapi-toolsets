@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
+from pydantic import PostgresDsn
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -84,18 +85,20 @@ class Database:
     untouched).
 
     Args:
-        url: Database connection URL (e.g. ``"postgresql+asyncpg://..."``).
+        url: Database connection URL. Accepts a plain string or a Pydantic
+            :class:`~pydantic.PostgresDsn`.
         engine: An existing :class:`AsyncEngine` to reuse instead of *url*.
         session_class: Session class for the sessionmaker (e.g. ``EventSession``).
         expire_on_commit: Expire attributes after commit. Defaults to ``False``.
         autoflush: Autoflush the session before queries. Defaults to ``True``.
+        connect_args: DBAPI-level connection arguments forwarded to
+            :func:`create_async_engine` (URL mode only).
         **engine_options: Extra keyword arguments forwarded to
-            :func:`create_async_engine` (URL mode only, e.g. ``pool_size``,
-            ``echo``, ``connect_args``).
+            :func:`create_async_engine` (URL mode only).
 
     Raises:
         TypeError: If neither or both of *url* and *engine* are given, or if
-            *engine_options* are passed together with *engine*.
+            *connect_args*/*engine_options* are passed together with *engine*.
 
     Example:
         ```python
@@ -115,12 +118,13 @@ class Database:
 
     def __init__(
         self,
-        url: str | None = None,
+        url: str | PostgresDsn | None = None,
         *,
         engine: AsyncEngine | None = None,
         session_class: type[AsyncSession] = AsyncSession,
         expire_on_commit: bool = False,
         autoflush: bool = True,
+        connect_args: dict[str, Any] | None = None,
         **engine_options: Any,
     ) -> None:
         if (url is None) == (engine is None):
@@ -128,10 +132,10 @@ class Database:
                 "Database requires exactly one of 'url' or 'engine' "
                 "(got both or neither)."
             )
-        if engine is not None and engine_options:
+        if engine is not None and (engine_options or connect_args is not None):
             raise TypeError(
-                "engine_options are only valid in URL mode; configure the "
-                "engine you pass via 'engine=' yourself."
+                "connect_args/engine_options are only valid in URL mode; "
+                "configure the engine you pass via 'engine=' yourself."
             )
 
         if engine is not None:
@@ -140,7 +144,11 @@ class Database:
         else:
             assert url is not None  # guaranteed by the XOR check above
             self._owns_engine = True
-            self.engine = create_async_engine(url, **engine_options)
+            if connect_args is not None:
+                engine_options["connect_args"] = connect_args
+            # ``PostgresDsn`` (and other URL objects) are not str subclasses, so
+            # coerce to the string form SQLAlchemy expects.
+            self.engine = create_async_engine(str(url), **engine_options)
         self._sessionmaker: async_sessionmaker[AsyncSession] = async_sessionmaker(
             self.engine,
             class_=session_class,
