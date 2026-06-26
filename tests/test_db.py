@@ -674,6 +674,66 @@ class TestWaitForRowChange:
             )
 
     @pytest.mark.anyio
+    async def test_detects_update_under_repeatable_read(self, engine):
+        """Detects external commits even when the watcher pins a snapshot."""
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        rr_engine = engine.execution_options(isolation_level="REPEATABLE READ")
+        factory = async_sessionmaker(rr_engine, expire_on_commit=False)
+        try:
+            async with factory() as setup:
+                role = Role(name="rr_role")
+                setup.add(role)
+                await setup.commit()
+                role_id = role.id
+
+            async def update_later():
+                await asyncio.sleep(0.15)
+                async with factory() as other:
+                    r = await other.get(Role, role_id)
+                    assert r is not None
+                    r.name = "rr_updated"
+                    await other.commit()
+
+            watcher = factory()
+            try:
+                # Pin a snapshot before the update lands.
+                await watcher.get(Role, role_id)
+                update_task = asyncio.create_task(update_later())
+                result = await wait_for_row_change(
+                    watcher, Role, role_id, interval=0.05, timeout=2.0
+                )
+                await update_task
+                assert result.name == "rr_updated"
+            finally:
+                await watcher.close()
+        finally:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+
+    @pytest.mark.anyio
+    async def test_stale_then_deleted_instance_raises_not_found(
+        self, db_session: AsyncSession, engine
+    ):
+        """A stale expired instance in the identity map yields NotFoundError."""
+        role = Role(name="stale_role")
+        db_session.add(role)
+        await db_session.commit()
+        role_id = role.id
+
+        # db_session still holds `role`; delete it from another committed session.
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as other:
+            r = await other.get(Role, role_id)
+            await other.delete(r)
+            await other.commit()
+
+        with pytest.raises(NotFoundError):
+            await wait_for_row_change(
+                db_session, Role, role_id, interval=0.05, timeout=0.5
+            )
+
+    @pytest.mark.anyio
     async def test_deleted_row_raises(self, db_session: AsyncSession, engine):
         """Raises NotFoundError when the row is deleted during polling."""
         role = Role(name="delete_role")

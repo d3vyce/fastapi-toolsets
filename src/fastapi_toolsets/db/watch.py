@@ -57,7 +57,12 @@ async def wait_for_row_change(
         )
         ```
     """
-    instance = await session.get(model, pk_value)
+
+    async def _reload() -> _M | None:
+        await session.rollback()
+        return await session.get(model, pk_value, populate_existing=True)
+
+    instance = await _reload()
     if instance is None:
         raise NotFoundError(f"{model.__name__} with pk={pk_value!r} not found")
 
@@ -79,8 +84,7 @@ async def wait_for_row_change(
                 f"with pk={pk_value!r} within {timeout}s"
             )
 
-        session.expunge(instance)
-        instance = await session.get(model, pk_value)
+        instance = await _reload()
 
         if instance is None:
             raise NotFoundError(f"{model.__name__} with pk={pk_value!r} was deleted")
