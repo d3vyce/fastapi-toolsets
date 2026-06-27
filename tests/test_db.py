@@ -3,12 +3,13 @@
 import asyncio
 import uuid
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.responses import StreamingResponse
 from httpx import ASGITransport, AsyncClient
+from pydantic import PostgresDsn
 from sqlalchemy import (
     Column,
     ForeignKey,
@@ -93,6 +94,33 @@ class TestDatabaseConstruction:
         """engine_options are rejected in engine= mode."""
         with pytest.raises(TypeError):
             Database(engine=engine, pool_size=5)
+
+    @pytest.mark.anyio
+    async def test_connect_args_with_engine_raises(self, engine):
+        """connect_args are rejected in engine= mode."""
+        with pytest.raises(TypeError):
+            Database(engine=engine, connect_args={"server_settings": {}})
+
+    @pytest.mark.anyio
+    async def test_accepts_postgres_dsn(self):
+        """A Pydantic PostgresDsn is coerced to a string URL."""
+        dsn = PostgresDsn(DATABASE_URL)
+        db = Database(dsn)
+        try:
+            assert db._owns_engine is True
+            assert str(db.engine.url) == str(create_async_engine(DATABASE_URL).url)
+        finally:
+            await db.engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_connect_args_forwarded_to_engine(self):
+        """connect_args are forwarded to create_async_engine in URL mode."""
+        connect_args = {"server_settings": {"application_name": "ft_test"}}
+        with patch("fastapi_toolsets.db.core.create_async_engine") as mocked:
+            mocked.return_value = MagicMock()
+            Database(DATABASE_URL, connect_args=connect_args)
+        _, kwargs = mocked.call_args
+        assert kwargs["connect_args"] == connect_args
 
     @pytest.mark.anyio
     async def test_url_mode_owns_engine(self):

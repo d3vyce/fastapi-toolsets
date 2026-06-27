@@ -31,6 +31,25 @@ async def list_users(session: AsyncSession = Depends(db)):
 
 The `Database` instance **is** the dependency: use it directly as `Depends(db)`. The whole request runs as a single transaction (CRUD writes use savepoints under it).
 
+The **URL** may be a plain string or a Pydantic [`PostgresDsn`](https://docs.pydantic.dev/latest/api/networks/#pydantic.networks.PostgresDsn). In URL mode you can tune the engine: pass `connect_args` for DBAPI-level options and any other keyword for `create_async_engine` (e.g. `pool_size`, `echo`, `pool_pre_ping`):
+
+```python
+from pydantic_settings import BaseSettings
+from pydantic import PostgresDsn
+
+class Settings(BaseSettings):
+    database_url: PostgresDsn
+
+settings = Settings()
+
+db = Database(
+    settings.database_url,
+    pool_size=20,
+    pool_pre_ping=True,
+    connect_args={"server_settings": {"application_name": "myapp"}},
+)
+```
+
 ## Committing before the response
 
 [`db.install(app)`](../reference/db.md#fastapi_toolsets.db.Database) adds a middleware that commits the request's session when the response starts, after the endpoint returns and before the body is sent. With the middleware installed, the dependency does not commit again.
