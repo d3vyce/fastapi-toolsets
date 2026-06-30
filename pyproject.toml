@@ -50,17 +50,13 @@ cli = [
 metrics = [
     "prometheus_client>=0.20.0",
 ]
-security = [
-    "async-lru>=1.0",
-    "httpx>=0.25.0",
-]
 pytest = [
     "httpx>=0.25.0",
     "pytest-xdist>=3.0.0",
     "pytest>=8.0.0",
 ]
 all = [
-    "fastapi-toolsets[cli,metrics,pytest,security]",
+    "fastapi-toolsets[cli,metrics,pytest]",
 ]
 
 [project.scripts]
