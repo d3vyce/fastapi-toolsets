@@ -2,6 +2,7 @@
 
 import uuid
 from enum import Enum
+from typing import cast
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -812,6 +813,45 @@ class TestLoadFixtures:
             db_session, registry, "int_roles", strategy=LoadStrategy.SKIP_EXISTING
         )
         assert len(result["int_roles"]) == 1
+        # The generated autoincrement PK must be written back onto the
+        # returned instance, not just visible via a fresh DB query.
+        assert cast(IntRole, result["int_roles"][0]).id is not None
+
+    @pytest.mark.anyio
+    async def test_insert_refreshes_autoincrement_pk_on_returned_instance(
+        self, db_session: AsyncSession
+    ):
+        """INSERT strategy writes the generated PK back onto the returned instance."""
+        registry = FixtureRegistry()
+
+        @registry.register
+        def int_roles():
+            return [IntRole(name="auto")]
+
+        result = await load_fixtures(
+            db_session, registry, "int_roles", strategy=LoadStrategy.INSERT
+        )
+        assert cast(IntRole, result["int_roles"][0]).id is not None
+
+    @pytest.mark.anyio
+    async def test_merge_refreshes_server_default_on_returned_instance(
+        self, db_session: AsyncSession
+    ):
+        """MERGE strategy refreshes the returned instance with server-generated values."""
+        registry = FixtureRegistry()
+
+        @registry.register
+        def challenges():
+            return [
+                Challenge(id=uuid.uuid4(), title="Solo", challenge_type="challenge")
+            ]
+
+        result = await load_fixtures(
+            db_session, registry, "challenges", strategy=LoadStrategy.MERGE
+        )
+        # `points` has a column default of 0 applied by the DB, never set on
+        # the in-memory instance — the returned object must reflect it.
+        assert cast(Challenge, result["challenges"][0]).points == 0
 
 
 class TestLoadFixturesByContext:

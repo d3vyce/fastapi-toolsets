@@ -1,16 +1,14 @@
 """Pytest plugin for using FixtureRegistry fixtures in tests."""
 
-from collections.abc import Callable, Sequence
-from typing import Any, cast
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import DeclarativeBase, selectinload
-from sqlalchemy.orm.interfaces import ExecutableOption, ORMOption
+from sqlalchemy.orm import DeclarativeBase
 
-from ..db import transaction
 from ..fixtures import FixtureRegistry, LoadStrategy
+from ..fixtures.utils import _get_primary_key, _load_ordered, _refresh_loaded
 
 
 def register_fixtures(
@@ -83,56 +81,38 @@ def _create_fixture_function(
     fixture_name: str,
     dependencies: list[str],
     strategy: LoadStrategy,
-) -> Callable[..., Any]:
+) -> Any:
     """Create a fixture function with the correct signature.
 
     The function signature must include all dependencies as parameters
-    for pytest to resolve them correctly.
+    for pytest (and pytest-anyio's fixture chaining) to resolve them
+    correctly — dynamic resolution via ``request.getfixturevalue`` deadlocks
+    when called from inside an already-running async fixture.
     """
-    # Get the fixture definition
     fixture_def = registry.get(fixture_name)
 
-    # Build the function dynamically with correct parameters
-    # We need the session as first param, then all dependencies
     async def fixture_func(**kwargs: Any) -> Sequence[DeclarativeBase]:
-        # Get session from kwargs (first dependency)
         session: AsyncSession = kwargs[dependencies[0]]
+        result = (await _load_ordered(session, registry, [fixture_name], strategy))[
+            fixture_name
+        ]
 
-        # Load the fixture data
-        instances = list(fixture_def.func())
+        if strategy is LoadStrategy.SKIP_EXISTING:
+            # _load_ordered only returns newly-inserted rows for this
+            # strategy (the CLI seeding contract). A test fixture should
+            # still hand back the full, usable set including rows that
+            # were already present, so top up with those.
+            declared = list(fixture_def.func())
+            result_pks = {_get_primary_key(r) for r in result}
+            missing = [
+                d
+                for d in declared
+                if (pk := _get_primary_key(d)) is not None and pk not in result_pks
+            ]
+            if missing:
+                result = result + await _refresh_loaded(session, missing)
 
-        if not instances:
-            return []
-
-        loaded: list[DeclarativeBase] = []
-
-        async with transaction(session):
-            for instance in instances:
-                if strategy == LoadStrategy.INSERT:
-                    session.add(instance)
-                    loaded.append(instance)
-                elif strategy == LoadStrategy.MERGE:
-                    merged = await session.merge(instance)
-                    loaded.append(merged)
-                elif strategy == LoadStrategy.SKIP_EXISTING:  # pragma: no branch
-                    pk = _get_primary_key(instance)
-                    if pk is not None:
-                        existing = await session.get(type(instance), pk)
-                        if existing is None:
-                            session.add(instance)
-                            loaded.append(instance)
-                        else:
-                            loaded.append(existing)
-                    else:
-                        session.add(instance)
-                        loaded.append(instance)
-
-        if loaded:  # pragma: no branch
-            load_options = _relationship_load_options(type(loaded[0]))
-            if load_options:
-                return await _reload_with_relationships(session, loaded, load_options)
-
-        return loaded
+        return result
 
     # Update function signature to include dependencies
     # This is needed for pytest to inject the right fixtures
@@ -146,65 +126,3 @@ def _create_fixture_function(
     created_func.__doc__ = f"Load {fixture_name} fixture data."
 
     return created_func
-
-
-def _relationship_load_options(model: type[DeclarativeBase]) -> list[ExecutableOption]:
-    """Build selectinload options for all direct relationships on a model."""
-    return [
-        selectinload(getattr(model, rel.key)) for rel in model.__mapper__.relationships
-    ]
-
-
-async def _reload_with_relationships(
-    session: AsyncSession,
-    instances: list[DeclarativeBase],
-    load_options: list[ExecutableOption],
-) -> list[DeclarativeBase]:
-    """Reload instances in a single bulk query with relationship eager-loading.
-
-    Uses one SELECT … WHERE pk IN (…) so selectinload can batch all relationship
-    queries — 1 + N_relationships round-trips regardless of how many instances
-    there are, instead of one session.get() per instance.
-
-    Preserves the original insertion order.
-    """
-    model = type(instances[0])
-    mapper = model.__mapper__
-    pk_cols = mapper.primary_key
-
-    if len(pk_cols) == 1:
-        pk_attr = getattr(model, pk_cols[0].key)
-        pks = [getattr(inst, pk_cols[0].key) for inst in instances]
-        result = await session.execute(
-            select(model).where(pk_attr.in_(pks)).options(*load_options)
-        )
-        by_pk = {getattr(row, pk_cols[0].key): row for row in result.unique().scalars()}
-        return [by_pk[pk] for pk in pks]
-
-    # Composite PK: fall back to per-instance reload
-    reloaded: list[DeclarativeBase] = []
-    for instance in instances:
-        pk = _get_primary_key(instance)
-        refreshed = await session.get(
-            model,
-            pk,
-            options=cast(list[ORMOption], load_options),
-            populate_existing=True,
-        )
-        if refreshed is not None:  # pragma: no branch
-            reloaded.append(refreshed)
-    return reloaded
-
-
-def _get_primary_key(instance: DeclarativeBase) -> Any | None:
-    """Get the primary key value of a model instance."""
-    mapper = instance.__class__.__mapper__
-    pk_cols = mapper.primary_key
-
-    if len(pk_cols) == 1:
-        return getattr(instance, pk_cols[0].name, None)
-
-    pk_values = tuple(getattr(instance, col.name, None) for col in pk_cols)
-    if all(v is not None for v in pk_values):
-        return pk_values
-    return None
