@@ -24,7 +24,7 @@ Configure the CLI in your `pyproject.toml`:
 
 ```toml
 [tool.fastapi-toolsets]
-cli = "myapp.cli:cli"                   # Custom Typer app
+custom_cli = "myapp.cli:cli"                   # Custom Typer app
 fixtures = "myapp.fixtures:registry"    # FixtureRegistry instance
 db_context = "myapp.db:db_context"      # Async context manager for sessions
 ```
@@ -99,7 +99,7 @@ def hello():
 
 ```toml
 [tool.fastapi-toolsets]
-cli = "myapp.cli:cli"
+custom_cli = "myapp.cli:cli"
 ```
 
 ---
