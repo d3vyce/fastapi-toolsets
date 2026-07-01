@@ -10,5 +10,4 @@ __all__ = [
     "LoadStrategy",
     "load_fixtures",
     "load_fixtures_by_context",
-    "register_fixtures",
 ]

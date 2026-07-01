@@ -34,7 +34,7 @@ def list_fixtures(
 ) -> None:
     """List all registered fixtures."""
     registry = get_fixtures_registry()
-    fixtures = registry.get_by_context(context.value) if context else registry.get_all()
+    fixtures = registry.get_by_context(context) if context else registry.get_all()
 
     if not fixtures:
         logger.info("No fixtures found.")
@@ -74,7 +74,7 @@ async def load(
     registry = get_fixtures_registry()
     db_context = get_db_context()
 
-    context_list = list(contexts) if contexts else [Context.BASE]
+    context_list = contexts or [Context.BASE]
 
     ordered = registry.resolve_context_dependencies(*context_list)
 
@@ -82,15 +82,14 @@ async def load(
         logger.info("No fixtures to load for the specified context(s).")
         return
 
-    logger.info("Fixtures to load (%s strategy):", strategy.value)
-    for name in ordered:
-        fixture = registry.get(name)
-        instances = list(fixture.func())
-        model_name = type(instances[0]).__name__ if instances else "?"
-        logger.info("  - %s: %d %s(s)", name, len(instances), model_name)
-
     if dry_run:
-        logger.info("Dry run - no changes made")
+        logger.info("Fixtures to load (%s strategy):", strategy.value)
+        for name in ordered:
+            variants = registry.get_load_variants(name, *context_list)
+            instances = [inst for v in variants for inst in v.func()]
+            model_name = type(instances[0]).__name__ if instances else "?"
+            logger.info("  - %s: %d %s(s)", name, len(instances), model_name)
+        logger.info("[Dry run - no changes made]")
         return
 
     async with db_context() as session:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
 import typer
 
@@ -12,6 +12,8 @@ from .pyproject import find_pyproject, load_pyproject
 
 if TYPE_CHECKING:
     from ..fixtures import FixtureRegistry
+
+T = TypeVar("T")
 
 
 def _ensure_project_in_path():
@@ -88,19 +90,39 @@ def get_config_value(key: str, required: bool = False) -> Any | None:
     return value
 
 
+@overload
+def _import_typed(
+    key: str, expected_type: type[T], *, required: Literal[True]
+) -> T: ...  # pragma: no cover
+@overload
+def _import_typed(
+    key: str, expected_type: type[T], *, required: bool
+) -> T | None: ...  # pragma: no cover
+def _import_typed(key: str, expected_type: type[T], *, required: bool) -> T | None:
+    """Import a config value by key and validate its type.
+
+    Raises:
+        typer.BadParameter: If required and missing, or if the imported
+            value isn't an instance of *expected_type*.
+    """
+    import_path = get_config_value(key, required=required)
+    if not import_path:
+        return None
+
+    obj = import_from_string(import_path)
+    if not isinstance(obj, expected_type):
+        raise typer.BadParameter(
+            f"'{key}' must be a {expected_type.__name__} instance, got {type(obj).__name__}"
+        )
+
+    return obj
+
+
 def get_fixtures_registry() -> FixtureRegistry:
     """Import and return the fixtures registry from config."""
     from ..fixtures import FixtureRegistry
 
-    import_path = get_config_value("fixtures", required=True)
-    registry = import_from_string(import_path)
-
-    if not isinstance(registry, FixtureRegistry):
-        raise typer.BadParameter(
-            f"'fixtures' must be a FixtureRegistry instance, got {type(registry).__name__}"
-        )
-
-    return registry
+    return _import_typed("fixtures", FixtureRegistry, required=True)
 
 
 def get_db_context() -> Any:
@@ -111,15 +133,4 @@ def get_db_context() -> Any:
 
 def get_custom_cli() -> typer.Typer | None:
     """Import and return the custom CLI Typer instance from config."""
-    import_path = get_config_value("custom_cli")
-    if not import_path:
-        return None
-
-    custom = import_from_string(import_path)
-
-    if not isinstance(custom, typer.Typer):
-        raise typer.BadParameter(
-            f"'custom_cli' must be a Typer instance, got {type(custom).__name__}"
-        )
-
-    return custom
+    return _import_typed("custom_cli", typer.Typer, required=False)

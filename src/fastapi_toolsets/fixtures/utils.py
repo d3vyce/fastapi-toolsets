@@ -1,5 +1,6 @@
 """Fixture loading utilities for database seeding."""
 
+from collections.abc import Iterator
 from enum import Enum
 from typing import Any, cast
 
@@ -93,33 +94,42 @@ def _group_by_column_set(
     return list(groups.values())
 
 
+def _grouped_table_dicts(
+    model_cls: type[DeclarativeBase], instances: list[DeclarativeBase]
+) -> Iterator[
+    tuple[type[DeclarativeBase], list[dict[str, Any]], list[DeclarativeBase]]
+]:
+    """Yield (cls, group_dicts, group_instances) per table in the inheritance
+    chain and per column-set group, skipping empty groups.
+    """
+    for cls in _get_table_chain(model_cls):
+        dicts = [_instance_to_dict_for_cls(i, cls) for i in instances]
+        for group_dicts, group_instances in _group_by_column_set(dicts, instances):
+            if group_dicts and group_dicts[0]:  # pragma: no branch
+                yield cls, group_dicts, group_instances
+
+
 async def _batch_insert(
     session: AsyncSession,
     model_cls: type[DeclarativeBase],
     instances: list[DeclarativeBase],
 ) -> None:
     """INSERT all instances, raises on conflict."""
-    for cls in _get_table_chain(model_cls):
+    for cls, group_dicts, group_instances in _grouped_table_dicts(model_cls, instances):
         table = cast(Table, cls.__table__)
-        dicts = [_instance_to_dict_for_cls(i, cls) for i in instances]
-        for group_dicts, group_instances in _group_by_column_set(dicts, instances):
-            if not group_dicts or not group_dicts[0]:  # pragma: no cover
-                continue
-            missing_pk_cols = [
-                col
-                for col in table.primary_key.columns
-                if col.key not in group_dicts[0]
-            ]
-            if not missing_pk_cols:
-                await session.execute(pg_insert(table), group_dicts)
-                continue
-            stmt = pg_insert(table).returning(
-                *missing_pk_cols, sort_by_parameter_order=True
-            )
-            result = await session.execute(stmt, group_dicts)
-            for inst, row in zip(group_instances, result):
-                for col, val in zip(missing_pk_cols, row):
-                    setattr(inst, col.key, val)
+        missing_pk_cols = [
+            col for col in table.primary_key.columns if col.key not in group_dicts[0]
+        ]
+        if not missing_pk_cols:
+            await session.execute(pg_insert(table), group_dicts)
+            continue
+        stmt = pg_insert(table).returning(
+            *missing_pk_cols, sort_by_parameter_order=True
+        )
+        result = await session.execute(stmt, group_dicts)
+        for inst, row in zip(group_instances, result):
+            for col, val in zip(missing_pk_cols, row):
+                setattr(inst, col.key, val)
 
 
 async def _batch_merge(
@@ -128,30 +138,26 @@ async def _batch_merge(
     instances: list[DeclarativeBase],
 ) -> None:
     """UPSERT: insert new rows, update existing ones with the provided values."""
-    for cls in _get_table_chain(model_cls):
+    for cls, group_dicts, _ in _grouped_table_dicts(model_cls, instances):
         pk_names = [col.name for col in cls.__table__.primary_key]
         pk_names_set = set(pk_names)
         own_col_keys = {col.key for col in cls.__table__.columns}
         non_pk_cols = [k for k in own_col_keys if k not in pk_names_set]
 
-        dicts = [_instance_to_dict_for_cls(i, cls) for i in instances]
-        for group_dicts, _ in _group_by_column_set(dicts, instances):
-            if not group_dicts or not group_dicts[0]:  # pragma: no cover
-                continue
-            stmt = pg_insert(cls).values(group_dicts)
+        stmt = pg_insert(cls).values(group_dicts)
 
-            inserted_keys = set(group_dicts[0])
-            update_cols = [col for col in non_pk_cols if col in inserted_keys]
+        inserted_keys = set(group_dicts[0])
+        update_cols = [col for col in non_pk_cols if col in inserted_keys]
 
-            if update_cols:
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=pk_names,
-                    set_={col: stmt.excluded[col] for col in update_cols},
-                )
-            else:
-                stmt = stmt.on_conflict_do_nothing(index_elements=pk_names)
+        if update_cols:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=pk_names,
+                set_={col: stmt.excluded[col] for col in update_cols},
+            )
+        else:
+            stmt = stmt.on_conflict_do_nothing(index_elements=pk_names)
 
-            await session.execute(stmt)
+        await session.execute(stmt)
 
 
 async def _batch_skip_existing(
@@ -288,13 +294,10 @@ async def _load_ordered(
 
     for name in ordered_names:
         variants = (
-            registry.get_variants(name, *contexts)
+            registry.get_load_variants(name, *contexts)
             if contexts is not None
             else registry.get_variants(name)
         )
-
-        if contexts is not None and not variants:
-            variants = registry.get_variants(name)
 
         if not variants:  # pragma: no cover
             results[name] = []
@@ -327,7 +330,7 @@ async def _load_ordered(
             loaded = await _refresh_loaded(session, loaded)
 
         results[name] = loaded
-        logger.info(f"Loaded fixture '{name}': {len(loaded)} {model_name}(s)")
+        logger.info("Loaded fixture '%s': %d %s(s)", name, len(loaded), model_name)
 
     return results
 

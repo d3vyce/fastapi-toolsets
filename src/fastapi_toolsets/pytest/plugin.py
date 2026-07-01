@@ -55,7 +55,7 @@ def register_fixtures(
 
         # Build list of pytest fixture dependencies
         pytest_deps = [session_fixture]
-        for dep in fixture.depends_on:
+        for dep in registry.get_dependencies(fixture.name):
             pytest_deps.append(f"{prefix}{dep}")
 
         # Create the fixture function
