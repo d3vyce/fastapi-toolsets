@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ...fixtures import Context, LoadStrategy, load_fixtures_by_context
+from ...logger import get_logger
 from ..config import get_db_context, get_fixtures_registry
 from ..utils import async_command
 
@@ -16,6 +17,7 @@ fixture_cli = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+logger = get_logger()
 
 
 @fixture_cli.command("list")
@@ -35,7 +37,7 @@ def list_fixtures(
     fixtures = registry.get_by_context(context.value) if context else registry.get_all()
 
     if not fixtures:
-        print("No fixtures found.")
+        logger.info("No fixtures found.")
         return
 
     table = Table("Name", "Contexts", "Dependencies")
@@ -46,7 +48,7 @@ def list_fixtures(
         table.add_row(fixture.name, contexts, deps)
 
     console.print(table)
-    print(f"\nTotal: {len(fixtures)} fixture(s)")
+    logger.info("Total: %d fixture(s)", len(fixtures))
 
 
 @fixture_cli.command("load")
@@ -77,18 +79,18 @@ async def load(
     ordered = registry.resolve_context_dependencies(*context_list)
 
     if not ordered:
-        print("No fixtures to load for the specified context(s).")
+        logger.info("No fixtures to load for the specified context(s).")
         return
 
-    print(f"\nFixtures to load ({strategy.value} strategy):")
+    logger.info("Fixtures to load (%s strategy):", strategy.value)
     for name in ordered:
         fixture = registry.get(name)
         instances = list(fixture.func())
         model_name = type(instances[0]).__name__ if instances else "?"
-        print(f"  - {name}: {len(instances)} {model_name}(s)")
+        logger.info("  - %s: %d %s(s)", name, len(instances), model_name)
 
     if dry_run:
-        print("\n[Dry run - no changes made]")
+        logger.info("Dry run - no changes made")
         return
 
     async with db_context() as session:
@@ -97,4 +99,4 @@ async def load(
         )
 
     total = sum(len(items) for items in result.values())
-    print(f"\nLoaded {total} record(s) successfully.")
+    logger.info("Loaded %d record(s) successfully.", total)
