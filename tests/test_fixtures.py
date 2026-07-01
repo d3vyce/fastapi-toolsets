@@ -11,8 +11,6 @@ from fastapi_toolsets.fixtures import (
     Context,
     FixtureRegistry,
     LoadStrategy,
-    get_field_by_attr,
-    get_obj_by_attr,
     load_fixtures,
     load_fixtures_by_context,
 )
@@ -931,8 +929,8 @@ class TestLoadFixturesByContext:
         assert await UserCrud.count(db_session) == 1
 
 
-class TestGetObjByAttr:
-    """Tests for get_obj_by_attr helper function."""
+class TestRegistryObj:
+    """Tests for FixtureRegistry.obj."""
 
     def setup_method(self):
         """Set up test fixtures for each test."""
@@ -974,23 +972,20 @@ class TestGetObjByAttr:
                 ),
             ]
 
-        self.roles = roles
-        self.users = users
-
     def test_get_by_id(self):
         """Get an object by its id attribute."""
-        role = get_obj_by_attr(self.roles, "id", self.role_id_1)
-        assert role.name == "admin"
+        role = self.registry.obj("roles", "id", self.role_id_1)
+        assert cast(Role, role).name == "admin"
 
     def test_get_user_by_username(self):
         """Get a user by username."""
-        user = get_obj_by_attr(self.users, "username", "bob")
+        user = cast(User, self.registry.obj("users", "username", "bob"))
         assert user.id == self.user_id_2
         assert user.email == "bob@example.com"
 
     def test_returns_first_match(self):
         """Returns the first matching object when multiple could match."""
-        user = get_obj_by_attr(self.users, "role_id", self.role_id_1)
+        user = cast(User, self.registry.obj("users", "role_id", self.role_id_1))
         assert user.username == "alice"
 
     def test_no_match_raises_stop_iteration(self):
@@ -999,16 +994,37 @@ class TestGetObjByAttr:
             StopIteration,
             match="No object with name=nonexistent found in fixture 'roles'",
         ):
-            get_obj_by_attr(self.roles, "name", "nonexistent")
+            self.registry.obj("roles", "name", "nonexistent")
 
     def test_no_match_on_wrong_value_type(self):
         """Raises StopIteration when value type doesn't match."""
         with pytest.raises(StopIteration):
-            get_obj_by_attr(self.roles, "id", "not-a-uuid")
+            self.registry.obj("roles", "id", "not-a-uuid")
+
+    def test_unknown_fixture_raises_key_error(self):
+        """Raises KeyError when the fixture name isn't registered."""
+        with pytest.raises(KeyError):
+            self.registry.obj("unknown", "id", self.role_id_1)
+
+    def test_searches_across_context_variants(self):
+        """obj() finds matches across all context variants of a fixture name, not just one."""
+        registry = FixtureRegistry()
+        tester_id = uuid.uuid4()
+
+        @registry.register(contexts=[Context.BASE])
+        def variant_users() -> list[User]:
+            return [User(id=uuid.uuid4(), username="admin", email="admin@x.com")]
+
+        @registry.register(contexts=[Context.TESTING])
+        def variant_users() -> list[User]:  # noqa: F811
+            return [User(id=tester_id, username="tester", email="tester@x.com")]
+
+        user = cast(User, registry.obj("variant_users", "username", "tester"))
+        assert user.id == tester_id
 
 
-class TestGetFieldByAttr:
-    """Tests for get_field_by_attr helper function."""
+class TestRegistryField:
+    """Tests for FixtureRegistry.field."""
 
     def setup_method(self):
         self.registry = FixtureRegistry()
@@ -1024,22 +1040,20 @@ class TestGetFieldByAttr:
                 Role(id=role_id_2, name="user"),
             ]
 
-        self.roles = roles
-
     def test_returns_id_by_default(self):
         """Returns the id field when no field is specified."""
-        result = get_field_by_attr(self.roles, "name", "admin")
+        result = self.registry.field("roles", "name", "admin")
         assert result == self.role_id_1
 
     def test_returns_specified_field(self):
         """Returns the requested field instead of id."""
-        result = get_field_by_attr(self.roles, "id", self.role_id_2, field="name")
+        result = self.registry.field("roles", "id", self.role_id_2, field="name")
         assert result == "user"
 
     def test_no_match_raises_stop_iteration(self):
-        """Propagates StopIteration from get_obj_by_attr when no match found."""
+        """Propagates StopIteration from obj() when no match found."""
         with pytest.raises(StopIteration, match="No object with name=missing"):
-            get_field_by_attr(self.roles, "name", "missing")
+            self.registry.field("roles", "name", "missing")
 
 
 class TestGetPrimaryKey:

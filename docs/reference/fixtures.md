@@ -12,7 +12,6 @@ from fastapi_toolsets.fixtures import (
     FixtureRegistry,
     load_fixtures,
     load_fixtures_by_context,
-    get_obj_by_attr,
 )
 ```
 
@@ -27,5 +26,3 @@ from fastapi_toolsets.fixtures import (
 ## ::: fastapi_toolsets.fixtures.utils.load_fixtures
 
 ## ::: fastapi_toolsets.fixtures.utils.load_fixtures_by_context
-
-## ::: fastapi_toolsets.fixtures.utils.get_obj_by_attr

@@ -1,6 +1,5 @@
 """Fixture loading utilities for database seeding."""
 
-from collections.abc import Callable, Sequence
 from enum import Enum
 from typing import Any, cast
 
@@ -13,7 +12,6 @@ from sqlalchemy.orm.interfaces import ExecutableOption, ORMOption
 
 from ..db import transaction
 from ..logger import get_logger
-from ..types import ModelType
 from .enum import LoadStrategy
 from .registry import FixtureRegistry, _normalize_contexts
 
@@ -346,56 +344,6 @@ def _get_primary_key(instance: DeclarativeBase) -> Any | None:
     if all(v is not None for v in pk_values):
         return pk_values
     return None
-
-
-def get_obj_by_attr(
-    fixtures: Callable[[], Sequence[ModelType]], attr_name: str, value: Any
-) -> ModelType:
-    """Get a SQLAlchemy model instance by matching an attribute value.
-
-    Args:
-        fixtures: A fixture function registered via ``@registry.register``
-            that returns a sequence of SQLAlchemy model instances.
-        attr_name: Name of the attribute to match against.
-        value: Value to match.
-
-    Returns:
-        The first model instance where the attribute matches the given value.
-
-    Raises:
-        StopIteration: If no matching object is found in the fixture group.
-    """
-    try:
-        return next(obj for obj in fixtures() if getattr(obj, attr_name) == value)
-    except StopIteration:
-        raise StopIteration(
-            f"No object with {attr_name}={value} found in fixture '{getattr(fixtures, '__name__', repr(fixtures))}'"
-        ) from None
-
-
-def get_field_by_attr(
-    fixtures: Callable[[], Sequence[ModelType]],
-    attr_name: str,
-    value: Any,
-    *,
-    field: str = "id",
-) -> Any:
-    """Get a single field value from a fixture object matched by an attribute.
-
-    Args:
-        fixtures: A fixture function registered via ``@registry.register``
-            that returns a sequence of SQLAlchemy model instances.
-        attr_name: Name of the attribute to match against.
-        value: Value to match.
-        field: Attribute name to return from the matched object (default: ``"id"``).
-
-    Returns:
-        The value of ``field`` on the first matching model instance.
-
-    Raises:
-        StopIteration: If no matching object is found in the fixture group.
-    """
-    return getattr(get_obj_by_attr(fixtures, attr_name, value), field)
 
 
 async def load_fixtures(

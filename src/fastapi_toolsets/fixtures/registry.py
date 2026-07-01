@@ -227,6 +227,49 @@ class FixtureRegistry:
         """Get all registered fixtures (all variants of all names)."""
         return [f for variants in self._fixtures.values() for f in variants]
 
+    def obj(self, name: str, attr_name: str, value: Any) -> DeclarativeBase:
+        """Get a model instance from a registered fixture by attribute value.
+
+        Args:
+            name: Fixture name to look up.
+            attr_name: Name of the attribute to match against.
+            value: Value to match.
+
+        Returns:
+            The first model instance where the attribute matches the given value.
+
+        Raises:
+            KeyError: If no fixture named *name* is registered.
+            StopIteration: If no matching object is found.
+        """
+        instances = (
+            obj for variant in self.get_variants(name) for obj in variant.func()
+        )
+        try:
+            return next(obj for obj in instances if getattr(obj, attr_name) == value)
+        except StopIteration:
+            raise StopIteration(
+                f"No object with {attr_name}={value} found in fixture '{name}'"
+            ) from None
+
+    def field(self, name: str, attr_name: str, value: Any, *, field: str = "id") -> Any:
+        """Get a single field value from a fixture object matched by an attribute.
+
+        Args:
+            name: Fixture name to look up.
+            attr_name: Name of the attribute to match against.
+            value: Value to match.
+            field: Attribute name to return from the matched object (default: ``"id"``).
+
+        Returns:
+            The value of ``field`` on the first matching model instance.
+
+        Raises:
+            KeyError: If no fixture named *name* is registered.
+            StopIteration: If no matching object is found.
+        """
+        return getattr(self.obj(name, attr_name, value), field)
+
     def get_by_context(self, *contexts: str | Enum) -> list[Fixture]:
         """Get fixtures for specific contexts."""
         context_values = set(_normalize_contexts(contexts))
