@@ -20,7 +20,7 @@ from fastapi_toolsets.pytest import (
     register_fixtures,
     worker_database_url,
 )
-from fastapi_toolsets.pytest.plugin import (
+from fastapi_toolsets.fixtures.utils import (
     _get_primary_key,
     _relationship_load_options,
     _reload_with_relationships,

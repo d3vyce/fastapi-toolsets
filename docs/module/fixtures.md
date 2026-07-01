@@ -147,18 +147,26 @@ Fixtures with the same name are allowed as long as their context sets do not ove
 
 ## Looking up fixture instances
 
-[`get_obj_by_attr`](../reference/fixtures.md#fastapi_toolsets.fixtures.utils.get_obj_by_attr) retrieves a specific instance from a fixture function by attribute value — useful when building cross-fixture `depends_on` relationships:
+[`FixtureRegistry.obj`](../reference/fixtures.md#fastapi_toolsets.fixtures.registry.FixtureRegistry.obj) retrieves a specific instance from a registered fixture by attribute value, looked up by name on the registry — useful when building cross-fixture `depends_on` relationships:
 
 ```python
-from fastapi_toolsets.fixtures import get_obj_by_attr
-
 @fixtures.register(depends_on=["roles"])
 def users():
-    admin_role = get_obj_by_attr(roles, "name", "admin")
+    admin_role = fixtures.obj("roles", "name", "admin")
     return [User(id=1, username="alice", role_id=admin_role.id)]
 ```
 
-Raises `StopIteration` if no matching instance is found.
+Looking the fixture up by name (instead of importing the `roles` function directly) means fixture modules never need to import each other, which avoids circular imports in larger projects split across multiple files — the same reason `depends_on` takes fixture names rather than the functions themselves. The registry passed in must be the one that actually contains the fixture by load time; with a single shared registry this is automatic, but if you merge registries with `include_registry`, call `obj`/`field` on the merged registry.
+
+[`FixtureRegistry.field`](../reference/fixtures.md#fastapi_toolsets.fixtures.registry.FixtureRegistry.field) is shorthand for pulling a single attribute (`id` by default):
+
+```python
+@fixtures.register(depends_on=["roles"])
+def users():
+    return [User(id=1, username="alice", role_id=fixtures.field("roles", "name", "admin"))]
+```
+
+Both raise `StopIteration` if no matching instance is found, and `KeyError` if the fixture name isn't registered.
 
 ## Pytest integration
 

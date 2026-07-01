@@ -7,10 +7,7 @@ from typing import Any, cast
 
 from sqlalchemy.orm import DeclarativeBase
 
-from ..logger import get_logger
 from .enum import Context
-
-logger = get_logger()
 
 
 def _normalize_contexts(
@@ -189,9 +186,7 @@ class FixtureRegistry:
             ValueError: If the fixture has multiple context variants — use
                 :meth:`get_variants` in that case.
         """
-        if name not in self._fixtures:
-            raise KeyError(f"Fixture '{name}' not found")
-        variants = self._fixtures[name]
+        variants = self.get_variants(name)
         if len(variants) > 1:
             raise ValueError(
                 f"Fixture '{name}' has {len(variants)} context variants. "
@@ -223,9 +218,82 @@ class FixtureRegistry:
         context_values = set(_normalize_contexts(contexts))
         return [v for v in variants if set(v.contexts) & context_values]
 
+    def get_load_variants(self, name: str, *contexts: str | Enum) -> list[Fixture]:
+        """Return variants for *name* filtered by *contexts*.
+
+        Raises:
+            KeyError: If no fixture with *name* is registered.
+        """
+        variants = self.get_variants(name, *contexts)
+        if contexts and not variants:
+            return self.get_variants(name)
+        return variants
+
     def get_all(self) -> list[Fixture]:
         """Get all registered fixtures (all variants of all names)."""
         return [f for variants in self._fixtures.values() for f in variants]
+
+    def get_dependencies(self, name: str) -> list[str]:
+        """Get the union of ``depends_on`` across all variants of *name*.
+
+        Raises:
+            KeyError: If no fixture named *name* is registered.
+        """
+        variants = self._fixtures.get(name)
+        if variants is None:
+            raise KeyError(f"Fixture '{name}' not found")
+
+        seen: set[str] = set()
+        deps: list[str] = []
+        for variant in variants:
+            for dep in variant.depends_on:
+                if dep not in seen:
+                    deps.append(dep)
+                    seen.add(dep)
+        return deps
+
+    def obj(self, name: str, attr_name: str, value: Any) -> DeclarativeBase:
+        """Get a model instance from a registered fixture by attribute value.
+
+        Args:
+            name: Fixture name to look up.
+            attr_name: Name of the attribute to match against.
+            value: Value to match.
+
+        Returns:
+            The first model instance where the attribute matches the given value.
+
+        Raises:
+            KeyError: If no fixture named *name* is registered.
+            StopIteration: If no matching object is found.
+        """
+        instances = (
+            obj for variant in self.get_variants(name) for obj in variant.func()
+        )
+        try:
+            return next(obj for obj in instances if getattr(obj, attr_name) == value)
+        except StopIteration:
+            raise StopIteration(
+                f"No object with {attr_name}={value} found in fixture '{name}'"
+            ) from None
+
+    def field(self, name: str, attr_name: str, value: Any, *, field: str = "id") -> Any:
+        """Get a single field value from a fixture object matched by an attribute.
+
+        Args:
+            name: Fixture name to look up.
+            attr_name: Name of the attribute to match against.
+            value: Value to match.
+            field: Attribute name to return from the matched object (default: ``"id"``).
+
+        Returns:
+            The value of ``field`` on the first matching model instance.
+
+        Raises:
+            KeyError: If no fixture named *name* is registered.
+            StopIteration: If no matching object is found.
+        """
+        return getattr(self.obj(name, attr_name, value), field)
 
     def get_by_context(self, *contexts: str | Enum) -> list[Fixture]:
         """Get fixtures for specific contexts."""
@@ -254,7 +322,6 @@ class FixtureRegistry:
             ValueError: If circular dependency detected
         """
         resolved: list[str] = []
-        seen: set[str] = set()
         visiting: set[str] = set()
 
         def visit(name: str) -> None:
@@ -264,25 +331,11 @@ class FixtureRegistry:
                 raise ValueError(f"Circular dependency detected: {name}")
 
             visiting.add(name)
-            variants = self._fixtures.get(name)
-            if variants is None:
-                raise KeyError(f"Fixture '{name}' not found")
-
-            # Union of depends_on across all variants, preserving first-seen order.
-            seen_deps: set[str] = set()
-            all_deps: list[str] = []
-            for variant in variants:
-                for dep in variant.depends_on:
-                    if dep not in seen_deps:
-                        all_deps.append(dep)
-                        seen_deps.add(dep)
-
-            for dep in all_deps:
+            for dep in self.get_dependencies(name):
                 visit(dep)
 
             visiting.remove(name)
             resolved.append(name)
-            seen.add(name)
 
         for name in names:
             visit(name)
@@ -303,9 +356,4 @@ class FixtureRegistry:
         # appear multiple times if it has variants in different contexts).
         names = list(dict.fromkeys(f.name for f in context_fixtures))
 
-        all_deps: set[str] = set()
-        for name in names:
-            deps = self.resolve_dependencies(name)
-            all_deps.update(deps)
-
-        return self.resolve_dependencies(*all_deps)
+        return self.resolve_dependencies(*names)
