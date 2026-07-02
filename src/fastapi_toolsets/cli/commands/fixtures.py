@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ...fixtures import Context, LoadStrategy, load_fixtures_by_context
+from ...fixtures import Context, LoadStrategy
 from ...logger import get_logger
 from ..config import get_db_context, get_fixtures_registry
 from ..utils import async_command
@@ -71,6 +71,8 @@ async def load(
     ] = False,
 ) -> None:
     """Load fixtures into the database."""
+    from ...fixtures import load_fixtures_by_context
+
     registry = get_fixtures_registry()
     db_context = get_db_context()
 
