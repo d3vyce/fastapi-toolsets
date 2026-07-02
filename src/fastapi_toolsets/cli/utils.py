@@ -1,6 +1,5 @@
 """CLI utility functions."""
 
-import asyncio
 import functools
 from collections.abc import Callable, Coroutine
 from typing import Any, ParamSpec, TypeVar
@@ -24,6 +23,8 @@ def async_command(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, T]:
 
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        import asyncio
+
         return asyncio.run(func(*args, **kwargs))
 
     return wrapper
