@@ -690,6 +690,13 @@ class TestWaitForRowChange:
             await wait_for_row_change(db_session, Role, fake_id, interval=0.05)
 
     @pytest.mark.anyio
+    async def test_unbound_session_raises_type_error(self):
+        """Raises TypeError when the session has no bind to open a watcher on."""
+        unbound = AsyncSession()
+        with pytest.raises(TypeError, match="requires a session bound to an engine"):
+            await wait_for_row_change(unbound, Role, uuid.uuid4())
+
+    @pytest.mark.anyio
     async def test_timeout_raises(self, db_session: AsyncSession):
         """Raises TimeoutError when no change is detected within timeout."""
         role = Role(name="timeout_role")
@@ -780,6 +787,43 @@ class TestWaitForRowChange:
         with pytest.raises(NotFoundError):
             await wait_for_row_change(db_session, Role, role.id, interval=0.05)
         await delete_task
+
+    @pytest.mark.anyio
+    async def test_does_not_disturb_ambient_transaction(
+        self, db_session: AsyncSession, engine
+    ):
+        """A read-only ambient transaction around the call survives untouched."""
+        role = Role(name="ambient_role")
+        db_session.add(role)
+        await db_session.commit()
+
+        async def update_later():
+            await asyncio.sleep(0.15)
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as other:
+                r = await other.get(Role, role.id)
+                assert r is not None
+                r.name = "ambient_updated"
+                await other.commit()
+
+        update_task = asyncio.create_task(update_later())
+        async with transaction(db_session):
+            # A read before the watch, establishing an ambient transaction
+            # that must remain usable once wait_for_row_change returns.
+            await db_session.get(Role, role.id)
+            result = await wait_for_row_change(
+                db_session, Role, role.id, interval=0.05, timeout=2.0
+            )
+            await update_task
+            assert result.name == "ambient_updated"
+            # The ambient transaction must still be open and usable here.
+            assert db_session.in_transaction()
+            other_role = Role(name="added_within_ambient_tx")
+            db_session.add(other_role)
+
+        # transaction() committed cleanly on exit; the write above landed.
+        check = await db_session.get(Role, other_role.id)
+        assert check is not None
 
 
 class TestCreateDatabase:
