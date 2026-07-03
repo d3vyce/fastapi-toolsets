@@ -204,6 +204,11 @@ async def _invoke_callback(
         await result
 
 
+async def _reload_if_present(session: AsyncSession, obj: Any, state: Any) -> None:
+    """Re-populate *obj* from the DB if its row still exists."""
+    await session.get(type(obj), state.key[1], populate_existing=True)
+
+
 class EventSession(AsyncSession):
     """AsyncSession subclass that dispatches lifecycle callbacks after commit."""
 
@@ -253,7 +258,7 @@ class EventSession(AsyncSession):
                     state is None or state.detached or state.transient
                 ):  # pragma: no cover
                     continue
-                await self.refresh(obj)
+                await _reload_if_present(self, obj, state)
                 for handler in _get_handlers(type(obj), ModelEvent.CREATE):
                     await _invoke_callback(handler, obj, ModelEvent.CREATE, None)
             except Exception as exc:
@@ -277,7 +282,7 @@ class EventSession(AsyncSession):
                     state is None or state.detached or state.transient
                 ):  # pragma: no cover
                     continue
-                await self.refresh(obj)
+                await _reload_if_present(self, obj, state)
                 for handler in _get_handlers(type(obj), ModelEvent.UPDATE):
                     await _invoke_callback(handler, obj, ModelEvent.UPDATE, changes)
             except Exception as exc:
