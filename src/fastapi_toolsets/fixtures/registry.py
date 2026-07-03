@@ -17,6 +17,11 @@ def _normalize_contexts(
     return [c.value if isinstance(c, Enum) else c for c in contexts]
 
 
+def _context_filter_values(contexts: tuple[str | Enum, ...]) -> set[str]:
+    """Normalize *contexts* for filtering, always including Context.BASE."""
+    return set(_normalize_contexts(contexts)) | {Context.BASE.value}
+
+
 @dataclass
 class Fixture:
     """A fixture definition with metadata."""
@@ -67,8 +72,6 @@ class FixtureRegistry:
         @fixtures.register(contexts=[Context.TESTING])
         def users():
             return [User(id=2, username="tester")]
-        # load_fixtures_by_context(..., Context.BASE, Context.TESTING)
-        # → loads both User(admin) and User(tester) under the "users" name
         ```
     """
 
@@ -200,8 +203,9 @@ class FixtureRegistry:
         Args:
             name: Fixture name.
             *contexts: If given, only return variants whose context set
-                intersects with these values.  Both :class:`Context` enum
-                values and plain strings are accepted.
+                intersects with these values (:class:`Context.BASE` variants
+                are always included).  Both :class:`Context` enum values and
+                plain strings are accepted.
 
         Returns:
             List of matching :class:`Fixture` objects (may be empty when a
@@ -215,7 +219,7 @@ class FixtureRegistry:
         variants = self._fixtures[name]
         if not contexts:
             return list(variants)
-        context_values = set(_normalize_contexts(contexts))
+        context_values = _context_filter_values(contexts)
         return [v for v in variants if set(v.contexts) & context_values]
 
     def get_load_variants(self, name: str, *contexts: str | Enum) -> list[Fixture]:
@@ -297,7 +301,7 @@ class FixtureRegistry:
 
     def get_by_context(self, *contexts: str | Enum) -> list[Fixture]:
         """Get fixtures for specific contexts."""
-        context_values = set(_normalize_contexts(contexts))
+        context_values = _context_filter_values(contexts)
         return [
             f
             for variants in self._fixtures.values()

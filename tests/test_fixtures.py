@@ -266,7 +266,34 @@ class TestFixtureRegistry:
 
         testing_fixtures = registry.get_by_context(Context.TESTING)
         names = {f.name for f in testing_fixtures}
-        assert names == {"test_data"}
+        assert names == {"test_data", "base_data"}
+
+    def test_get_by_context_always_includes_base(self):
+        """Context.BASE fixtures load even for a fully custom context."""
+        registry = FixtureRegistry()
+
+        @registry.register(contexts=[Context.BASE])
+        def base_data():
+            return []
+
+        @registry.register(contexts=["staging"])
+        def staging_data():
+            return []
+
+        names = {f.name for f in registry.get_by_context("staging")}
+        assert names == {"staging_data", "base_data"}
+
+    def test_get_load_variants_falls_back_to_all_when_context_has_no_match(self):
+        """get_load_variants returns every variant if none match the requested
+        context (and none are Context.BASE either)."""
+        registry = FixtureRegistry()
+
+        @registry.register(contexts=["staging"])
+        def env_data():
+            return []
+
+        variants = registry.get_load_variants("env_data", "production")
+        assert [v.contexts for v in variants] == [["staging"]]
 
 
 class TestIncludeRegistry:

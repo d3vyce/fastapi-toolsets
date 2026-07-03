@@ -383,8 +383,8 @@ async def load_fixtures_by_context(
     Args:
         session: Database session
         registry: Fixture registry
-        *contexts: Contexts to load (e.g., ``Context.BASE``, ``Context.TESTING``,
-            or plain strings for custom contexts)
+        *contexts: Contexts to load (e.g., ``Context.TESTING``, or plain
+            strings for custom contexts)
         strategy: How to handle existing records
 
     Returns:

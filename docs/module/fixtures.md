@@ -65,6 +65,13 @@ Both functions return a `dict[str, list[...]]` mapping each fixture name to the 
 
 A fixture with no `contexts` defined takes `Context.BASE` by default.
 
+`Context.BASE` fixtures are always included alongside whatever context you load or list — there's no way to load a non-base context in isolation:
+
+```python
+# also loads any Context.BASE fixtures, even though only TESTING is requested
+await load_fixtures_by_context(session, fixtures, Context.TESTING)
+```
+
 ### Custom contexts
 
 Plain strings and any `Enum` subclass are accepted wherever a `Context` enum is expected.
@@ -80,6 +87,7 @@ class AppContext(str, Enum):
 def staging_data():
     return [Config(key="feature_x", enabled=True)]
 
+# loads staging_data plus any Context.BASE fixtures
 await load_fixtures_by_context(session, fixtures, AppContext.STAGING)
 ```
 
@@ -108,8 +116,8 @@ def users():
 def users():
     return [User(id=2, username="tester")]
 
-# loads both admin and tester
-await load_fixtures_by_context(session, fixtures, Context.BASE, Context.TESTING)
+# loads both admin and tester (Context.BASE is included automatically)
+await load_fixtures_by_context(session, fixtures, Context.TESTING)
 ```
 
 Registering two variants with overlapping context sets raises `ValueError`.
