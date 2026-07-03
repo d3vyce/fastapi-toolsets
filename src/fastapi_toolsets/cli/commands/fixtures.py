@@ -24,7 +24,7 @@ logger = get_logger()
 def list_fixtures(
     ctx: typer.Context,
     context: Annotated[
-        Context | None,
+        str | None,
         typer.Option(
             "--context",
             "-c",
@@ -56,7 +56,7 @@ def list_fixtures(
 async def load(
     ctx: typer.Context,
     contexts: Annotated[
-        list[Context] | None,
+        list[str] | None,
         typer.Argument(help="Contexts to load."),
     ] = None,
     strategy: Annotated[
@@ -76,7 +76,7 @@ async def load(
     registry = get_fixtures_registry()
     db_context = get_db_context()
 
-    context_list = contexts or [Context.BASE]
+    context_list = contexts or [Context.BASE.value]
 
     ordered = registry.resolve_context_dependencies(*context_list)
 

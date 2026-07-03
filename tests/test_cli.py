@@ -277,6 +277,10 @@ class TestFixturesCli:
             '@registry.register(depends_on=["roles"], contexts=[Context.TESTING])\n'
             "def users():\n"
             '    return [{"id": 1, "name": "alice", "role_id": 1}]\n'
+            "\n"
+            '@registry.register(contexts=["staging"])\n'
+            "def staging_only():\n"
+            '    return [{"id": 3, "name": "staging-user"}]\n'
         )
 
         # Create db module
@@ -316,7 +320,7 @@ class TestFixturesCli:
         assert result.exit_code == 0
         assert "roles" in result.output
         assert "users" in result.output
-        assert "Total: 2 fixture(s)" in result.output
+        assert "Total: 3 fixture(s)" in result.output
 
     def test_fixtures_list_with_context(self, cli_env):
         """fixtures list --context filters by context."""
@@ -337,6 +341,27 @@ class TestFixturesCli:
         assert "Fixtures to load" in result.output
         assert "roles" in result.output
         assert "[Dry run - no changes made]" in result.output
+
+    def test_fixtures_list_with_custom_context(self, cli_env):
+        """fixtures list --context accepts contexts outside the Context enum, and
+        always includes base fixtures alongside the requested context."""
+        tmp_path, cli = cli_env
+        result = runner.invoke(cli, ["fixtures", "list", "--context", "staging"])
+
+        assert result.exit_code == 0
+        assert "staging_only" in result.output
+        assert "roles" in result.output
+        assert "Total: 2 fixture(s)" in result.output
+
+    def test_fixtures_load_custom_context_dry_run(self, cli_env):
+        """fixtures load accepts a custom context argument outside the Context enum,
+        and always loads base fixtures alongside it."""
+        tmp_path, cli = cli_env
+        result = runner.invoke(cli, ["fixtures", "load", "staging", "--dry-run"])
+
+        assert result.exit_code == 0
+        assert "staging_only" in result.output
+        assert "roles" in result.output
 
     def test_fixtures_load_invalid_strategy(self, cli_env):
         """fixtures load with invalid strategy shows error."""
