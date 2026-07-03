@@ -21,12 +21,12 @@ from fastapi_toolsets.models import (
     listens_for,
 )
 from fastapi_toolsets.models.watched import (
-    EventSession,
     _EVENT_HANDLERS,
     _SESSION_CREATES,
     _SESSION_DELETES,
     _SESSION_UPDATES,
     _WATCHED_MODELS,
+    EventSession,
     _after_flush,
     _after_rollback,
     _get_watched_fields,
@@ -1000,6 +1000,57 @@ class TestEventCallbacks:
         await mixin_session.commit()
 
         assert _test_events == []
+
+    @pytest.mark.anyio
+    async def test_create_survives_row_deleted_before_reload(self, mixin_session):
+        """A row deleted by another transaction right after commit still fires CREATE."""
+        keep = WatchedModel(status="active", other="x")
+        doomed = WatchedModel(status="active", other="x")
+        mixin_session.add_all([keep, doomed])
+        await mixin_session.flush()
+        doomed_id = doomed.id
+
+        raced = {"done": False}
+
+        async def kill_doomed_row_once():
+            if raced["done"]:
+                return
+            raced["done"] = True
+            engine = create_async_engine(DATABASE_URL, echo=False)
+            async with async_sessionmaker(engine)() as other:
+                row = await other.get(WatchedModel, doomed_id)
+                await other.delete(row)
+                await other.commit()
+            await engine.dispose()
+
+        real_get = mixin_session.get
+        real_refresh = mixin_session.refresh
+
+        def _matches_doomed(pk):
+            return pk == doomed_id or (isinstance(pk, tuple) and pk[0] == doomed_id)
+
+        async def racing_get(model, pk, *args, **kwargs):
+            if _matches_doomed(pk):
+                await kill_doomed_row_once()
+            return await real_get(model, pk, *args, **kwargs)
+
+        async def racing_refresh(obj, *args, **kwargs):
+            if getattr(obj, "id", None) == doomed_id:
+                await kill_doomed_row_once()
+            return await real_refresh(obj, *args, **kwargs)
+
+        # Patch both possible reload mechanisms (session.get / session.refresh)
+        # so this test still exercises the race regardless of which one
+        # EventSession.commit() uses internally to pick up server defaults.
+        mixin_session.get = racing_get
+        mixin_session.refresh = racing_refresh
+        with patch.object(_watched_module._logger, "error") as mock_error:
+            await mixin_session.commit()
+            mock_error.assert_not_called()
+
+        assert raced["done"]
+        created_ids = {e["obj_id"] for e in _test_events if e["event"] == "create"}
+        assert created_ids == {keep.id, doomed_id}
 
 
 class TestTransientObject:
