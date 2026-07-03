@@ -57,38 +57,50 @@ async def wait_for_row_change(
         )
         ```
     """
+    bind = getattr(session, "bind", None)
+    if bind is None:
+        raise TypeError(
+            "wait_for_row_change requires a session bound to an engine "
+            "(session.bind is None)"
+        )
+    watcher = AsyncSession(bind=bind)
+    try:
 
-    async def _reload() -> _M | None:
-        await session.rollback()
-        return await session.get(model, pk_value, populate_existing=True)
-
-    instance = await _reload()
-    if instance is None:
-        raise NotFoundError(f"{model.__name__} with pk={pk_value!r} not found")
-
-    if columns is not None:
-        watch_cols = columns
-    else:
-        watch_cols = [attr.key for attr in model.__mapper__.column_attrs]
-
-    initial = {col: getattr(instance, col) for col in watch_cols}
-
-    elapsed = 0.0
-    while True:
-        await asyncio.sleep(interval)
-        elapsed += interval
-
-        if timeout is not None and elapsed >= timeout:
-            raise TimeoutError(
-                f"No change detected on {model.__name__} "
-                f"with pk={pk_value!r} within {timeout}s"
-            )
+        async def _reload() -> _M | None:
+            await watcher.rollback()
+            return await watcher.get(model, pk_value, populate_existing=True)
 
         instance = await _reload()
-
         if instance is None:
-            raise NotFoundError(f"{model.__name__} with pk={pk_value!r} was deleted")
+            raise NotFoundError(f"{model.__name__} with pk={pk_value!r} not found")
 
-        current = {col: getattr(instance, col) for col in watch_cols}
-        if current != initial:
-            return instance
+        if columns is not None:
+            watch_cols = columns
+        else:
+            watch_cols = [attr.key for attr in model.__mapper__.column_attrs]
+
+        initial = {col: getattr(instance, col) for col in watch_cols}
+
+        elapsed = 0.0
+        while True:
+            await asyncio.sleep(interval)
+            elapsed += interval
+
+            if timeout is not None and elapsed >= timeout:
+                raise TimeoutError(
+                    f"No change detected on {model.__name__} "
+                    f"with pk={pk_value!r} within {timeout}s"
+                )
+
+            instance = await _reload()
+
+            if instance is None:
+                raise NotFoundError(
+                    f"{model.__name__} with pk={pk_value!r} was deleted"
+                )
+
+            current = {col: getattr(instance, col) for col in watch_cols}
+            if current != initial:
+                return instance
+    finally:
+        await watcher.close()
