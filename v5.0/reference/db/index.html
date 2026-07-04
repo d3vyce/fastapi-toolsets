@@ -2176,11 +2176,12 @@ untouched).</p>
                 <code>url</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | <span title="pydantic.PostgresDsn">PostgresDsn</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Database connection URL (e.g. <code>"postgresql+asyncpg://..."</code>).</p>
+                <p>Database connection URL. Accepts a plain string or a Pydantic
+:class:<code>~pydantic.PostgresDsn</code>.</p>
               </div>
             </td>
             <td>
@@ -2253,6 +2254,23 @@ untouched).</p>
           </tr>
           <tr class="doc-section-item">
             <td>
+                <code>connect_args</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#dict">dict</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a>, <a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>DBAPI-level connection arguments forwarded to
+:func:<code>create_async_engine</code> (URL mode only).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                 <code>**engine_options</code>
             </td>
             <td>
@@ -2261,8 +2279,7 @@ untouched).</p>
             <td>
               <div class="doc-md-description">
                 <p>Extra keyword arguments forwarded to
-:func:<code>create_async_engine</code> (URL mode only, e.g. <code>pool_size</code>,
-<code>echo</code>, <code>connect_args</code>).</p>
+:func:<code>create_async_engine</code> (URL mode only).</p>
               </div>
             </td>
             <td>
@@ -2289,7 +2306,7 @@ untouched).</p>
             <td>
               <div class="doc-md-description">
                 <p>If neither or both of <em>url</em> and <em>engine</em> are given, or if
-<em>engine_options</em> are passed together with <em>engine</em>.</p>
+<em>connect_args</em>/<em>engine_options</em> are passed together with <em>engine</em>.</p>
               </div>
             </td>
           </tr>
