@@ -68,6 +68,20 @@ manager fixtures --help
 ╰──────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+### `fixtures load`
+
+```bash
+manager fixtures load [CONTEXTS]... [--strategy merge|insert|skip_existing] [--dry-run]
+```
+
+`CONTEXTS` defaults to `Context.BASE` when omitted, and can also be set via the `FIXTURES_CONTEXT` environment variable, handy for CI/deploy scripts that shouldn't need an explicit argument per environment:
+
+```bash
+FIXTURES_CONTEXT=testing manager fixtures load
+```
+
+An explicit CLI argument always takes precedence over the environment variable.
+
 ## Custom CLI
 
 You can extend the CLI by providing your own Typer app. The `manager` entry point will merge your app's commands with the built-in ones:
