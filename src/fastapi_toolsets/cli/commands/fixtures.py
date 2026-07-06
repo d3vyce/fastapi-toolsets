@@ -57,7 +57,7 @@ async def load(
     ctx: typer.Context,
     contexts: Annotated[
         list[str] | None,
-        typer.Argument(help="Contexts to load."),
+        typer.Argument(help="Contexts to load.", envvar="FIXTURES_CONTEXT"),
     ] = None,
     strategy: Annotated[
         LoadStrategy,
