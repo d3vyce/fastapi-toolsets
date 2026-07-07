@@ -1,6 +1,12 @@
 """Fixture system for seeding databases with dependency resolution."""
 
+from typing import TYPE_CHECKING
+
 from .enum import Context, LoadStrategy
+
+if TYPE_CHECKING:
+    from .registry import FixtureRegistry
+    from .utils import load_fixtures, load_fixtures_by_context
 
 __all__ = [
     "Context",
