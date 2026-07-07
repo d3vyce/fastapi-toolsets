@@ -139,12 +139,13 @@ async def _batch_merge(
 ) -> None:
     """UPSERT: insert new rows, update existing ones with the provided values."""
     for cls, group_dicts, _ in _grouped_table_dicts(model_cls, instances):
-        pk_names = [col.name for col in cls.__table__.primary_key]
+        table = cast(Table, cls.__table__)
+        pk_names = [col.name for col in table.primary_key]
         pk_names_set = set(pk_names)
-        own_col_keys = {col.key for col in cls.__table__.columns}
+        own_col_keys = {col.key for col in table.columns}
         non_pk_cols = [k for k in own_col_keys if k not in pk_names_set]
 
-        stmt = pg_insert(cls).values(group_dicts)
+        stmt = pg_insert(table).values(group_dicts)
 
         inserted_keys = set(group_dicts[0])
         update_cols = [col for col in non_pk_cols if col in inserted_keys]
