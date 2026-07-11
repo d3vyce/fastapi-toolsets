@@ -12,13 +12,13 @@
         <meta name="author" content="d3vyce">
       
       
-        <link rel="canonical" href="https://fastapi-toolsets.d3vyce.fr/v5.0/migration/v4/">
+        <link rel="canonical" href="https://fastapi-toolsets.d3vyce.fr/v5.0/migration/v5/">
       
       
-        <link rel="prev" href="../v5/">
+        <link rel="prev" href="../../examples/pagination-search/">
       
       
-        <link rel="next" href="../v3/">
+        <link rel="next" href="../v4/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Migrating to v4.0 - FastAPI Toolsets</title>
+        <title>Migrating to v5.0 - FastAPI Toolsets</title>
       
     
     
@@ -91,7 +91,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#migrating-to-v40" class="md-skip">
+        <a href="#migrating-to-v50" class="md-skip">
           Skip to content
         </a>
       
@@ -129,7 +129,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Migrating to v4.0
+              Migrating to v5.0
             
           </span>
         </div>
@@ -364,7 +364,7 @@
     
     
       <li class="md-tabs__item md-tabs__item--active">
-        <a href="../v5/" class="md-tabs__link">
+        <a href="././" class="md-tabs__link">
           
   
   Migration
@@ -1375,33 +1375,6 @@
                 
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../v5/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-  v5.0
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
     
   
   
@@ -1421,7 +1394,7 @@
   <span class="md-ellipsis">
     
   
-  v4.0
+  v5.0
 
     
   </span>
@@ -1438,7 +1411,7 @@
   <span class="md-ellipsis">
     
   
-  v4.0
+  v5.0
 
     
   </span>
@@ -1476,10 +1449,43 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#lock_tables-now-takes-a-session_maker-instead-of-a-session" class="md-nav__link">
+  <a href="#create_db_dependency-create_db_context-removed-in-favor-of-database" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        <code>lock_tables</code> now takes a <code>session_maker</code> instead of a <code>session</code>
+        <code>create_db_dependency</code> / <code>create_db_context</code> removed in favor of <code>Database</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_transaction-renamed-to-transaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>get_transaction</code> renamed to <code>transaction</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lock_tables-is-now-also-a-database-method" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>lock_tables</code> is now also a <code>Database</code> method
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create_database-and-cleanup_tables-moved-to-fastapi_toolsetsdbtesting" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>create_database</code> and <code>cleanup_tables</code> moved to <code>fastapi_toolsets.db.testing</code>
       </span>
     </span>
   </a>
@@ -1491,10 +1497,98 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#fixtures" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixtures
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fixtures">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get_obj_by_attr-get_field_by_attr-are-now-fixtureregistry-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>get_obj_by_attr</code> / <code>get_field_by_attr</code> are now <code>FixtureRegistry</code> methods
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#loadinglisting-by-context-now-always-includes-contextbase" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Loading/listing by context now always includes <code>Context.BASE</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_fixtures-load_fixtures_by_context-now-return-reloaded-instances" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>load_fixtures</code> / <code>load_fixtures_by_context</code> now return reloaded instances
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Security
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../v4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  v4.0
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1640,10 +1734,43 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#lock_tables-now-takes-a-session_maker-instead-of-a-session" class="md-nav__link">
+  <a href="#create_db_dependency-create_db_context-removed-in-favor-of-database" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        <code>lock_tables</code> now takes a <code>session_maker</code> instead of a <code>session</code>
+        <code>create_db_dependency</code> / <code>create_db_context</code> removed in favor of <code>Database</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_transaction-renamed-to-transaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>get_transaction</code> renamed to <code>transaction</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lock_tables-is-now-also-a-database-method" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>lock_tables</code> is now also a <code>Database</code> method
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create_database-and-cleanup_tables-moved-to-fastapi_toolsetsdbtesting" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>create_database</code> and <code>cleanup_tables</code> moved to <code>fastapi_toolsets.db.testing</code>
       </span>
     </span>
   </a>
@@ -1652,6 +1779,67 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fixtures" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixtures
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fixtures">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get_obj_by_attr-get_field_by_attr-are-now-fixtureregistry-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>get_obj_by_attr</code> / <code>get_field_by_attr</code> are now <code>FixtureRegistry</code> methods
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#loadinglisting-by-context-now-always-includes-contextbase" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Loading/listing by context now always includes <code>Context.BASE</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_fixtures-load_fixtures_by_context-now-return-reloaded-instances" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>load_fixtures</code> / <code>load_fixtures_by_context</code> now return reloaded instances
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Security
+      </span>
+    </span>
+  </a>
   
 </li>
       
@@ -1712,7 +1900,7 @@
     
     
       <li class="md-path__item">
-        <a href="../v5/" class="md-path__link">
+        <a href="././" class="md-path__link">
           
   
   <span class="md-ellipsis">
@@ -1737,48 +1925,148 @@
     
       
     
-    <a href="https://github.com/d3vyce/fastapi-toolsets/raw/master/docs/migration/v4.md" title="View source of this page" class="md-content__button md-icon">
+    <a href="https://github.com/d3vyce/fastapi-toolsets/raw/master/docs/migration/v5.md" title="View source of this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-code-2" viewBox="0 0 24 24"><path d="M4 12.15V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2h-3.35"/><path d="M14 2v5a1 1 0 0 0 1 1h5M5 16l-3 3 3 3M9 22l3-3-3-3"/></svg>
     </a>
   
 
 
-<h1 id="migrating-to-v40">Migrating to v4.0<a class="headerlink" href="#migrating-to-v40" title="Permanent link">&para;</a></h1>
-<p>This page covers every breaking change introduced in <strong>v4.0</strong> and the steps required to update your code.</p>
+<h1 id="migrating-to-v50">Migrating to v5.0<a class="headerlink" href="#migrating-to-v50" title="Permanent link">&para;</a></h1>
+<p>This page covers every breaking change introduced in <strong>v5.0</strong> and the steps required to update your code.</p>
 <hr />
 <h2 id="database">Database<a class="headerlink" href="#database" title="Permanent link">&para;</a></h2>
-<h3 id="lock_tables-now-takes-a-session_maker-instead-of-a-session"><code>lock_tables</code> now takes a <code>session_maker</code> instead of a <code>session</code><a class="headerlink" href="#lock_tables-now-takes-a-session_maker-instead-of-a-session" title="Permanent link">&para;</a></h3>
-<p>The first argument of <code>lock_tables</code> changed from an <code>AsyncSession</code> instance to an <code>async_sessionmaker</code>.
-The function creates and manages its own <strong>dedicated session</strong> internally, yielding it to the caller.</p>
-<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Before (<code>v3</code>)</label><label for="__tabbed_1_2">Now (<code>v4</code>)</label></div>
+<p><code>db.py</code> is now the <code>db/</code> package, built around one object, <a href="../../reference/db/#fastapi_toolsets.db.Database"><code>Database</code></a>, that owns the engine and sessionmaker. The free functions that took a <code>session_maker</code> you built and passed around yourself are gone from request-handling code; <code>Database</code> builds the sessionmaker for you.</p>
+<h3 id="create_db_dependency-create_db_context-removed-in-favor-of-database"><code>create_db_dependency</code> / <code>create_db_context</code> removed in favor of <code>Database</code><a class="headerlink" href="#create_db_dependency-create_db_context-removed-in-favor-of-database" title="Permanent link">&para;</a></h3>
+<p>Build one <code>Database</code> with your URL (or an existing <code>engine=</code>), then use the instance directly as the FastAPI dependency, and <code>db.session()</code> for sessions outside request handlers.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Before (<code>v4</code>)</label><label for="__tabbed_1_2">Now (<code>v5</code>)</label></div>
 <div class="tabbed-content">
 <div class="tabbed-block">
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">lock_tables</span><span class="p">,</span> <span class="n">LockMode</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">async</span> <span class="k">with</span> <span class="n">lock_tables</span><span class="p">(</span><span class="n">session</span><span class="o">=</span><span class="n">session</span><span class="p">,</span> <span class="n">tables</span><span class="o">=</span><span class="p">[</span><span class="n">User</span><span class="p">,</span> <span class="n">Account</span><span class="p">]):</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">user</span> <span class="o">=</span> <span class="k">await</span> <span class="n">UserCrud</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="p">[</span><span class="n">User</span><span class="o">.</span><span class="n">id</span> <span class="o">==</span> <span class="mi">1</span><span class="p">])</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">user</span><span class="o">.</span><span class="n">balance</span> <span class="o">+=</span> <span class="mi">100</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">sqlalchemy.ext.asyncio</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_async_engine</span><span class="p">,</span> <span class="n">async_sessionmaker</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_db_dependency</span><span class="p">,</span> <span class="n">create_db_context</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">engine</span> <span class="o">=</span> <span class="n">create_async_engine</span><span class="p">(</span><span class="s2">&quot;postgresql+asyncpg://...&quot;</span><span class="p">)</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">SessionLocal</span> <span class="o">=</span> <span class="n">async_sessionmaker</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span> <span class="n">expire_on_commit</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># With a custom lock mode</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">async</span> <span class="k">with</span> <span class="n">lock_tables</span><span class="p">(</span><span class="n">session</span><span class="o">=</span><span class="n">session</span><span class="p">,</span> <span class="n">tables</span><span class="o">=</span><span class="p">[</span><span class="n">Order</span><span class="p">],</span> <span class="n">mode</span><span class="o">=</span><span class="n">LockMode</span><span class="o">.</span><span class="n">EXCLUSIVE</span><span class="p">):</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="k">await</span> <span class="n">process_order</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="n">order_id</span><span class="p">)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">get_db</span> <span class="o">=</span> <span class="n">create_db_dependency</span><span class="p">(</span><span class="n">session_maker</span><span class="o">=</span><span class="n">SessionLocal</span><span class="p">)</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">get_db_context</span> <span class="o">=</span> <span class="n">create_db_context</span><span class="p">(</span><span class="n">session_maker</span><span class="o">=</span><span class="n">SessionLocal</span><span class="p">)</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/users&quot;</span><span class="p">)</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">list_users</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">AsyncSession</span> <span class="o">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_db</span><span class="p">)):</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="o">...</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">seed</span><span class="p">():</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">get_db_context</span><span class="p">()</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        <span class="o">...</span>
 </span></code></pre></div>
 </div>
 <div class="tabbed-block">
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">lock_tables</span><span class="p">,</span> <span class="n">LockMode</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">Database</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">async</span> <span class="k">with</span> <span class="n">lock_tables</span><span class="p">(</span><span class="n">session_maker</span><span class="o">=</span><span class="n">session_maker</span><span class="p">,</span> <span class="n">tables</span><span class="o">=</span><span class="p">[</span><span class="n">User</span><span class="p">,</span> <span class="n">Account</span><span class="p">])</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">user</span> <span class="o">=</span> <span class="k">await</span> <span class="n">UserCrud</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="p">[</span><span class="n">User</span><span class="o">.</span><span class="n">id</span> <span class="o">==</span> <span class="mi">1</span><span class="p">])</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">user</span><span class="o">.</span><span class="n">balance</span> <span class="o">+=</span> <span class="mi">100</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># With a custom lock mode</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">async</span> <span class="k">with</span> <span class="n">lock_tables</span><span class="p">(</span><span class="n">session_maker</span><span class="o">=</span><span class="n">session_maker</span><span class="p">,</span> <span class="n">tables</span><span class="o">=</span><span class="p">[</span><span class="n">Order</span><span class="p">],</span> <span class="n">mode</span><span class="o">=</span><span class="n">LockMode</span><span class="o">.</span><span class="n">EXCLUSIVE</span><span class="p">)</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="k">await</span> <span class="n">process_order</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="n">order_id</span><span class="p">)</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">db</span> <span class="o">=</span> <span class="n">Database</span><span class="p">(</span><span class="n">url</span><span class="o">=</span><span class="s2">&quot;postgresql+asyncpg://...&quot;</span><span class="p">)</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/users&quot;</span><span class="p">)</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">list_users</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">AsyncSession</span> <span class="o">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">db</span><span class="p">)):</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="o">...</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">seed</span><span class="p">():</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">db</span><span class="o">.</span><span class="n">session</span><span class="p">()</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        <span class="o">...</span>
 </span></code></pre></div>
 </div>
 </div>
 </div>
+<p>Call <code>db.install(app)</code> to also commit before the response is sent (instead of in dependency teardown) and to dispose the engine on shutdown. See <a href="../../module/db/#committing-before-the-response">the db module docs</a>.</p>
+<h3 id="get_transaction-renamed-to-transaction"><code>get_transaction</code> renamed to <code>transaction</code><a class="headerlink" href="#get_transaction-renamed-to-transaction" title="Permanent link">&para;</a></h3>
+<p>Same behavior (savepoint when already in a transaction, new transaction otherwise), new name, same import path.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="2:2"><input checked="checked" id="__tabbed_2_1" name="__tabbed_2" type="radio" /><input id="__tabbed_2_2" name="__tabbed_2" type="radio" /><div class="tabbed-labels"><label for="__tabbed_2_1">Before (<code>v4</code>)</label><label for="__tabbed_2_2">Now (<code>v5</code>)</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_transaction</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">async</span> <span class="k">with</span> <span class="n">get_transaction</span><span class="p">(</span><span class="n">session</span><span class="o">=</span><span class="n">session</span><span class="p">):</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">session</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">transaction</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">async</span> <span class="k">with</span> <span class="n">transaction</span><span class="p">(</span><span class="n">session</span><span class="o">=</span><span class="n">session</span><span class="p">):</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">session</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+</span></code></pre></div>
+</div>
+</div>
+</div>
+<p>If you have a <code>Database</code> instance, <code>db.begin()</code> opens a session already inside a transaction:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">async</span> <span class="k">with</span> <span class="n">db</span><span class="o">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">session</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">User</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;ada&quot;</span><span class="p">))</span>
+</span></code></pre></div>
+<h3 id="lock_tables-is-now-also-a-database-method"><code>lock_tables</code> is now also a <code>Database</code> method<a class="headerlink" href="#lock_tables-is-now-also-a-database-method" title="Permanent link">&para;</a></h3>
+<p>The free <code>lock_tables(session_maker, tables, ...)</code> function still exists for callers who manage their own session factory, but prefer <code>db.lock_tables(tables, ...)</code>, which drops the <code>session_maker</code> argument:</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="3:2"><input checked="checked" id="__tabbed_3_1" name="__tabbed_3" type="radio" /><input id="__tabbed_3_2" name="__tabbed_3" type="radio" /><div class="tabbed-labels"><label for="__tabbed_3_1">Before (<code>v4</code>)</label><label for="__tabbed_3_2">Now (<code>v5</code>)</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">lock_tables</span><span class="p">,</span> <span class="n">LockMode</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">async</span> <span class="k">with</span> <span class="n">lock_tables</span><span class="p">(</span><span class="n">session_maker</span><span class="o">=</span><span class="n">session_maker</span><span class="p">,</span> <span class="n">tables</span><span class="o">=</span><span class="p">[</span><span class="n">Order</span><span class="p">],</span> <span class="n">mode</span><span class="o">=</span><span class="n">LockMode</span><span class="o">.</span><span class="n">EXCLUSIVE</span><span class="p">)</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="k">await</span> <span class="n">process_order</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="n">order_id</span><span class="p">)</span>
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">LockMode</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">async</span> <span class="k">with</span> <span class="n">db</span><span class="o">.</span><span class="n">lock_tables</span><span class="p">(</span><span class="n">tables</span><span class="o">=</span><span class="p">[</span><span class="n">Order</span><span class="p">],</span> <span class="n">mode</span><span class="o">=</span><span class="n">LockMode</span><span class="o">.</span><span class="n">EXCLUSIVE</span><span class="p">)</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="k">await</span> <span class="n">process_order</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="n">order_id</span><span class="p">)</span>
+</span></code></pre></div>
+</div>
+</div>
+</div>
+<h3 id="create_database-and-cleanup_tables-moved-to-fastapi_toolsetsdbtesting"><code>create_database</code> and <code>cleanup_tables</code> moved to <code>fastapi_toolsets.db.testing</code><a class="headerlink" href="#create_database-and-cleanup_tables-moved-to-fastapi_toolsetsdbtesting" title="Permanent link">&para;</a></h3>
+<div class="tabbed-set tabbed-alternate" data-tabs="4:2"><input checked="checked" id="__tabbed_4_1" name="__tabbed_4" type="radio" /><input id="__tabbed_4_2" name="__tabbed_4" type="radio" /><div class="tabbed-labels"><label for="__tabbed_4_1">Before (<code>v4</code>)</label><label for="__tabbed_4_2">Now (<code>v5</code>)</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_database</span><span class="p">,</span> <span class="n">cleanup_tables</span>
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.db.testing</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_database</span><span class="p">,</span> <span class="n">cleanup_tables</span>
+</span></code></pre></div>
+</div>
+</div>
+</div>
+<h2 id="fixtures">Fixtures<a class="headerlink" href="#fixtures" title="Permanent link">&para;</a></h2>
+<h3 id="get_obj_by_attr-get_field_by_attr-are-now-fixtureregistry-methods"><code>get_obj_by_attr</code> / <code>get_field_by_attr</code> are now <code>FixtureRegistry</code> methods<a class="headerlink" href="#get_obj_by_attr-get_field_by_attr-are-now-fixtureregistry-methods" title="Permanent link">&para;</a></h3>
+<p>Both also change their first argument: instead of the fixture <em>function</em>, pass the fixture's <em>registered name</em> and let the registry look it up.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="5:2"><input checked="checked" id="__tabbed_5_1" name="__tabbed_5" type="radio" /><input id="__tabbed_5_2" name="__tabbed_5" type="radio" /><div class="tabbed-labels"><label for="__tabbed_5_1">Before (<code>v4</code>)</label><label for="__tabbed_5_2">Now (<code>v5</code>)</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi_toolsets.fixtures</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_obj_by_attr</span><span class="p">,</span> <span class="n">get_field_by_attr</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="nd">@fixtures</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="n">depends_on</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;roles&quot;</span><span class="p">])</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">users</span><span class="p">():</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="n">admin_role</span> <span class="o">=</span> <span class="n">get_obj_by_attr</span><span class="p">(</span><span class="n">fixtures</span><span class="o">=</span><span class="n">roles</span><span class="p">,</span> <span class="n">attr_name</span><span class="o">=</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="s2">&quot;admin&quot;</span><span class="p">)</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="n">admin_role_id</span> <span class="o">=</span> <span class="n">get_field_by_attr</span><span class="p">(</span><span class="n">fixtures</span><span class="o">=</span><span class="n">roles</span><span class="p">,</span> <span class="n">attr_name</span><span class="o">=</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="s2">&quot;admin&quot;</span><span class="p">)</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>    <span class="k">return</span> <span class="p">[</span><span class="n">User</span><span class="p">(</span><span class="nb">id</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">username</span><span class="o">=</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="n">role_id</span><span class="o">=</span><span class="n">admin_role</span><span class="o">.</span><span class="n">id</span><span class="p">)]</span>
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nd">@fixtures</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="n">depends_on</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;roles&quot;</span><span class="p">])</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">users</span><span class="p">():</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="n">admin_role</span> <span class="o">=</span> <span class="n">fixtures</span><span class="o">.</span><span class="n">obj</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;roles&quot;</span><span class="p">,</span> <span class="n">attr_name</span><span class="o">=</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="s2">&quot;admin&quot;</span><span class="p">)</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">admin_role_id</span> <span class="o">=</span> <span class="n">fixtures</span><span class="o">.</span><span class="n">field</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;roles&quot;</span><span class="p">,</span> <span class="n">attr_name</span><span class="o">=</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="s2">&quot;admin&quot;</span><span class="p">)</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="k">return</span> <span class="p">[</span><span class="n">User</span><span class="p">(</span><span class="nb">id</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">username</span><span class="o">=</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="n">role_id</span><span class="o">=</span><span class="n">admin_role</span><span class="o">.</span><span class="n">id</span><span class="p">)]</span>
+</span></code></pre></div>
+</div>
+</div>
+</div>
+<h3 id="loadinglisting-by-context-now-always-includes-contextbase">Loading/listing by context now always includes <code>Context.BASE</code><a class="headerlink" href="#loadinglisting-by-context-now-always-includes-contextbase" title="Permanent link">&para;</a></h3>
+<p><code>FixtureRegistry.get_variants</code>/<code>get_by_context</code>, <code>load_fixtures_by_context</code>, and the <code>fixtures list</code>/<code>fixtures load</code> CLI commands now implicitly union every queried context with <code>Context.BASE</code>. In <code>v4</code>, requesting a single context (e.g. <code>"testing"</code>) returned only fixtures tagged with that context; in <code>v5</code> it also returns every <code>Context.BASE</code>-tagged fixture.</p>
+<p>If you relied on strict exclusion of base fixtures, move them out of <code>Context.BASE</code> into their own context.</p>
+<h3 id="load_fixtures-load_fixtures_by_context-now-return-reloaded-instances"><code>load_fixtures</code> / <code>load_fixtures_by_context</code> now return reloaded instances<a class="headerlink" href="#load_fixtures-load_fixtures_by_context-now-return-reloaded-instances" title="Permanent link">&para;</a></h3>
+<p>Loaded objects are re-queried from the database after insert, with all relationships eager-loaded, instead of returning the exact objects your fixture function constructed. Code that compares returned objects by identity to the fixture function's output, or that expected relationships to remain unloaded, should be updated — and expect one extra query per model type per load.</p>
+<h2 id="security">Security<a class="headerlink" href="#security" title="Permanent link">&para;</a></h2>
+<p>The security module has been removed and moved to a dedicated python package: <a href="https://github.com/d3vyce/fastapi-multiauth"><code>fastapi-multiauth</code></a>.</p>
+<p>Run <code>uv add fastapi-multiauth</code> and replace <code>from fastapi_toolsets.security import ...</code> with <code>from fastapi_multiauth import ...</code>.</p>
 
 
 
@@ -1818,7 +2106,7 @@ The function creates and manages its own <strong>dedicated session</strong> inte
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../v5/" class="md-footer__link md-footer__link--prev" aria-label="Previous: v5.0">
+          <a href="../../examples/pagination-search/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Pagination &amp; Search">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></svg>
@@ -1828,20 +2116,20 @@ The function creates and manages its own <strong>dedicated session</strong> inte
                 Previous
               </span>
               <div class="md-ellipsis">
-                v5.0
+                Pagination & Search
               </div>
             </div>
           </a>
         
         
           
-          <a href="../v3/" class="md-footer__link md-footer__link--next" aria-label="Next: v3.0">
+          <a href="../v4/" class="md-footer__link md-footer__link--next" aria-label="Next: v4.0">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                v3.0
+                v4.0
               </div>
             </div>
             <div class="md-footer__button md-icon">

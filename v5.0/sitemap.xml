@@ -37,9 +37,6 @@
         <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/module/schemas/</loc>
       </url>
       <url>
-        <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/module/security/</loc>
-      </url>
-      <url>
         <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/reference/cli/</loc>
       </url>
       <url>
@@ -73,10 +70,10 @@
         <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/reference/schemas/</loc>
       </url>
       <url>
-        <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/reference/security/</loc>
+        <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/examples/pagination-search/</loc>
       </url>
       <url>
-        <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/examples/pagination-search/</loc>
+        <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/migration/v5/</loc>
       </url>
       <url>
         <loc>https://fastapi-toolsets.d3vyce.fr/v5.0/migration/v4/</loc>
