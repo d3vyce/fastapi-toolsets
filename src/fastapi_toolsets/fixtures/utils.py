@@ -199,7 +199,7 @@ async def _batch_skip_existing(
             result = await session.execute(stmt, group_dicts)
             for inst, row in zip(group_instances, result):
                 for col, val in zip(mapper.primary_key, row):
-                    setattr(inst, col.key, val)
+                    setattr(inst, cast(str, col.key), val)
 
     if with_pk_pairs:
         with_pk = [i for i, _ in with_pk_pairs]
@@ -243,12 +243,13 @@ async def _reload_with_relationships(
     pk_cols = mapper.primary_key
 
     if len(pk_cols) == 1:
-        pk_attr = getattr(model, pk_cols[0].key)
-        pks = [getattr(inst, pk_cols[0].key) for inst in instances]
+        pk_key = cast(str, pk_cols[0].key)
+        pk_attr = getattr(model, pk_key)
+        pks = [getattr(inst, pk_key) for inst in instances]
         result = await session.execute(
             select(model).where(pk_attr.in_(pks)).options(*load_options)
         )
-        by_pk = {getattr(row, pk_cols[0].key): row for row in result.unique().scalars()}
+        by_pk = {getattr(row, pk_key): row for row in result.unique().scalars()}
         return [by_pk[pk] for pk in pks]
 
     # Composite PK: fall back to per-instance reload
