@@ -190,7 +190,8 @@ class AsyncCrud(Generic[ModelType]):
         """Re-query instance by PK with default_load_options applied."""
         mapper = cls.model.__mapper__
         pk_filters = [
-            getattr(cls.model, col.key) == getattr(instance, col.key)
+            getattr(cls.model, cast(str, col.key))
+            == getattr(instance, cast(str, col.key))
             for col in mapper.primary_key
         ]
         return await cls.get(session, filters=pk_filters)
