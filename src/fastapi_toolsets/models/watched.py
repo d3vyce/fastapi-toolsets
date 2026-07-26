@@ -5,7 +5,7 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import event
+from sqlalchemy import event, select, tuple_
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value as _sa_set_committed_value
@@ -29,14 +29,11 @@ _SESSION_DELETES = "_ft_deletes"
 _SESSION_UPDATES = "_ft_updates"
 _DEFERRED_STRATEGY_KEY = (("deferred", True), ("instrument", True))
 _EVENT_HANDLERS: dict[tuple[type, ModelEvent], list[Callable[..., Any]]] = {}
-_WATCHED_MODELS: set[type] = set()
-_WATCHED_CACHE: dict[type, bool] = {}
 _HANDLER_CACHE: dict[tuple[type, ModelEvent], list[Callable[..., Any]]] = {}
 
 
 def _invalidate_caches() -> None:
     """Clear lookup caches after handler registration."""
-    _WATCHED_CACHE.clear()
     _HANDLER_CACHE.clear()
 
 
@@ -56,22 +53,10 @@ def listens_for(
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         for ev in evs:
             _EVENT_HANDLERS.setdefault((model_class, ev), []).append(fn)
-        _WATCHED_MODELS.add(model_class)
         _invalidate_caches()
         return fn
 
     return decorator
-
-
-def _is_watched(obj: Any) -> bool:
-    """Return True if *obj*'s type (or any ancestor) has registered handlers."""
-    cls = type(obj)
-    try:
-        return _WATCHED_CACHE[cls]
-    except KeyError:
-        result = any(klass in _WATCHED_MODELS for klass in cls.__mro__)
-        _WATCHED_CACHE[cls] = result
-        return result
 
 
 def _get_handlers(cls: type, ev: ModelEvent) -> list[Callable[..., Any]]:
@@ -144,18 +129,18 @@ def _upsert_changes(
 def _after_flush(session: Any, flush_context: Any) -> None:
     # New objects: capture reference. Attributes will be refreshed after commit.
     for obj in session.new:
-        if _is_watched(obj):
+        if _get_handlers(type(obj), ModelEvent.CREATE):
             session.info.setdefault(_SESSION_CREATES, []).append(obj)
 
     # Deleted objects: snapshot now while attributes are still loaded.
     for obj in session.deleted:
-        if _is_watched(obj):
+        if _get_handlers(type(obj), ModelEvent.DELETE):
             snapshot = _snapshot_column_attrs(obj)
             session.info.setdefault(_SESSION_DELETES, []).append((obj, snapshot))
 
     # Dirty objects: read old/new from SQLAlchemy attribute history.
     for obj in session.dirty:
-        if not _is_watched(obj):
+        if not _get_handlers(type(obj), ModelEvent.UPDATE):
             continue
 
         watched = _get_watched_fields(type(obj))
@@ -204,9 +189,18 @@ async def _invoke_callback(
         await result
 
 
-async def _reload_if_present(session: AsyncSession, obj: Any, state: Any) -> None:
-    """Re-populate *obj* from the DB if its row still exists."""
-    await session.get(type(obj), state.key[1], populate_existing=True)
+async def _batch_reload(
+    session: AsyncSession, model: type, pk_tuples: list[tuple[Any, ...]]
+) -> None:
+    """Re-populate all rows of *model* identified by *pk_tuples* in one round trip."""
+    pk_cols = sa_inspect(model).primary_key
+    where = (
+        pk_cols[0].in_([pk[0] for pk in pk_tuples])
+        if len(pk_cols) == 1
+        else tuple_(*pk_cols).in_(pk_tuples)
+    )
+    q = select(model).where(where).execution_options(populate_existing=True)
+    await session.execute(q)
 
 
 class EventSession(AsyncSession):
@@ -250,15 +244,36 @@ class EventSession(AsyncSession):
                 k: v for k, v in field_changes.items() if k not in create_ids
             }
 
-        # Dispatch CREATE callbacks.
+        # Resolve reloadable state up front and group PKs by model type so
+        # the post-commit reload is one query per type instead of one
+        # session.get() per object.
+        create_items: list[Any] = []
+        update_items: list[tuple[Any, dict[str, dict[str, Any]]]] = []
+        pk_by_type: dict[type, list[tuple[Any, ...]]] = {}
+
         for obj in creates:
+            state = sa_inspect(obj, raiseerr=False)
+            if state is None or state.detached or state.transient:  # pragma: no cover
+                continue
+            create_items.append(obj)
+            pk_by_type.setdefault(type(obj), []).append(state.key[1])
+
+        for obj, changes in field_changes.values():
+            state = sa_inspect(obj, raiseerr=False)
+            if state is None or state.detached or state.transient:  # pragma: no cover
+                continue
+            update_items.append((obj, changes))
+            pk_by_type.setdefault(type(obj), []).append(state.key[1])
+
+        for model, pk_tuples in pk_by_type.items():
             try:
-                state = sa_inspect(obj, raiseerr=False)
-                if (
-                    state is None or state.detached or state.transient
-                ):  # pragma: no cover
-                    continue
-                await _reload_if_present(self, obj, state)
+                await _batch_reload(self, model, pk_tuples)
+            except Exception as exc:
+                _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
+
+        # Dispatch CREATE callbacks.
+        for obj in create_items:
+            try:
                 for handler in _get_handlers(type(obj), ModelEvent.CREATE):
                     await _invoke_callback(handler, obj, ModelEvent.CREATE, None)
             except Exception as exc:
@@ -275,14 +290,8 @@ class EventSession(AsyncSession):
                 _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
 
         # Dispatch UPDATE callbacks.
-        for obj, changes in field_changes.values():
+        for obj, changes in update_items:
             try:
-                state = sa_inspect(obj, raiseerr=False)
-                if (
-                    state is None or state.detached or state.transient
-                ):  # pragma: no cover
-                    continue
-                await _reload_if_present(self, obj, state)
                 for handler in _get_handlers(type(obj), ModelEvent.UPDATE):
                     await _invoke_callback(handler, obj, ModelEvent.UPDATE, changes)
             except Exception as exc:
