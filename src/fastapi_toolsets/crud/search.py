@@ -1,12 +1,12 @@
 """Search utilities for AsyncCrud."""
 
-import asyncio
 import functools
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import String, and_, func, or_, select
+from sqlalchemy import String, and_, distinct, func, or_, select
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm.attributes import InstrumentedAttribute
@@ -181,6 +181,21 @@ def search_field_keys(fields: Sequence[SearchFieldType]) -> list[str]:
     return facet_keys(fields)
 
 
+def apply_search_joins(q: Any, joins: Sequence[Any]) -> Any:
+    """Apply relationship-based outer joins (from search/filter_by/facets) to a query.
+
+    Deduplicates by relationship identity so a join used by several fields
+    (e.g. search + a facet on the same relation) is only applied once.
+    """
+    seen: set[str] = set()
+    for rel in joins:
+        rel_key = str(rel)
+        if rel_key not in seen:
+            seen.add(rel_key)
+            q = q.outerjoin(rel)
+    return q
+
+
 def facet_keys(facet_fields: Sequence[FacetFieldType]) -> list[str]:
     """Return a key for each facet field.
 
@@ -207,6 +222,7 @@ async def build_facets(
     *,
     base_filters: "list[ColumnElement[bool]] | None" = None,
     base_joins: list[InstrumentedAttribute[Any]] | None = None,
+    own_filters: "dict[str, ColumnElement[bool]] | None" = None,
 ) -> dict[str, list[Any]]:
     """Return distinct values for each facet field, respecting current filters.
 
@@ -216,15 +232,24 @@ async def build_facets(
         facet_fields: Columns or relationship tuples to facet on
         base_filters: Filter conditions already applied to the main query (search + caller filters)
         base_joins: Relationship joins already applied to the main query
+        own_filters: Map of facet key -> the ``filter_by`` condition for that
+            same key (if any). Excluded from that facet's own subquery so
+            filtering on a facet doesn't collapse its own value list down to
+            just the filtered value.
 
     Returns:
         Dict mapping column key to sorted list of distinct non-None values
     """
-    existing_join_keys: set[str] = {str(j) for j in (base_joins or [])}
+    if not facet_fields:
+        return {}
 
     keys = facet_keys(facet_fields)
+    own_filters = own_filters or {}
 
-    async def _query_facet(field: FacetFieldType, key: str) -> tuple[str, list[Any]]:
+    scalars: list[Any] = []
+    enum_classes: dict[str, Any] = {}
+
+    for field, key in zip(facet_fields, keys):
         if isinstance(field, tuple):
             # Relationship chain: (User.role, Role.name) — last element is the column
             rels = field[:-1]
@@ -235,51 +260,48 @@ async def build_facets(
 
         col_type = column.property.columns[0].type
         is_array = isinstance(col_type, ARRAY)
+        enum_classes[key] = getattr(col_type, "enum_class", None)
 
-        if is_array:
-            unnested = func.unnest(column).label(column.key)
-            q = select(unnested).select_from(model).distinct()
-        else:
-            q = select(column).select_from(model).distinct()
-
-        # Apply base joins (deduplicated) — needed here independently
-        seen_joins: set[str] = set()
-        for rel in base_joins or []:
-            rel_key = str(rel)
-            if rel_key not in seen_joins:
-                seen_joins.add(rel_key)
-                q = q.outerjoin(rel)
-
-        # Add any extra joins required by this facet field that aren't already applied
-        for rel in rels:
-            rel_key = str(rel)
-            if rel_key not in existing_join_keys and rel_key not in seen_joins:
-                seen_joins.add(rel_key)
-                q = q.outerjoin(rel)
-
-        if base_filters:
-            q = q.where(and_(*base_filters))
-
-        if is_array:
-            q = q.order_by(unnested)
-        else:
-            q = q.order_by(column)
-        result = await session.execute(q)
-        col_type = column.property.columns[0].type
-        enum_class = getattr(col_type, "enum_class", None)
-        values = [
-            row[0].name
-            if (enum_class is not None and isinstance(row[0], enum_class))
-            else row[0]
-            for row in result.all()
-            if row[0] is not None
+        filters = [
+            *(base_filters or []),
+            *(f for k, f in own_filters.items() if k != key),
         ]
-        return key, values
+        joins = [*(base_joins or []), *rels]
 
-    pairs = await asyncio.gather(
-        *[_query_facet(f, k) for f, k in zip(facet_fields, keys)]
-    )
-    return dict(pairs)
+        if is_array:
+            unnested = apply_search_joins(
+                select(func.unnest(column).label("v")).select_from(model), joins
+            )
+            if filters:
+                unnested = unnested.where(and_(*filters))
+            unnested_sq = unnested.subquery()
+            v = unnested_sq.c.v
+            agg = (
+                select(func.array_agg(aggregate_order_by(distinct(v), v)))
+                .select_from(unnested_sq)
+                .where(v.isnot(None))
+            )
+        else:
+            agg = apply_search_joins(
+                select(
+                    func.array_agg(aggregate_order_by(distinct(column), column))
+                ).select_from(model),
+                joins,
+            )
+            agg = agg.where(and_(*filters, column.isnot(None)))
+
+        scalars.append(agg.scalar_subquery().label(key))
+
+    row = (await session.execute(select(*scalars))).one()
+
+    facets: dict[str, list[Any]] = {}
+    for key, values in zip(keys, row):
+        enum_class = enum_classes[key]
+        facets[key] = [
+            v.name if (enum_class is not None and isinstance(v, enum_class)) else v
+            for v in (values or [])
+        ]
+    return facets
 
 
 _EQUALITY_TYPES = (String, Integer, Numeric, Date, DateTime, Time, Enum, Uuid)
@@ -301,7 +323,7 @@ def _coerce_bool(value: Any) -> bool:
 def build_filter_by(
     filter_by: dict[str, Any],
     facet_fields: Sequence[FacetFieldType],
-) -> tuple["list[ColumnElement[bool]]", list[InstrumentedAttribute[Any]]]:
+) -> tuple["dict[str, ColumnElement[bool]]", list[InstrumentedAttribute[Any]]]:
     """Translate a {column_key: value} dict into SQLAlchemy filter conditions.
 
     Args:
@@ -309,7 +331,9 @@ def build_filter_by(
         facet_fields: Declared facet fields to validate keys against
 
     Returns:
-        Tuple of (filter_conditions, joins_needed)
+        Tuple of ({facet_key: filter_condition}, joins_needed). One filter
+        condition per key, so callers can identify (and exclude) a facet's
+        own filter when computing that facet's distinct values.
 
     Raises:
         InvalidFacetFilterError: If a key in filter_by is not a declared facet field
@@ -327,7 +351,7 @@ def build_filter_by(
         index[key] = (column, rels)
 
     valid_keys = set(index)
-    filters: list[ColumnElement[bool]] = []
+    filters: dict[str, ColumnElement[bool]] = {}
     joins: list[InstrumentedAttribute[Any]] = []
     added_join_keys: set[str] = set()
 
@@ -347,14 +371,14 @@ def build_filter_by(
         if isinstance(col_type, Boolean):
             coerce = _coerce_bool
             if isinstance(value, list):
-                filters.append(column.in_([coerce(v) for v in value]))
+                filters[key] = column.in_([coerce(v) for v in value])
             else:
-                filters.append(column == coerce(value))
+                filters[key] = column == coerce(value)
         elif isinstance(col_type, ARRAY):
             if isinstance(value, list):
-                filters.append(column.overlap(value))
+                filters[key] = column.overlap(value)
             else:
-                filters.append(column.any(value))
+                filters[key] = column.any(value)
         elif isinstance(col_type, Enum):
             enum_class = col_type.enum_class
             if enum_class is not None:
@@ -365,19 +389,19 @@ def build_filter_by(
                     return enum_class[v]  # lookup by name: "PENDING", "RED"
 
                 if isinstance(value, list):
-                    filters.append(column.in_([_coerce_enum(v) for v in value]))
+                    filters[key] = column.in_([_coerce_enum(v) for v in value])
                 else:
-                    filters.append(column == _coerce_enum(value))
+                    filters[key] = column == _coerce_enum(value)
             else:  # pragma: no cover
                 if isinstance(value, list):
-                    filters.append(column.in_(value))
+                    filters[key] = column.in_(value)
                 else:
-                    filters.append(column == value)
+                    filters[key] = column == value
         elif isinstance(col_type, _EQUALITY_TYPES):
             if isinstance(value, list):
-                filters.append(column.in_(value))
+                filters[key] = column.in_(value)
             else:
-                filters.append(column == value)
+                filters[key] = column == value
         else:
             raise UnsupportedFacetTypeError(key, type(col_type).__name__)
 
