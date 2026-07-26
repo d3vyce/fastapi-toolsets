@@ -199,8 +199,9 @@ class TestOffsetPagination:
         resp = await client.get("/articles/offset?status=published")
 
         body = resp.json()
-        # draft is filtered out → should not appear in filter_attributes
-        assert "draft" not in body["filter_attributes"]["status"]
+        # a facet excludes its own filter_by condition, so filtering by
+        # status=published still shows every status the facet offers
+        assert "draft" in body["filter_attributes"]["status"]
 
     @pytest.mark.anyio
     async def test_search_and_filter_combined(self, client: AsyncClient, ex_db_session):

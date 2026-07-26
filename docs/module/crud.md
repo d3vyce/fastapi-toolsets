@@ -491,6 +491,16 @@ The distinct values for each facet field are returned in the `filter_attributes`
 !!! info "Key format uses `__` as a separator for relationship chains."
     A direct column `User.status` produces `"status"`. A relationship tuple `(User.role, Role.name)` produces `"role__name"`. A deeper chain `(User.role, Role.permission, Permission.name)` produces `"role__permission__name"`. An unknown `filter_by` key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) (HTTP 422).
 
+#### Skipping facet queries
+
+!!! info "Added in `v5.1.0`"
+
+Facet values only change with the filters, not with the page. Pass `include_facets=False` to `offset_paginate_params()` / `cursor_paginate_params()` on pages 2..N to skip the facet queries entirely (`filter_attributes` will be `None`):
+
+```python
+params: Annotated[dict, Depends(UserCrud.offset_paginate_params(include_facets=False))]
+```
+
 ## Sorting
 
 !!! info "Added in `v1.3`"

@@ -44,6 +44,7 @@ from ..types import (
 )
 from .search import (
     SearchConfig,
+    apply_search_joins,
     build_facets,
     build_filter_by,
     build_search_filters,
@@ -125,17 +126,6 @@ def _apply_joins(q: Any, joins: JoinType | None, outer_join: bool) -> Any:
         return q
     for model, condition in joins:
         q = q.outerjoin(model, condition) if outer_join else q.join(model, condition)
-    return q
-
-
-def _apply_search_joins(q: Any, search_joins: list[Any]) -> Any:
-    """Apply relationship-based outer joins (from search/filter_by) to a query."""
-    seen: set[str] = set()
-    for join_rel in search_joins:
-        key = str(join_rel)
-        if key not in seen:
-            seen.add(key)
-            q = q.outerjoin(join_rel)
     return q
 
 
@@ -265,12 +255,12 @@ class AsyncCrud(Generic[ModelType]):
         cls: type[Self],
         filter_by: dict[str, Any] | BaseModel | None,
         facet_fields: Sequence[FacetFieldType] | None,
-    ) -> tuple[list[Any], list[Any]]:
-        """Normalize filter_by and return (filters, joins) to apply to the query."""
+    ) -> tuple[dict[str, Any], list[Any]]:
+        """Normalize filter_by and return ({facet_key: filter}, joins) to apply to the query."""
         if isinstance(filter_by, BaseModel):
             filter_by = filter_by.model_dump(exclude_none=True)
         if not filter_by:
-            return [], []
+            return {}, []
         resolved = cls._resolve_facet_fields(facet_fields)
         return build_filter_by(filter_by, resolved or [])
 
@@ -281,8 +271,13 @@ class AsyncCrud(Generic[ModelType]):
         facet_fields: Sequence[FacetFieldType] | None,
         filters: list[Any],
         search_joins: list[Any],
+        *,
+        include_facets: bool = True,
+        own_filters: dict[str, Any] | None = None,
     ) -> dict[str, list[Any]] | None:
-        """Build facet filter_attributes, or return None if no facet fields configured."""
+        """Build facet filter_attributes, or None if disabled/no facet fields configured."""
+        if not include_facets:
+            return None
         resolved = cls._resolve_facet_fields(facet_fields)
         if not resolved:
             return None
@@ -292,6 +287,7 @@ class AsyncCrud(Generic[ModelType]):
             resolved,
             base_filters=filters,
             base_joins=search_joins,
+            own_filters=own_filters,
         )
 
     @classmethod
@@ -475,6 +471,7 @@ class AsyncCrud(Generic[ModelType]):
         default_page_size: int = 20,
         max_page_size: int = 100,
         include_total: bool = True,
+        include_facets: bool = True,
         search: bool = True,
         filter: bool = True,
         order: bool = True,
@@ -490,6 +487,7 @@ class AsyncCrud(Generic[ModelType]):
             default_page_size: Default ``items_per_page`` value.
             max_page_size: Maximum ``items_per_page`` value.
             include_total: Whether to include total count (not a query param).
+            include_facets: Whether to run facet queries (not a query param).
             search: Enable search query parameters.
             filter: Enable facet filter query parameters.
             order: Enable order query parameters.
@@ -519,7 +517,10 @@ class AsyncCrud(Generic[ModelType]):
         ]
         return cls._build_paginate_params(
             pagination_params=pagination_params,
-            pagination_fixed={"include_total": include_total},
+            pagination_fixed={
+                "include_total": include_total,
+                "include_facets": include_facets,
+            },
             dep_name=f"{cls.model.__name__}OffsetPaginateParams",
             search=search,
             filter=filter,
@@ -537,6 +538,7 @@ class AsyncCrud(Generic[ModelType]):
         *,
         default_page_size: int = 20,
         max_page_size: int = 100,
+        include_facets: bool = True,
         search: bool = True,
         filter: bool = True,
         order: bool = True,
@@ -551,6 +553,7 @@ class AsyncCrud(Generic[ModelType]):
         Args:
             default_page_size: Default ``items_per_page`` value.
             max_page_size: Maximum ``items_per_page`` value.
+            include_facets: Whether to run facet queries (not a query param).
             search: Enable search query parameters.
             filter: Enable facet filter query parameters.
             order: Enable order query parameters.
@@ -582,7 +585,7 @@ class AsyncCrud(Generic[ModelType]):
         ]
         return cls._build_paginate_params(
             pagination_params=pagination_params,
-            pagination_fixed={},
+            pagination_fixed={"include_facets": include_facets},
             dep_name=f"{cls.model.__name__}CursorPaginateParams",
             search=search,
             filter=filter,
@@ -602,6 +605,7 @@ class AsyncCrud(Generic[ModelType]):
         max_page_size: int = 100,
         default_pagination_type: PaginationType = PaginationType.OFFSET,
         include_total: bool = True,
+        include_facets: bool = True,
         search: bool = True,
         filter: bool = True,
         order: bool = True,
@@ -618,6 +622,7 @@ class AsyncCrud(Generic[ModelType]):
             max_page_size: Maximum ``items_per_page`` value.
             default_pagination_type: Default pagination strategy.
             include_total: Whether to include total count (not a query param).
+            include_facets: Whether to run facet queries (not a query param).
             search: Enable search query parameters.
             filter: Enable facet filter query parameters.
             order: Enable order query parameters.
@@ -666,7 +671,10 @@ class AsyncCrud(Generic[ModelType]):
         ]
         return cls._build_paginate_params(
             pagination_params=pagination_params,
-            pagination_fixed={"include_total": include_total},
+            pagination_fixed={
+                "include_total": include_total,
+                "include_facets": include_facets,
+            },
             dep_name=f"{cls.model.__name__}PaginateParams",
             search=search,
             filter=filter,
@@ -1271,6 +1279,7 @@ class AsyncCrud(Generic[ModelType]):
         search_column: str | None = None,
         order_fields: Sequence[OrderFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
+        include_facets: bool = True,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
     ) -> OffsetPaginatedResponse[Any]:
@@ -1292,6 +1301,9 @@ class AsyncCrud(Generic[ModelType]):
             search_column: Restrict search to a single column key.
             order_fields: Fields allowed for sorting (overrides class default).
             facet_fields: Columns to compute distinct values for (overrides class default)
+            include_facets: When ``False``, skip facet queries entirely;
+                ``filter_attributes`` will be ``None``. Useful on pages 2..N
+                where the facet counts were already fetched on page 1.
             filter_by: Dict of {column_key: value} to filter by declared facet fields.
                 Keys must match the column.key of a facet field. Scalar → equality,
                 list → IN clause. Raises InvalidFacetFilterError for unknown keys.
@@ -1304,7 +1316,6 @@ class AsyncCrud(Generic[ModelType]):
         offset = (page - 1) * items_per_page
 
         fb_filters, search_joins = cls._prepare_filter_by(filter_by, facet_fields)
-        filters.extend(fb_filters)
 
         # Build search filters
         if search:
@@ -1318,6 +1329,11 @@ class AsyncCrud(Generic[ModelType]):
             filters.extend(search_filters)
             search_joins.extend(new_search_joins)
 
+        # Facets combine these with each facet's own filter individually, so
+        # fb_filters is applied to the query below but excluded here.
+        facet_base_filters = list(filters)
+        filters.extend(fb_filters.values())
+
         # Build query with joins
         q = select(cls.model)
 
@@ -1325,11 +1341,11 @@ class AsyncCrud(Generic[ModelType]):
         q = _apply_joins(q, joins, outer_join)
 
         # Apply search joins (always outer joins for search)
-        q = _apply_search_joins(q, search_joins)
+        q = apply_search_joins(q, search_joins)
 
         # Apply order joins (relation joins required for order_by field)
         if order_joins:
-            q = _apply_search_joins(q, order_joins)
+            q = apply_search_joins(q, order_joins)
 
         if filters:
             q = q.where(and_(*filters))
@@ -1352,7 +1368,7 @@ class AsyncCrud(Generic[ModelType]):
             count_q = _apply_joins(count_q, joins, outer_join)
 
             # Apply search joins to count query
-            count_q = _apply_search_joins(count_q, search_joins)
+            count_q = apply_search_joins(count_q, search_joins)
 
             if filters:
                 count_q = count_q.where(and_(*filters))
@@ -1372,7 +1388,12 @@ class AsyncCrud(Generic[ModelType]):
         items: list[Any] = [schema.model_validate(item) for item in raw_items]
 
         filter_attributes = await cls._build_filter_attributes(
-            session, facet_fields, filters, search_joins
+            session,
+            facet_fields,
+            facet_base_filters,
+            search_joins,
+            include_facets=include_facets,
+            own_filters=fb_filters,
         )
         search_columns = cls._resolve_search_columns(search_fields)
         order_columns = cls._resolve_order_columns(order_fields)
@@ -1408,6 +1429,7 @@ class AsyncCrud(Generic[ModelType]):
         search_column: str | None = None,
         order_fields: Sequence[OrderFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
+        include_facets: bool = True,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
     ) -> CursorPaginatedResponse[Any]:
@@ -1430,6 +1452,8 @@ class AsyncCrud(Generic[ModelType]):
             search_column: Restrict search to a single column key.
             order_fields: Fields allowed for sorting (overrides class default).
             facet_fields: Columns to compute distinct values for (overrides class default).
+            include_facets: When ``False``, skip facet queries entirely;
+                ``filter_attributes`` will be ``None``.
             filter_by: Dict of {column_key: value} to filter by declared facet fields.
                 Keys must match the column.key of a facet field. Scalar → equality,
                 list → IN clause. Raises InvalidFacetFilterError for unknown keys.
@@ -1441,7 +1465,6 @@ class AsyncCrud(Generic[ModelType]):
         filters = list(filters) if filters else []
 
         fb_filters, search_joins = cls._prepare_filter_by(filter_by, facet_fields)
-        filters.extend(fb_filters)
 
         if cls.cursor_column is None:
             raise ValueError(
@@ -1473,6 +1496,11 @@ class AsyncCrud(Generic[ModelType]):
             filters.extend(search_filters)
             search_joins.extend(new_search_joins)
 
+        # Facets combine these with each facet's own filter individually, so
+        # fb_filters is applied to the query below but excluded here.
+        facet_base_filters = list(filters)
+        filters.extend(fb_filters.values())
+
         # Build query
         q = select(cls.model)
 
@@ -1480,11 +1508,11 @@ class AsyncCrud(Generic[ModelType]):
         q = _apply_joins(q, joins, outer_join)
 
         # Apply search joins (always outer joins)
-        q = _apply_search_joins(q, search_joins)
+        q = apply_search_joins(q, search_joins)
 
         # Apply order joins (relation joins required for order_by field)
         if order_joins:
-            q = _apply_search_joins(q, order_joins)
+            q = apply_search_joins(q, order_joins)
 
         if filters:
             q = q.where(and_(*filters))
@@ -1541,7 +1569,12 @@ class AsyncCrud(Generic[ModelType]):
         items: list[Any] = [schema.model_validate(item) for item in items_page]
 
         filter_attributes = await cls._build_filter_attributes(
-            session, facet_fields, filters, search_joins
+            session,
+            facet_fields,
+            facet_base_filters,
+            search_joins,
+            include_facets=include_facets,
+            own_filters=fb_filters,
         )
         search_columns = cls._resolve_search_columns(search_fields)
         order_columns = cls._resolve_order_columns(order_fields)
@@ -1581,6 +1614,7 @@ class AsyncCrud(Generic[ModelType]):
         search_column: str | None = ...,
         order_fields: Sequence[OrderFieldType] | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
+        include_facets: bool = ...,
         filter_by: dict[str, Any] | BaseModel | None = ...,
         schema: type[BaseModel],
     ) -> OffsetPaginatedResponse[Any]: ...
@@ -1607,6 +1641,7 @@ class AsyncCrud(Generic[ModelType]):
         search_column: str | None = ...,
         order_fields: Sequence[OrderFieldType] | None = ...,
         facet_fields: Sequence[FacetFieldType] | None = ...,
+        include_facets: bool = ...,
         filter_by: dict[str, Any] | BaseModel | None = ...,
         schema: type[BaseModel],
     ) -> CursorPaginatedResponse[Any]: ...
@@ -1632,6 +1667,7 @@ class AsyncCrud(Generic[ModelType]):
         search_column: str | None = None,
         order_fields: Sequence[OrderFieldType] | None = None,
         facet_fields: Sequence[FacetFieldType] | None = None,
+        include_facets: bool = True,
         filter_by: dict[str, Any] | BaseModel | None = None,
         schema: type[BaseModel],
     ) -> OffsetPaginatedResponse[Any] | CursorPaginatedResponse[Any]:
@@ -1662,6 +1698,8 @@ class AsyncCrud(Generic[ModelType]):
             order_fields: Fields allowed for sorting (overrides class default).
             facet_fields: Columns to compute distinct values for (overrides
                 class default).
+            include_facets: When ``False``, skip facet queries entirely;
+                ``filter_attributes`` will be ``None``.
             filter_by: Dict of ``{column_key: value}`` to filter by declared
                 facet fields.  Keys must match the ``column.key`` of a facet
                 field.  Scalar → equality, list → IN clause.  Raises
@@ -1692,6 +1730,7 @@ class AsyncCrud(Generic[ModelType]):
                     search_column=search_column,
                     order_fields=order_fields,
                     facet_fields=facet_fields,
+                    include_facets=include_facets,
                     filter_by=filter_by,
                     schema=schema,
                 )
@@ -1714,6 +1753,7 @@ class AsyncCrud(Generic[ModelType]):
                     search_column=search_column,
                     order_fields=order_fields,
                     facet_fields=facet_fields,
+                    include_facets=include_facets,
                     filter_by=filter_by,
                     schema=schema,
                 )

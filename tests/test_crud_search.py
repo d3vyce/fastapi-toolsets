@@ -531,6 +531,15 @@ class TestFacetsNotSet:
 
         assert result.filter_attributes is None
 
+    @pytest.mark.anyio
+    async def test_build_facets_empty_field_list(self, db_session: AsyncSession):
+        """build_facets([]) is a no-op that returns {} without querying — the escape hatch."""
+        from fastapi_toolsets.crud.search import build_facets
+
+        result = await build_facets(db_session, User, [])
+
+        assert result == {}
+
 
 class TestFacetsDirectColumn:
     """Facets on direct model columns."""
@@ -606,6 +615,91 @@ class TestFacetsDirectColumn:
         assert "username" not in result.filter_attributes
 
 
+class TestFacetsMixedTypes:
+    """Facet values keep their native Python type through the batched query."""
+
+    @pytest.mark.anyio
+    async def test_enum_and_integer_facets_preserve_types(
+        self, db_session: AsyncSession
+    ):
+        """Enum facets return member names (not raw DB values); Integer facets return ints."""
+        OrderMixedCrud = CrudFactory(
+            Order, facet_fields=[Order.status, Order.priority, Order.color]
+        )
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(
+                name="order-1", status=OrderStatus.PENDING, priority=1, color=Color.RED
+            ),
+        )
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(
+                name="order-2", status=OrderStatus.SHIPPED, priority=3, color=Color.BLUE
+            ),
+        )
+
+        result = await OrderMixedCrud.offset_paginate(db_session, schema=OrderRead)
+
+        assert result.filter_attributes is not None
+        assert set(result.filter_attributes["status"]) == {"PENDING", "SHIPPED"}
+        assert all(isinstance(v, str) for v in result.filter_attributes["status"])
+        assert set(result.filter_attributes["priority"]) == {1, 3}
+        assert all(isinstance(v, int) for v in result.filter_attributes["priority"])
+        assert set(result.filter_attributes["color"]) == {"RED", "BLUE"}
+
+    @pytest.mark.anyio
+    async def test_bool_facet_keeps_python_bool(self, db_session: AsyncSession):
+        """A Boolean facet returns Python bool values, not stringified 'true'/'false'."""
+        UserBoolFacetCrud = CrudFactory(User, facet_fields=[User.is_active])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com", is_active=True)
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="bob", email="b@test.com", is_active=False)
+        )
+
+        result = await UserBoolFacetCrud.offset_paginate(db_session, schema=UserRead)
+
+        assert result.filter_attributes is not None
+        assert set(result.filter_attributes["is_active"]) == {True, False}
+        assert all(isinstance(v, bool) for v in result.filter_attributes["is_active"])
+
+
+class TestIncludeFacets:
+    """include_facets=False skips facet queries entirely."""
+
+    @pytest.mark.anyio
+    async def test_offset_paginate_include_facets_false(self, db_session: AsyncSession):
+        """filter_attributes is None when include_facets=False, even with facet_fields set."""
+        UserFacetCrud = CrudFactory(User, facet_fields=[User.username])
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserFacetCrud.offset_paginate(
+            db_session, include_facets=False, schema=UserRead
+        )
+
+        assert result.filter_attributes is None
+
+    @pytest.mark.anyio
+    async def test_cursor_paginate_include_facets_false(self, db_session: AsyncSession):
+        """filter_attributes is None when include_facets=False for cursor_paginate."""
+        UserFacetCursorCrud = CrudFactory(
+            User, cursor_column=User.id, facet_fields=[User.username]
+        )
+        await UserCrud.create(
+            db_session, UserCreate(username="alice", email="a@test.com")
+        )
+
+        result = await UserFacetCursorCrud.cursor_paginate(
+            db_session, include_facets=False, schema=UserRead
+        )
+
+        assert result.filter_attributes is None
+
+
 class TestFacetsRespectFilters:
     """Facets reflect the active filter conditions."""
 
@@ -629,6 +723,28 @@ class TestFacetsRespectFilters:
 
         assert result.filter_attributes is not None
         assert result.filter_attributes["username"] == ["alice"]
+
+    @pytest.mark.anyio
+    async def test_array_facet_respects_unrelated_filter(
+        self, db_session: AsyncSession
+    ):
+        """An ARRAY facet is scoped by a filter on a different column (not self-collapse)."""
+        ArticleFacetCrud = CrudFactory(Article, facet_fields=[Article.labels])
+        await ArticleCrud.create(
+            db_session, ArticleCreate(title="Post 1", labels=["python", "fastapi"])
+        )
+        await ArticleCrud.create(
+            db_session, ArticleCreate(title="Post 2", labels=["rust", "axum"])
+        )
+
+        result = await ArticleFacetCrud.offset_paginate(
+            db_session,
+            filters=[Article.title == "Post 1"],
+            schema=ArticleRead,
+        )
+
+        assert result.filter_attributes is not None
+        assert result.filter_attributes["labels"] == ["fastapi", "python"]
 
 
 class TestFacetsRelationship:
@@ -785,8 +901,8 @@ class TestFilterBy:
 
         assert len(result.data) == 1
         assert result.data[0].username == "alice"
-        # facet also scoped to the filter
-        assert result.filter_attributes == {"username": ["alice"]}
+        # facet excludes its own filter_by condition, so it isn't collapsed
+        assert result.filter_attributes == {"username": ["alice", "bob"]}
 
     @pytest.mark.anyio
     async def test_list_filter_produces_in_clause(self, db_session: AsyncSession):
@@ -924,7 +1040,7 @@ class TestFilterBy:
 
         assert len(result.data) == 1
         assert result.data[0].username == "alice"
-        assert result.filter_attributes == {"username": ["alice"]}
+        assert result.filter_attributes == {"username": ["alice", "bob"]}
 
     @pytest.mark.anyio
     async def test_basemodel_filter_by_offset_paginate(self, db_session: AsyncSession):
@@ -1085,8 +1201,10 @@ class TestFilterBy:
         assert result.pagination.total_count == 2
         titles = {a.title for a in result.data}
         assert titles == {"Post 1", "Post 3"}
-        # facet returns individual unnested values, not whole arrays
-        assert result.filter_attributes == {"labels": ["django", "fastapi", "python"]}
+        # facet excludes its own filter_by condition (not collapsed to matching rows)
+        assert result.filter_attributes == {
+            "labels": ["axum", "django", "fastapi", "python", "rust"]
+        }
 
     @pytest.mark.anyio
     async def test_array_overlap_list_value(self, db_session: AsyncSession):
@@ -2179,7 +2297,12 @@ class TestOffsetPaginateParamsSchema:
             include_total=False, search=False, filter=False, order=False
         )
         result = await dep(page=2, items_per_page=10)
-        assert result == {"page": 2, "items_per_page": 10, "include_total": False}
+        assert result == {
+            "page": 2,
+            "items_per_page": 10,
+            "include_total": False,
+            "include_facets": True,
+        }
 
     @pytest.mark.anyio
     async def test_integrates_with_offset_paginate(self, db_session: AsyncSession):
@@ -2290,7 +2413,11 @@ class TestCursorPaginateParamsSchema:
             search=False, filter=False, order=False
         )
         result = await dep(cursor=None, items_per_page=5)
-        assert result == {"cursor": None, "items_per_page": 5}
+        assert result == {
+            "cursor": None,
+            "items_per_page": 5,
+            "include_facets": True,
+        }
 
     @pytest.mark.anyio
     async def test_integrates_with_cursor_paginate(self, db_session: AsyncSession):
@@ -2399,6 +2526,7 @@ class TestPaginateParamsSchema:
             "cursor": None,
             "items_per_page": 10,
             "include_total": True,
+            "include_facets": True,
         }
 
     @pytest.mark.anyio
