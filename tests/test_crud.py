@@ -418,6 +418,55 @@ class TestDefaultLoadOptionsIntegration:
         assert updated.role.name == "admin"
 
     @pytest.mark.anyio
+    async def test_default_load_options_applied_to_create_expire_on_commit(
+        self, db_session_expire_on_commit: AsyncSession
+    ):
+        """create()'s reload uses captured PK values, not an expired instance attribute.
+
+        Regression test for MissingGreenlet: reading a PK off `db_model` after
+        commit under expire_on_commit=True (the SQLAlchemy default) would
+        trigger an implicit sync refresh, which fails under asyncio.
+        """
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(
+            db_session_expire_on_commit, RoleCreate(name="admin")
+        )
+        user = await UserWithDefaultLoad.create(
+            db_session_expire_on_commit,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+        assert user.role is not None
+        assert user.role.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_default_load_options_applied_to_update_expire_on_commit(
+        self, db_session_expire_on_commit: AsyncSession
+    ):
+        """update()'s reload uses captured PK values, not an expired instance attribute.
+
+        Regression test for MissingGreenlet under expire_on_commit=True.
+        """
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(
+            db_session_expire_on_commit, RoleCreate(name="admin")
+        )
+        user = await UserCrud.create(
+            db_session_expire_on_commit,
+            UserCreate(username="alice", email="alice@test.com"),
+        )
+        updated = await UserWithDefaultLoad.update(
+            db_session_expire_on_commit,
+            UserUpdate(role_id=role.id),
+            filters=[User.id == user.id],
+        )
+        assert updated.role is not None
+        assert updated.role.name == "admin"
+
+    @pytest.mark.anyio
     async def test_load_options_overrides_default_load_options(
         self, db_session: AsyncSession
     ):

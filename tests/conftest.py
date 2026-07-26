@@ -476,3 +476,26 @@ async def db_session(engine):
         # Drop tables after test
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture(scope="function")
+async def db_session_expire_on_commit(engine):
+    """Session with expire_on_commit=True (the SQLAlchemy default).
+
+    Attributes read off an instance after commit are expired and trigger an
+    implicit (sync) refresh under this setting — which fails under asyncio
+    with MissingGreenlet. The other ``db_session`` fixture uses
+    ``expire_on_commit=False`` and would not catch that class of bug.
+    """
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=True)
+    session = session_factory()
+
+    try:
+        yield session
+    finally:
+        await session.close()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
