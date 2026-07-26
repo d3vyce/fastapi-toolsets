@@ -372,6 +372,22 @@ class TestBuildSearchFilters:
 
         assert len(joins) == 1
 
+    def test_skips_cast_on_string_column(self):
+        """String columns are filtered directly, without a CAST (keeps pg_trgm indexable)."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, _ = build_search_filters(User, "john", search_fields=[User.username])
+
+        assert "CAST" not in str(filters[0])
+
+    def test_casts_non_string_column(self):
+        """Non-string columns (e.g. UUID) still get cast to String so ilike works."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, _ = build_search_filters(User, "123", search_fields=[User.id])
+
+        assert "CAST" in str(filters[0])
+
 
 class TestSearchConfig:
     """Tests for SearchConfig options."""
