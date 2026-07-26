@@ -25,13 +25,11 @@ from fastapi_toolsets.models.watched import (
     _SESSION_CREATES,
     _SESSION_DELETES,
     _SESSION_UPDATES,
-    _WATCHED_MODELS,
     EventSession,
     _after_flush,
     _after_rollback,
     _get_watched_fields,
     _invalidate_caches,
-    _is_watched,
     _snapshot_column_attrs,
     _upsert_changes,
 )
@@ -658,22 +656,6 @@ class TestWatchInheritance:
         assert "other" in _watch_inherit_events[0]["changes"]
 
 
-class TestIsWatched:
-    def test_watched_model_is_watched(self):
-        """_is_watched returns True for models with registered handlers."""
-        obj = WatchedModel(status="x", other="y")
-        assert _is_watched(obj) is True
-
-    def test_non_watched_model_is_not_watched(self):
-        """_is_watched returns False for models without registered handlers."""
-        assert _is_watched(object()) is False
-
-    def test_subclass_of_watched_model_is_watched(self):
-        """_is_watched returns True for subclasses of watched models (via MRO)."""
-        dog = PolyDog(name="Rex")
-        assert _is_watched(dog) is True
-
-
 class TestUpsertChanges:
     def test_inserts_new_entry(self):
         """New key is inserted with the full changes dict."""
@@ -715,7 +697,10 @@ class TestAfterFlush:
         """New watched objects are added to _SESSION_CREATES."""
         obj = object()
         session = SimpleNamespace(new=[obj], deleted=[], dirty=[], info={})
-        with patch("fastapi_toolsets.models.watched._is_watched", return_value=True):
+        with patch(
+            "fastapi_toolsets.models.watched._get_handlers",
+            return_value=[lambda *a: None],
+        ):
             _after_flush(session, None)
         assert session.info[_SESSION_CREATES] == [obj]
 
@@ -731,7 +716,10 @@ class TestAfterFlush:
         obj = object()
         session = SimpleNamespace(new=[], deleted=[obj], dirty=[], info={})
         with (
-            patch("fastapi_toolsets.models.watched._is_watched", return_value=True),
+            patch(
+                "fastapi_toolsets.models.watched._get_handlers",
+                return_value=[lambda *a: None],
+            ),
             patch(
                 "fastapi_toolsets.models.watched._snapshot_column_attrs",
                 return_value={"id": 1},
@@ -1023,34 +1011,46 @@ class TestEventCallbacks:
                 await other.commit()
             await engine.dispose()
 
-        real_get = mixin_session.get
-        real_refresh = mixin_session.refresh
+        real_batch_reload = _watched_module._batch_reload
 
-        def _matches_doomed(pk):
-            return pk == doomed_id or (isinstance(pk, tuple) and pk[0] == doomed_id)
-
-        async def racing_get(model, pk, *args, **kwargs):
-            if _matches_doomed(pk):
+        async def racing_batch_reload(session, model, pk_tuples):
+            if any(pk[0] == doomed_id for pk in pk_tuples):
                 await kill_doomed_row_once()
-            return await real_get(model, pk, *args, **kwargs)
+            return await real_batch_reload(session, model, pk_tuples)
 
-        async def racing_refresh(obj, *args, **kwargs):
-            if getattr(obj, "id", None) == doomed_id:
-                await kill_doomed_row_once()
-            return await real_refresh(obj, *args, **kwargs)
-
-        # Patch both possible reload mechanisms (session.get / session.refresh)
-        # so this test still exercises the race regardless of which one
-        # EventSession.commit() uses internally to pick up server defaults.
-        mixin_session.get = racing_get
-        mixin_session.refresh = racing_refresh
-        with patch.object(_watched_module._logger, "error") as mock_error:
+        # Patch the batched reload EventSession.commit() uses to pick up
+        # server defaults, so this test still exercises the race.
+        with (
+            patch.object(_watched_module, "_batch_reload", racing_batch_reload),
+            patch.object(_watched_module._logger, "error") as mock_error,
+        ):
             await mixin_session.commit()
             mock_error.assert_not_called()
 
         assert raced["done"]
         created_ids = {e["obj_id"] for e in _test_events if e["event"] == "create"}
         assert created_ids == {keep.id, doomed_id}
+
+    @pytest.mark.anyio
+    async def test_batch_reload_exception_is_logged_and_dispatch_continues(
+        self, mixin_session
+    ):
+        """A batched-reload failure is logged; CREATE handlers still fire."""
+        obj = WatchedModel(status="active", other="x")
+        mixin_session.add(obj)
+
+        async def failing_batch_reload(session, model, pk_tuples):
+            raise RuntimeError("reload failed")
+
+        with (
+            patch.object(_watched_module, "_batch_reload", failing_batch_reload),
+            patch.object(_watched_module._logger, "error") as mock_error,
+        ):
+            await mixin_session.commit()
+
+        mock_error.assert_called_once()
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
 
 
 class TestTransientObject:
@@ -1421,7 +1421,6 @@ class TestListensFor:
         for key in list(_EVENT_HANDLERS):
             if key[0] is ListenerModel:
                 del _EVENT_HANDLERS[key]
-        _WATCHED_MODELS.discard(ListenerModel)
         _invalidate_caches()
 
     @pytest.mark.anyio
