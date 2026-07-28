@@ -30,6 +30,7 @@ UserCrud = CrudFactory(model=User)
 from fastapi_toolsets.crud.factory import AsyncCrud
 from myapp.models import User
 
+
 class UserCrud(AsyncCrud[User]):
     model = User
     searchable_fields = [User.username, User.email]
@@ -60,6 +61,7 @@ from sqlalchemy.orm import DeclarativeBase
 from fastapi_toolsets.crud.factory import AsyncCrud
 
 T = TypeVar("T", bound=DeclarativeBase)
+
 
 class AuditedCrud(AsyncCrud[T], Generic[T]):
     """Base CRUD with custom function"""
@@ -101,7 +103,9 @@ user = await UserCrud.first(session=session, filters=[User.email == email])
 users = await UserCrud.get_multi(session=session, filters=[User.is_active == True])
 
 # Update
-user = await UserCrud.update(session=session, obj=UserUpdateSchema(username="bob"), filters=[User.id == user_id])
+user = await UserCrud.update(
+    session=session, obj=UserUpdateSchema(username="bob"), filters=[User.id == user_id]
+)
 
 # Delete
 await UserCrud.delete(session=session, filters=[User.id == user_id])
@@ -160,10 +164,14 @@ user = await UserCrud.get(session, [User.id == user_id], with_for_update=True)
 user = await UserCrud.get(session, [User.id == user_id], with_for_update="nowait")
 
 # Skip rows already locked by another transaction (e.g. job queues)
-rows = await JobCrud.get_multi(session, filters=[Job.status == "pending"], with_for_update="skip_locked")
+rows = await JobCrud.get_multi(
+    session, filters=[Job.status == "pending"], with_for_update="skip_locked"
+)
 
 # Lock atomically as part of update (prevents race between SELECT and UPDATE)
-user = await UserCrud.update(session, UserUpdate(credits=10), [User.id == user_id], with_for_update=True)
+user = await UserCrud.update(
+    session, UserUpdate(credits=10), [User.id == user_id], with_for_update=True
+)
 ```
 
 !!! warning
@@ -192,6 +200,7 @@ Three pagination methods are available.  All return a typed response whose `pagi
 ```python
 from typing import Annotated
 from fastapi import Depends
+
 
 @router.get("")
 async def get_users(
@@ -228,7 +237,9 @@ By default `offset_paginate` runs two queries: one for the page items and one `C
 @router.get("")
 async def get_users(
     session: SessionDep,
-    params: Annotated[dict, Depends(UserCrud.offset_paginate_params(include_total=False))],
+    params: Annotated[
+        dict, Depends(UserCrud.offset_paginate_params(include_total=False))
+    ],
 ) -> OffsetPaginatedResponse[UserRead]:
     return await UserCrud.offset_paginate(session=session, **params, schema=UserRead)
 ```
@@ -302,6 +313,7 @@ PostCrud = CrudFactory(model=Post, cursor_column=Post.created_at)
 
 ```python
 from fastapi_toolsets.schemas import PaginatedResponse
+
 
 @router.get("")
 async def list_users(
@@ -446,6 +458,7 @@ from typing import Annotated
 
 from fastapi import Depends
 
+
 @router.get("", response_model_exclude_none=True)
 async def list_users(
     session: SessionDep,
@@ -540,6 +553,7 @@ from typing import Annotated
 
 from fastapi import Depends
 
+
 @router.get("")
 async def list_users(
     session: SessionDep,
@@ -632,7 +646,9 @@ PostCrud = CrudFactory(
     m2m_fields={"tag_ids": Post.tags},
 )
 
-post = await PostCrud.create(session=session, obj=PostCreateSchema(title="Hello", tag_ids=[1, 2, 3]))
+post = await PostCrud.create(
+    session=session, obj=PostCreateSchema(title="Hello", tag_ids=[1, 2, 3])
+)
 ```
 
 ## Upsert
@@ -659,6 +675,7 @@ class UserRead(PydanticBase):
     id: UUID
     username: str
 
+
 @router.get(
     "/{uuid}",
     responses=generate_error_responses(NotFoundError),
@@ -670,12 +687,15 @@ async def get_user(session: SessionDep, uuid: UUID) -> Response[UserRead]:
         schema=UserRead,
     )
 
+
 @router.get("")
 async def list_users(
     session: SessionDep,
     params: Annotated[dict, Depends(crud.UserCrud.offset_paginate_params())],
 ) -> OffsetPaginatedResponse[UserRead]:
-    return await crud.UserCrud.offset_paginate(session=session, **params, schema=UserRead)
+    return await crud.UserCrud.offset_paginate(
+        session=session, **params, schema=UserRead
+    )
 ```
 
 The schema must have `from_attributes=True` (or inherit from [`PydanticBase`](../reference/schemas.md#fastapi_toolsets.schemas.PydanticBase)) so it can be built from SQLAlchemy model instances.

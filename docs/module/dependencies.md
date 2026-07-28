@@ -20,6 +20,7 @@ UserDep = PathDependency(model=User, field=User.id, session_dep=get_db)
 SessionDep = Annotated[AsyncSession, Depends(get_db)]
 UserDep = PathDependency(model=User, field=User.id, session_dep=SessionDep)
 
+
 @router.get("/users/{user_id}")
 async def get_user(user: User = UserDep):
     return user
@@ -29,6 +30,7 @@ By default the parameter name is inferred from the field (`user_id` for `User.id
 
 ```python
 UserDep = PathDependency(model=User, field=User.id, session_dep=get_db, param_name="id")
+
 
 @router.get("/users/{id}")
 async def get_user(user: User = UserDep):
@@ -43,11 +45,15 @@ async def get_user(user: User = UserDep):
 from fastapi_toolsets.dependencies import BodyDependency
 
 # Plain callable
-RoleDep = BodyDependency(model=Role, field=Role.id, session_dep=get_db, body_field="role_id")
+RoleDep = BodyDependency(
+    model=Role, field=Role.id, session_dep=get_db, body_field="role_id"
+)
 
 # Annotated
 SessionDep = Annotated[AsyncSession, Depends(get_db)]
-RoleDep = BodyDependency(model=Role, field=Role.id, session_dep=SessionDep, body_field="role_id")
+RoleDep = BodyDependency(
+    model=Role, field=Role.id, session_dep=SessionDep, body_field="role_id"
+)
 
 
 @router.post("/users")

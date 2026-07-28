@@ -554,7 +554,6 @@ class TestAsyncCommand:
         @async_command
         async def async_func() -> None:
             """This is a docstring."""
-            pass
 
         assert async_func.__doc__ == """This is a docstring."""
 

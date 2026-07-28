@@ -22,7 +22,6 @@ __all__ = [
     "AsyncCrud",
     "CrudFactory",
     "FacetFieldType",
-    "get_searchable_fields",
     "InvalidFacetFilterError",
     "InvalidSearchColumnError",
     "JoinType",
@@ -34,4 +33,5 @@ __all__ = [
     "SearchConfig",
     "SearchFieldType",
     "UnsupportedFacetTypeError",
+    "get_searchable_fields",
 ]

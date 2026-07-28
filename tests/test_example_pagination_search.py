@@ -56,7 +56,7 @@ async def seed(session: AsyncSession):
     session.add_all([python, backend])
     await session.flush()
 
-    now = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
     session.add_all(
         [
             Article(

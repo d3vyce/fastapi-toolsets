@@ -197,8 +197,8 @@ class TestCliImportGuard:
                     importlib.import_module("fastapi_toolsets.cli.app")
         finally:
             for key in list(sys.modules):
-                if key.startswith("fastapi_toolsets.cli.app") or key.startswith(
-                    "fastapi_toolsets.cli.config"
+                if key.startswith(
+                    ("fastapi_toolsets.cli.app", "fastapi_toolsets.cli.config")
                 ):
                     sys.modules.pop(key, None)
             sys.modules.update(saved)

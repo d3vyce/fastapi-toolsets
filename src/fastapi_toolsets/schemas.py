@@ -2,7 +2,7 @@
 
 import math
 from enum import Enum
-from typing import Annotated, Any, ClassVar, Generic, Literal, TypeVar, Union
+from typing import Annotated, Any, ClassVar, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
@@ -10,11 +10,11 @@ from .types import DataT
 
 __all__ = [
     "ApiError",
-    "CursorPagination",
     "CursorPaginatedResponse",
+    "CursorPagination",
     "ErrorResponse",
-    "OffsetPagination",
     "OffsetPaginatedResponse",
+    "OffsetPagination",
     "PaginatedResponse",
     "PaginationType",
     "PydanticBase",
@@ -174,7 +174,7 @@ class PaginatedResponse(BaseResponse, Generic[DataT]):
             cached = cls._discriminated_union_cache.get(item)
             if cached is None:
                 cached = Annotated[
-                    Union[CursorPaginatedResponse[item], OffsetPaginatedResponse[item]],  # ty:ignore[invalid-type-form]
+                    CursorPaginatedResponse[item] | OffsetPaginatedResponse[item],  # ty:ignore[invalid-type-form]
                     Field(discriminator="pagination_type"),
                 ]
                 cls._discriminated_union_cache[item] = cached

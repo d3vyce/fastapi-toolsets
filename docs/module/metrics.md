@@ -47,9 +47,11 @@ If neither of these applies to you, declaring metrics at module level (e.g. `HTT
 ```python
 from prometheus_client import Counter, Histogram
 
+
 @metrics.register
 def http_requests():
     return Counter("http_requests_total", "Total HTTP requests", ["method", "status"])
+
 
 @metrics.register
 def request_duration():
@@ -78,6 +80,7 @@ Collectors are called on every scrape. Use them for metrics that reflect current
 from prometheus_client import Gauge
 
 _queue_depth = Gauge("queue_depth", "Current queue depth")
+
 
 @metrics.register(collect=True)
 def collect_queue_depth():

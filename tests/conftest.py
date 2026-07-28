@@ -1,26 +1,27 @@
 """Shared pytest fixtures for fastapi-utils tests."""
 
+import datetime
+import decimal
 import os
 import uuid
 from enum import Enum
 
 import pytest
 from pydantic import BaseModel
-import datetime
-import decimal
-
 from sqlalchemy import (
+    JSON,
     Column,
     Date,
     DateTime,
-    Enum as SAEnum,
     ForeignKey,
     Integer,
-    JSON,
     Numeric,
     String,
     Table,
     Uuid,
+)
+from sqlalchemy import (
+    Enum as SAEnum,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -37,8 +38,6 @@ DATABASE_URL = os.getenv(
 
 class Base(DeclarativeBase):
     """Base class for test models."""
-
-    pass
 
 
 class Role(Base):

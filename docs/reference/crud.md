@@ -6,7 +6,11 @@ You can import the main symbols from `fastapi_toolsets.crud`:
 
 ```python
 from fastapi_toolsets.crud import CrudFactory, AsyncCrud
-from fastapi_toolsets.crud.search import SearchConfig, get_searchable_fields, build_search_filters
+from fastapi_toolsets.crud.search import (
+    SearchConfig,
+    get_searchable_fields,
+    build_search_filters,
+)
 ```
 
 ## ::: fastapi_toolsets.crud.factory.AsyncCrud

@@ -74,7 +74,7 @@ class TestCustomEnumContext:
         """Python prohibits extending an Enum that already has members."""
         with pytest.raises(TypeError):
 
-            class MyContext(Context):  # noqa: F841  # ty: ignore[subclass-of-final-class]
+            class MyContext(Context):  # ty: ignore[subclass-of-final-class]
                 STAGING = "staging"
 
     def test_custom_enum_values_interchangeable_with_context(self):

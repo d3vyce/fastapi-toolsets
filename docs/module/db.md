@@ -24,9 +24,9 @@ db = Database("postgresql+asyncpg://postgres:postgres@localhost/app")
 app = FastAPI()
 db.install(app)  # commit middleware + engine disposal on shutdown
 
+
 @app.get("/users")
-async def list_users(session: AsyncSession = Depends(db)):
-    ...
+async def list_users(session: AsyncSession = Depends(db)): ...
 ```
 
 The `Database` instance **is** the dependency: use it directly as `Depends(db)`. The whole request runs as a single transaction (CRUD writes use savepoints under it).
@@ -37,8 +37,10 @@ The **URL** may be a plain string or a Pydantic [`PostgresDsn`](https://docs.pyd
 from pydantic_settings import BaseSettings
 from pydantic import PostgresDsn
 
+
 class Settings(BaseSettings):
     database_url: PostgresDsn
+
 
 settings = Settings()
 
@@ -72,11 +74,13 @@ Without `install`, the session commits in the dependency teardown, which runs af
 ```python
 from contextlib import asynccontextmanager
 
+
 @asynccontextmanager
 async def lifespan(app):
-    await warm_cache()   # your startup
+    await warm_cache()  # your startup
     yield
     await flush_metrics()  # your shutdown
+
 
 app = FastAPI(lifespan=lifespan)
 db.install(app)  # your shutdown runs first, then the engine is disposed
@@ -100,6 +104,7 @@ async def seed():
 
 ```python
 from fastapi_toolsets.db import transaction
+
 
 async def create_user_with_role(session):
     async with transaction(session):
@@ -206,6 +211,7 @@ For test isolation with automatic cleanup, use [`create_worker_database`](../ref
 
 ```python
 from fastapi_toolsets.db.testing import cleanup_tables
+
 
 @pytest.fixture(autouse=True)
 async def clean(db_session):

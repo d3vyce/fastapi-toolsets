@@ -250,6 +250,7 @@ class TestDbExceptions:
     def test_pool_exhausted_handled_as_503(self):
         """init_exceptions_handlers turns PoolExhaustedError into a 503 response."""
         from fastapi import FastAPI
+
         from fastapi_toolsets.exceptions import init_exceptions_handlers
 
         app = FastAPI()
@@ -267,6 +268,7 @@ class TestDbExceptions:
     def test_lock_timeout_handled_as_503(self):
         """init_exceptions_handlers turns LockTimeoutError into a 503 response."""
         from fastapi import FastAPI
+
         from fastapi_toolsets.exceptions import init_exceptions_handlers
 
         app = FastAPI()

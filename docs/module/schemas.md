@@ -15,6 +15,7 @@ The most common wrapper for a single resource response.
 ```python
 from fastapi_toolsets.schemas import Response
 
+
 @router.get("/users/{id}")
 async def get_user(user: User = UserDep) -> Response[UserSchema]:
     return Response(data=user, message="User retrieved")
@@ -38,6 +39,7 @@ Use as the return type when the endpoint always uses [`offset_paginate`](crud.md
 
 ```python
 from fastapi_toolsets.schemas import OffsetPaginatedResponse
+
 
 @router.get("/users")
 async def list_users(
@@ -74,6 +76,7 @@ Use as the return type when the endpoint always uses [`cursor_paginate`](crud.md
 ```python
 from fastapi_toolsets.schemas import CursorPaginatedResponse
 
+
 @router.get("/events")
 async def list_events(
     cursor: str | None = None,
@@ -109,6 +112,7 @@ When used as a return annotation, `PaginatedResponse[T]` automatically expands t
 ```python
 from fastapi_toolsets.crud import PaginationType
 from fastapi_toolsets.schemas import PaginatedResponse
+
 
 @router.get("/users")
 async def list_users(

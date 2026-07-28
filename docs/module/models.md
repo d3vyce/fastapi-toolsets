@@ -11,6 +11,7 @@ The `models` module provides mixins that each add a single, well-defined column 
 ```python
 from fastapi_toolsets.models import UUIDMixin, TimestampMixin
 
+
 class Article(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "articles"
 
@@ -31,10 +32,12 @@ Adds a `id: UUID` primary key generated server-side by PostgreSQL using `gen_ran
 ```python
 from fastapi_toolsets.models import UUIDMixin
 
+
 class User(Base, UUIDMixin):
     __tablename__ = "users"
 
     username: Mapped[str]
+
 
 # id is None before flush
 user = User(username="alice")
@@ -54,10 +57,12 @@ Adds a `id: UUID` primary key generated server-side by PostgreSQL using `uuidv7(
 ```python
 from fastapi_toolsets.models import UUIDv7Mixin
 
+
 class Event(Base, UUIDv7Mixin):
     __tablename__ = "events"
 
     name: Mapped[str]
+
 
 # id is None before flush
 event = Event(name="user.signup")
@@ -73,6 +78,7 @@ Adds a `created_at: datetime` column set to `clock_timestamp()` on insert. The c
 ```python
 from fastapi_toolsets.models import UUIDMixin, CreatedAtMixin
 
+
 class Order(Base, UUIDMixin, CreatedAtMixin):
     __tablename__ = "orders"
 
@@ -86,10 +92,12 @@ Adds an `updated_at: datetime` column set to `clock_timestamp()` on insert and a
 ```python
 from fastapi_toolsets.models import UUIDMixin, UpdatedAtMixin
 
+
 class Post(Base, UUIDMixin, UpdatedAtMixin):
     __tablename__ = "posts"
 
     title: Mapped[str]
+
 
 post = Post(title="Hello")
 await session.flush()
@@ -110,6 +118,7 @@ Convenience mixin that combines [`CreatedAtMixin`](../reference/models.md#fastap
 
 ```python
 from fastapi_toolsets.models import UUIDMixin, TimestampMixin
+
 
 class Article(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "articles"
@@ -166,9 +175,11 @@ class Order(Base, UUIDMixin):
     __watched_fields__ = ("status",)
     ...
 
+
 class UrgentOrder(Order):
     # inherits __watched_fields__ = ("status",)
     ...
+
 
 class PriorityOrder(Order):
     __watched_fields__ = ("priority",)
@@ -183,19 +194,23 @@ Register handlers with the [`listens_for`](../reference/models.md#fastapi_toolse
 ```python
 from fastapi_toolsets.models import ModelEvent, UUIDMixin, listens_for
 
+
 class Order(Base, UUIDMixin):
     __tablename__ = "orders"
     __watched_fields__ = ("status",)
 
     status: Mapped[str]
 
+
 @listens_for(Order, [ModelEvent.CREATE])
 async def on_order_created(order: Order, event_type: ModelEvent, changes: None):
     await notify_new_order(order.id)
 
+
 @listens_for(Order, [ModelEvent.DELETE])
 async def on_order_deleted(order: Order, event_type: ModelEvent, changes: None):
     await notify_order_cancelled(order.id)
+
 
 @listens_for(Order, [ModelEvent.UPDATE])
 async def on_order_updated(order: Order, event_type: ModelEvent, changes: dict):
@@ -212,8 +227,11 @@ A single handler can listen for multiple events at once. When `event_types` is o
 async def on_order_changed(order: Order, event_type: ModelEvent, changes: dict | None):
     await invalidate_cache(order.id)
 
+
 @listens_for(Order)  # all events
-async def on_any_order_event(order: Order, event_type: ModelEvent, changes: dict | None):
+async def on_any_order_event(
+    order: Order, event_type: ModelEvent, changes: dict | None
+):
     await audit_log(order.id, event_type)
 ```
 

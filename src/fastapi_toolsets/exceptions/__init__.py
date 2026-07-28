@@ -23,8 +23,6 @@ __all__ = [
     "ApiException",
     "ConflictError",
     "ForbiddenError",
-    "generate_error_responses",
-    "init_exceptions_handlers",
     "InvalidFacetFilterError",
     "InvalidOrderFieldError",
     "InvalidSearchColumnError",
@@ -34,4 +32,6 @@ __all__ = [
     "PoolExhaustedError",
     "UnauthorizedError",
     "UnsupportedFacetTypeError",
+    "generate_error_responses",
+    "init_exceptions_handlers",
 ]

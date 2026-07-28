@@ -1,14 +1,12 @@
 """Many-to-Many association-table helpers (direct, without loading collections)."""
 
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 from sqlalchemy import ColumnElement, Table, delete, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, QueryableAttribute
 from sqlalchemy.orm.relationships import RelationshipProperty
-
-_M = TypeVar("_M", bound=DeclarativeBase)
 
 
 def _m2m_prop(rel_attr: QueryableAttribute) -> tuple[RelationshipProperty, Table]:  # type: ignore[type-arg]
