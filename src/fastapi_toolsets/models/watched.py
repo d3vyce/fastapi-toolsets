@@ -193,7 +193,7 @@ async def _batch_reload(
     session: AsyncSession, model: type, pk_tuples: list[tuple[Any, ...]]
 ) -> None:
     """Re-populate all rows of *model* identified by *pk_tuples* in one round trip."""
-    pk_cols = sa_inspect(model).primary_key
+    pk_cols = sa_inspect(model, raiseerr=True).primary_key
     where = (
         pk_cols[0].in_([pk[0] for pk in pk_tuples])
         if len(pk_cols) == 1
