@@ -146,35 +146,34 @@ def _patched_openapi(
 
     for path_data in openapi_schema.get("paths", {}).values():
         for operation in path_data.values():
-            if isinstance(operation, dict) and "responses" in operation:
-                if "422" in operation["responses"]:
-                    operation["responses"]["422"] = {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "examples": {
-                                    "VAL-422": {
-                                        "summary": "Validation Error",
-                                        "value": {
-                                            "data": {
-                                                "errors": [
-                                                    {
-                                                        "field": "field_name",
-                                                        "message": "value is not valid",
-                                                        "type": "value_error",
-                                                    }
-                                                ]
-                                            },
-                                            "status": ResponseStatus.FAIL.value,
-                                            "message": "Validation Error",
-                                            "description": "1 validation error(s) detected",
-                                            "error_code": "VAL-422",
+            if isinstance(operation, dict) and "422" in operation.get("responses", {}):
+                operation["responses"]["422"] = {
+                    "description": "Validation Error",
+                    "content": {
+                        "application/json": {
+                            "examples": {
+                                "VAL-422": {
+                                    "summary": "Validation Error",
+                                    "value": {
+                                        "data": {
+                                            "errors": [
+                                                {
+                                                    "field": "field_name",
+                                                    "message": "value is not valid",
+                                                    "type": "value_error",
+                                                }
+                                            ]
                                         },
-                                    }
+                                        "status": ResponseStatus.FAIL.value,
+                                        "message": "Validation Error",
+                                        "description": "1 validation error(s) detected",
+                                        "error_code": "VAL-422",
+                                    },
                                 }
                             }
-                        },
-                    }
+                        }
+                    },
+                }
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema

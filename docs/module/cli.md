@@ -92,6 +92,7 @@ import typer
 
 cli = typer.Typer()
 
+
 @cli.command()
 def hello():
     print("Hello from my app!")

@@ -1580,11 +1580,10 @@ class AsyncCrud(Generic[ModelType]):
 
         # prev_cursor: points before the first item in ascending order
         prev_cursor: str | None = None
-        if direction is _CursorDirection.NEXT and cursor is not None and items_page:
-            prev_cursor = _encode_cursor(
-                getattr(items_page[0], cursor_col_name), direction=_CursorDirection.PREV
-            )
-        elif direction is _CursorDirection.PREV and has_more and items_page:
+        if items_page and (
+            (direction is _CursorDirection.NEXT and cursor is not None)
+            or (direction is _CursorDirection.PREV and has_more)
+        ):
             prev_cursor = _encode_cursor(
                 getattr(items_page[0], cursor_col_name), direction=_CursorDirection.PREV
             )

@@ -60,7 +60,7 @@ def PathDependency(
     name = (
         param_name
         if param_name is not None
-        else "{}_{}".format(model.__name__.lower(), field.key)
+        else f"{model.__name__.lower()}_{field.key}"
     )
     python_type = field.type.python_type
 
@@ -70,22 +70,18 @@ def PathDependency(
         value = kwargs[name]
         return await crud.get(session, filters=[field == value])
 
-    setattr(
-        dependency,
-        "__signature__",
-        inspect.Signature(
-            parameters=[
-                inspect.Parameter(
-                    name, inspect.Parameter.KEYWORD_ONLY, annotation=python_type
-                ),
-                inspect.Parameter(
-                    "session",
-                    inspect.Parameter.KEYWORD_ONLY,
-                    annotation=AsyncSession,
-                    default=Depends(session_callable),
-                ),
-            ]
-        ),
+    dependency.__signature__ = inspect.Signature(  # ty:ignore[unresolved-attribute]
+        parameters=[
+            inspect.Parameter(
+                name, inspect.Parameter.KEYWORD_ONLY, annotation=python_type
+            ),
+            inspect.Parameter(
+                "session",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=AsyncSession,
+                default=Depends(session_callable),
+            ),
+        ]
     )
 
     return cast(ModelType, Depends(cast(Callable[..., ModelType], dependency)))
@@ -134,22 +130,18 @@ def BodyDependency(
         value = kwargs[body_field]
         return await crud.get(session, filters=[field == value])
 
-    setattr(
-        dependency,
-        "__signature__",
-        inspect.Signature(
-            parameters=[
-                inspect.Parameter(
-                    body_field, inspect.Parameter.KEYWORD_ONLY, annotation=python_type
-                ),
-                inspect.Parameter(
-                    "session",
-                    inspect.Parameter.KEYWORD_ONLY,
-                    annotation=AsyncSession,
-                    default=Depends(session_callable),
-                ),
-            ]
-        ),
+    dependency.__signature__ = inspect.Signature(  # ty:ignore[unresolved-attribute]
+        parameters=[
+            inspect.Parameter(
+                body_field, inspect.Parameter.KEYWORD_ONLY, annotation=python_type
+            ),
+            inspect.Parameter(
+                "session",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=AsyncSession,
+                default=Depends(session_callable),
+            ),
+        ]
     )
 
     return cast(ModelType, Depends(cast(Callable[..., ModelType], dependency)))

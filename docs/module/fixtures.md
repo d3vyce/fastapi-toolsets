@@ -13,12 +13,14 @@ from fastapi_toolsets.fixtures import FixtureRegistry, Context
 
 fixtures = FixtureRegistry()
 
+
 @fixtures.register
 def roles():
     return [
         Role(id=1, name="admin"),
         Role(id=2, name="user"),
     ]
+
 
 @fixtures.register(depends_on=["roles"], contexts=[Context.TESTING])
 def test_users():
@@ -79,13 +81,16 @@ Plain strings and any `Enum` subclass are accepted wherever a `Context` enum is 
 ```python
 from enum import Enum
 
+
 class AppContext(str, Enum):
     STAGING = "staging"
     DEMO = "demo"
 
+
 @fixtures.register(contexts=[AppContext.STAGING])
 def staging_data():
     return [Config(key="feature_x", enabled=True)]
+
 
 # loads staging_data plus any Context.BASE fixtures
 await load_fixtures_by_context(session, fixtures, AppContext.STAGING)
@@ -98,7 +103,8 @@ Pass `contexts` to `FixtureRegistry` to set a default for all fixtures registere
 ```python
 testing_registry = FixtureRegistry(contexts=[Context.TESTING])
 
-@testing_registry.register          # implicitly contexts=[Context.TESTING]
+
+@testing_registry.register  # implicitly contexts=[Context.TESTING]
 def test_orders():
     return [Order(id=1, total=99)]
 ```
@@ -112,9 +118,11 @@ The same fixture name may be registered under different (non-overlapping) contex
 def users():
     return [User(id=1, username="admin")]
 
+
 @fixtures.register(contexts=[Context.TESTING])
 def users():
     return [User(id=2, username="tester")]
+
 
 # loads both admin and tester (Context.BASE is included automatically)
 await load_fixtures_by_context(session, fixtures, Context.TESTING)
@@ -171,7 +179,9 @@ Looking the fixture up by name (instead of importing the `roles` function direct
 ```python
 @fixtures.register(depends_on=["roles"])
 def users():
-    return [User(id=1, username="alice", role_id=fixtures.field("roles", "name", "admin"))]
+    return [
+        User(id=1, username="alice", role_id=fixtures.field("roles", "name", "admin"))
+    ]
 ```
 
 Both raise `StopIteration` if no matching instance is found, and `KeyError` if the fixture name isn't registered.
@@ -189,18 +199,21 @@ from app.models import Base
 
 DATABASE_URL = "postgresql+asyncpg://user:pass@localhost/test_db"
 
+
 @pytest.fixture
 async def db_session():
-    async with create_db_session(database_url=DATABASE_URL, base=Base, cleanup=True) as session:
+    async with create_db_session(
+        database_url=DATABASE_URL, base=Base, cleanup=True
+    ) as session:
         yield session
+
 
 register_fixtures(registry=registry, namespace=globals())
 ```
 
 ```python
 # test_users.py
-async def test_user_can_login(fixture_users: list[User], fixture_roles: list[Role]):
-    ...
+async def test_user_can_login(fixture_users: list[User], fixture_roles: list[Role]): ...
 ```
 
 The load order is resolved automatically from the `depends_on` declarations in your registry. Each generated fixture receives `db_session` as a dependency and returns the list of loaded model instances.

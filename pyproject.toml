@@ -94,6 +94,18 @@ docs-src = [
 requires = ["uv_build>=0.10,<0.12.0"]
 build-backend = "uv_build"
 
+[tool.ruff.format]
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+extend-select = ["E712"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["RUF012", "RUF059", "SIM117", "DTZ001", "S110", "BLE001"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = [

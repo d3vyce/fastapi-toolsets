@@ -386,7 +386,7 @@ def build_filter_by(
             enum_class = col_type.enum_class
             if enum_class is not None:
 
-                def _coerce_enum(v: Any) -> Any:
+                def _coerce_enum(v: Any, enum_class: Any = enum_class) -> Any:
                     if isinstance(v, enum_class):
                         return v
                     return enum_class[v]  # lookup by name: "PENDING", "RED"

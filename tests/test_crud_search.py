@@ -2261,7 +2261,7 @@ class TestOffsetPaginateParamsSchema:
     def test_dependency_name_includes_model_name(self):
         """Dependency function is named after the model."""
         dep = RoleCrud.offset_paginate_params(search=False, filter=False, order=False)
-        assert getattr(dep, "__name__") == "RoleOffsetPaginateParams"
+        assert dep.__name__ == "RoleOffsetPaginateParams"  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
 
     def test_default_page_size_reflected_in_items_per_page_default(self):
         """default_page_size is used as the default for items_per_page."""
@@ -2391,7 +2391,7 @@ class TestCursorPaginateParamsSchema:
         dep = RoleCursorCrud.cursor_paginate_params(
             search=False, filter=False, order=False
         )
-        assert getattr(dep, "__name__") == "RoleCursorPaginateParams"
+        assert dep.__name__ == "RoleCursorPaginateParams"  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
 
     def test_default_page_size_reflected_in_items_per_page_default(self):
         """default_page_size is used as the default for items_per_page."""
@@ -2461,7 +2461,7 @@ class TestPaginateParamsSchema:
     def test_dependency_name_includes_model_name(self):
         """Dependency function is named after the model."""
         dep = RoleCursorCrud.paginate_params(search=False, filter=False, order=False)
-        assert getattr(dep, "__name__") == "RolePaginateParams"
+        assert dep.__name__ == "RolePaginateParams"  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
 
     def test_default_pagination_type(self):
         """default_pagination_type is reflected in pagination_type default."""

@@ -212,9 +212,8 @@ class Database:
 
         @asynccontextmanager
         async def _composed(app_: Any) -> AsyncGenerator[None, None]:
-            async with self.lifespan(app_):
-                async with inner_lifespan(app_):
-                    yield
+            async with self.lifespan(app_), inner_lifespan(app_):
+                yield
 
         app.router.lifespan_context = _composed
 

@@ -21,6 +21,7 @@ Use [`create_async_client`](../reference/pytest.md#fastapi_toolsets.pytest.utils
 ```python
 from fastapi_toolsets.pytest import create_async_client
 
+
 @pytest.fixture
 async def http_client(db_session):
     async def _override_get_db():
@@ -51,6 +52,7 @@ Use [`create_worker_database`](../reference/pytest.md#fastapi_toolsets.pytest.ut
 
 ```python
 from fastapi_toolsets.pytest import create_worker_database, create_db_session
+
 
 @pytest.fixture(scope="session")
 async def worker_db_url():
@@ -96,11 +98,17 @@ Use [`worker_database_url`](../reference/pytest.md#fastapi_toolsets.pytest.utils
 ```python
 from fastapi_toolsets.pytest import worker_database_url
 
-url = worker_database_url("postgresql+asyncpg://user:pass@localhost/myapp", default_test_db="test")
+url = worker_database_url(
+    "postgresql+asyncpg://user:pass@localhost/myapp", default_test_db="test"
+)
 # → "postgresql+asyncpg://user:pass@localhost/gw0" under xdist
 # → "postgresql+asyncpg://user:pass@localhost/test" otherwise
 
-url = worker_database_url("postgresql+asyncpg://user:pass@localhost/myapp", default_test_db="test", prefix="myapp")
+url = worker_database_url(
+    "postgresql+asyncpg://user:pass@localhost/myapp",
+    default_test_db="test",
+    prefix="myapp",
+)
 # → "postgresql+asyncpg://user:pass@localhost/myapp_gw0" under xdist
 # → "postgresql+asyncpg://user:pass@localhost/myapp_test" otherwise
 ```
@@ -111,6 +119,7 @@ url = worker_database_url("postgresql+asyncpg://user:pass@localhost/myapp", defa
 
 ```python
 from fastapi_toolsets.pytest import cleanup_tables
+
 
 @pytest.fixture(autouse=True)
 async def clean(db_session):

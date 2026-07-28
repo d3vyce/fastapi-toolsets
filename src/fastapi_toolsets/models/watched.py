@@ -206,7 +206,7 @@ async def _batch_reload(
 class EventSession(AsyncSession):
     """AsyncSession subclass that dispatches lifecycle callbacks after commit."""
 
-    async def commit(self) -> None:  # noqa: C901
+    async def commit(self) -> None:
         await super().commit()
 
         creates: list[Any] = self.info.pop(_SESSION_CREATES, [])

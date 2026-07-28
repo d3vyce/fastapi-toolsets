@@ -53,7 +53,9 @@ All built-in exceptions accept optional keyword arguments to customise the respo
 | `data` | Overrides the `data` field |
 
 ```python
-raise NotFoundError(detail="User 42 not found", desc="No user with that ID exists in the database.")
+raise NotFoundError(
+    detail="User 42 not found", desc="No user with that ID exists in the database."
+)
 ```
 
 ## Custom exceptions
@@ -63,6 +65,7 @@ Subclass [`ApiException`](../reference/exceptions.md#fastapi_toolsets.exceptions
 ```python
 from fastapi_toolsets.exceptions import ApiException
 from fastapi_toolsets.schemas import ApiError
+
 
 class PaymentRequiredError(ApiException):
     api_error = ApiError(
@@ -105,11 +108,17 @@ Use `abstract=True` when creating a shared base that is not meant to be raised d
 class BillingError(ApiException, abstract=True):
     """Base for all billing-related errors."""
 
+
 class PaymentRequiredError(BillingError):
-    api_error = ApiError(code=402, msg="Payment Required", desc="...", err_code="BILLING-402")
+    api_error = ApiError(
+        code=402, msg="Payment Required", desc="...", err_code="BILLING-402"
+    )
+
 
 class SubscriptionExpiredError(BillingError):
-    api_error = ApiError(code=402, msg="Subscription Expired", desc="...", err_code="BILLING-402-EXP")
+    api_error = ApiError(
+        code=402, msg="Subscription Expired", desc="...", err_code="BILLING-402-EXP"
+    )
 ```
 
 ## OpenAPI response documentation
