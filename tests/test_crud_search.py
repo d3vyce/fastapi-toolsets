@@ -388,6 +388,76 @@ class TestBuildSearchFilters:
 
         assert "CAST" in str(filters[0])
 
+    def test_casts_enum_column(self):
+        """Enum subclasses String but maps to a native DB enum, which has no ILIKE."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, _ = build_search_filters(Order, "PEND", search_fields=[Order.status])
+
+        assert "CAST" in str(filters[0])
+
+
+class TestSearchEnumColumn:
+    """Searching an enum column must reach the database, not just build SQL."""
+
+    @pytest.mark.anyio
+    async def test_search_int_backed_enum(self, db_session: AsyncSession):
+        """Enum(int, Enum) stores names, so the cast makes 'PEND' match PENDING."""
+        await OrderCrud.create(
+            db_session, OrderCreate(name="a", status=OrderStatus.PENDING)
+        )
+        await OrderCrud.create(
+            db_session, OrderCreate(name="b", status=OrderStatus.SHIPPED)
+        )
+
+        result = await OrderCrud.offset_paginate(
+            db_session,
+            search="PEND",
+            search_fields=[Order.status],
+            schema=OrderRead,
+        )
+
+        assert result.pagination.total_count == 1
+        assert result.data[0].status is OrderStatus.PENDING
+
+    @pytest.mark.anyio
+    async def test_search_str_backed_enum(self, db_session: AsyncSession):
+        """Same for Enum(str, Enum) — still a native DB enum, still needs the cast."""
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(name="a", status=OrderStatus.PENDING, color=Color.BLUE),
+        )
+        await OrderCrud.create(
+            db_session,
+            OrderCreate(name="b", status=OrderStatus.PENDING, color=Color.RED),
+        )
+
+        result = await OrderCrud.offset_paginate(
+            db_session,
+            search="BLU",
+            search_fields=[Order.color],
+            schema=OrderRead,
+        )
+
+        assert result.pagination.total_count == 1
+        assert result.data[0].color is Color.BLUE
+
+    @pytest.mark.anyio
+    async def test_search_mixed_enum_and_string_columns(self, db_session: AsyncSession):
+        """An enum column alongside a plain String column (the get_searchable_fields shape)."""
+        await OrderCrud.create(
+            db_session, OrderCreate(name="widget", status=OrderStatus.SHIPPED)
+        )
+
+        result = await OrderCrud.offset_paginate(
+            db_session,
+            search="widget",
+            search_fields=[Order.name, Order.status, Order.color],
+            schema=OrderRead,
+        )
+
+        assert result.pagination.total_count == 1
+
 
 class TestSearchConfig:
     """Tests for SearchConfig options."""
