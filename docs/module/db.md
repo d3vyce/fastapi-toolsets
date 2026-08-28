@@ -54,7 +54,7 @@ db = Database(
 
 ## Committing before the response
 
-[`db.install(app)`](../reference/db.md#fastapi_toolsets.db.Database) adds a middleware that commits the request's session when the response starts, after the endpoint returns and before the body is sent. With the middleware installed, the dependency does not commit again.
+[`db.install(app)`](../reference/db.md#fastapi_toolsets.db.Database) adds a middleware that commits the request's session when the response starts, after the endpoint returns and before the body is sent. The dependency commits only if the middleware did not: when a function-scoped dependency unwinds before the response, or when the response never passes through the middleware. Either way the request is committed exactly once.
 
 The request is committed as a single transaction:
 
