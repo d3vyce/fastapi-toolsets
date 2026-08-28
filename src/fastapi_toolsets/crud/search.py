@@ -160,9 +160,11 @@ def build_search_filters(
             column = field
 
         # Build the filter (cast to String only when needed, to preserve
-        # pg_trgm GIN index usability on already-String columns)
+        # pg_trgm GIN index usability on already-String columns).
         column_as_string = (
-            column if isinstance(column.type, String) else column.cast(String)
+            column
+            if isinstance(column.type, String) and not isinstance(column.type, Enum)
+            else column.cast(String)
         )
         if config.case_sensitive:
             filters.append(column_as_string.like(f"%{query}%"))
