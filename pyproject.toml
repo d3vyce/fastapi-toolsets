@@ -101,7 +101,7 @@ exclude = ["*.md"]
 extend-select = ["E712"]
 
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["fastapi.Depends"]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Security"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["RUF012", "RUF059", "SIM117", "DTZ001", "S110", "BLE001"]

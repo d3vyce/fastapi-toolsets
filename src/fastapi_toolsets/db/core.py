@@ -66,10 +66,8 @@ class _CommitOnResponseMiddleware:
 
         async def send_wrapper(message: Message) -> None:
             if message["type"] == "http.response.start":
-                # ``scope["state"]`` is the same dict ``request.state`` writes
-                # to, so this is the session stashed by the dependency.
                 state = scope.get("state")
-                session = state.get(self.state_attr) if state else None
+                session = state.pop(self.state_attr, None) if state else None
                 if session is not None and session.in_transaction():
                     await session.commit()
             await send(message)
@@ -158,7 +156,6 @@ class Database:
         # Private, per-instance state attribute; cannot collide with another
         # Database or be mismatched against the middleware.
         self._state_attr = f"_ft_db_session_{id(self):x}"
-        self._middleware_installed = False
         self._disposed = False
 
     async def _dispose(self) -> None:
@@ -206,7 +203,6 @@ class Database:
             ```
         """
         app.add_middleware(_CommitOnResponseMiddleware, state_attr=self._state_attr)
-        self._middleware_installed = True
 
         inner_lifespan = app.router.lifespan_context
 
@@ -243,10 +239,17 @@ class Database:
                 return await UserCrud.get(session, [User.id == user_id])
             ```
         """
+        borrowed = getattr(request.state, self._state_attr, None)
+        if borrowed is not None:
+            yield borrowed
+            return
         async with self._open() as session:
             setattr(request.state, self._state_attr, session)
             yield session
-            if not self._middleware_installed and session.in_transaction():
+            if (
+                getattr(request.state, self._state_attr, None) is session
+                and session.in_transaction()
+            ):
                 await session.commit()
 
     @asynccontextmanager

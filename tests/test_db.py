@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Security
 from fastapi.responses import StreamingResponse
 from httpx import ASGITransport, AsyncClient
 from pydantic import PostgresDsn
@@ -287,23 +287,37 @@ class TestDatabaseDependency:
             break
 
     @pytest.mark.anyio
-    async def test_skips_commit_when_middleware_installed(self, engine, session_maker):
-        """With ``install()``, the dependency must NOT commit — the middleware owns it.
+    async def test_second_resolution_borrows_session(self, engine):
+        """A second ``Depends(db)`` in one request reuses the stashed session."""
+        db = Database(engine=engine)
+        request = _make_request()
 
-        Here no middleware actually runs (we call the dependency directly), so the
-        open transaction is rolled back on session close and nothing persists.
-        """
+        owner_gen = db(request)
+        owner = await anext(owner_gen)
+        borrower_gen = db(request)
+        assert await anext(borrower_gen) is owner
+
+        with pytest.raises(StopAsyncIteration):  # teardown runs borrower-first
+            await anext(borrower_gen)
+        assert owner.in_transaction()  # the borrower must not close what it borrowed
+
+        with pytest.raises(StopAsyncIteration):
+            await anext(owner_gen)
+
+    @pytest.mark.anyio
+    async def test_commits_when_middleware_did_not_run(self, engine, session_maker):
+        """``install()`` is per-``Database``, but the commit is per-request."""
         db = Database(engine=engine)
         db.install(FastAPI())
 
         async for session in db(_make_request()):
-            role = Role(name="mw_owns_commit")
+            role = Role(name="mw_never_ran")
             session.add(role)
             await session.flush()
 
         async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "mw_owns_commit"])
-            assert result is None
+            result = await RoleCrud.first(verify, [Role.name == "mw_never_ran"])
+            assert result is not None
 
 
 class TestDatabaseSession:
@@ -1523,6 +1537,55 @@ def _build_app(db: Database) -> FastAPI:
         await session.commit()
         return {"id": str(role.id), "name": role.name}
 
+    async def _scoped_writer(
+        body: RoleCreate, session: AsyncSession = Security(db, scopes=["roles:write"])
+    ) -> int:
+        # Security scopes give this a different dependency cache key than the
+        # endpoint's plain ``Depends(db)``. Without borrowing it opens a second
+        # session, and whichever one the middleware does not hold is discarded.
+        await RoleCrud.create(session, RoleCreate(name=f"{body.name}_sub"))
+        return id(session)
+
+    @app.post("/roles-two-cache-keys")
+    async def create_via_two_cache_keys(
+        body: RoleCreate,
+        sub_session_id: int = Depends(_scoped_writer),
+        session: AsyncSession = Depends(db),
+    ) -> dict:
+        await RoleCrud.create(session, body)
+        return {"same_session": sub_session_id == id(session)}
+
+    async def _fn_writer(
+        body: RoleCreate, session: AsyncSession = Depends(db, scope="function")
+    ) -> None:
+        # ``scope="function"`` unwinds before the response is sent, taking the
+        # session with it — so the commit cannot be left to the middleware.
+        await RoleCrud.create(session, RoleCreate(name=f"{body.name}_fn"))
+
+    @app.post("/roles-function-scope")
+    async def create_with_function_scope(
+        body: RoleCreate,
+        boom: bool = False,
+        _: None = Depends(_fn_writer),
+        session: AsyncSession = Depends(db),
+    ) -> dict:
+        await RoleCrud.create(session, body)
+        if boom:
+            raise RuntimeError("boom after write")
+        return {"ok": True}
+
+    @app.post("/roles-function-scope-borrower")
+    async def function_scope_borrows(
+        body: RoleCreate,
+        session: AsyncSession = Depends(db),
+        _: None = Depends(_fn_writer),
+    ) -> dict:
+        # Flipped order: the request-scoped dependency owns the session and the
+        # function-scoped one borrows it. The borrower unwinds early but must not
+        # commit or close — the commit still belongs to the middleware.
+        await RoleCrud.create(session, body)
+        return {"ok": True}
+
     @app.get("/roles-stream/{name}")
     async def stream_role(
         name: str, session: AsyncSession = Depends(db)
@@ -1618,6 +1681,62 @@ class TestCommitIntegration:
         assert "data: streamed_role" in resp.text
         # The write made before the stream began is durably committed.
         assert await _row_exists(session_maker, "streamed_role")
+
+    @pytest.mark.anyio
+    async def test_two_cache_keys_share_one_session(self, engine, session_maker):
+        """Two resolutions of ``Depends(db)`` in one request must share a session."""
+        app = _build_app(Database(engine=engine))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/roles-two-cache-keys", json={"name": "two_keys"})
+
+        assert resp.status_code == 200
+        assert resp.json()["same_session"] is True
+        assert await _row_exists(session_maker, "two_keys")
+        assert await _row_exists(session_maker, "two_keys_sub")
+
+    @pytest.mark.anyio
+    async def test_function_scope_commits_before_response(self, engine, session_maker):
+        """``scope="function"`` unwinds before response-start, so the dependency
+        commits on its way out instead of leaving it to the middleware."""
+        app = _build_app(Database(engine=engine))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/roles-function-scope", json={"name": "fn_scope"})
+
+        assert resp.status_code == 200
+        assert await _row_exists(session_maker, "fn_scope")
+        assert await _row_exists(session_maker, "fn_scope_fn")
+
+    @pytest.mark.anyio
+    async def test_function_scope_borrower_leaves_commit_to_middleware(
+        self, engine, session_maker
+    ):
+        """A function-scoped *borrower* unwinds early but owns nothing."""
+        app = _build_app(Database(engine=engine))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/roles-function-scope-borrower", json={"name": "fn_borrow"}
+            )
+
+        assert resp.status_code == 200
+        assert await _row_exists(session_maker, "fn_borrow")
+        assert await _row_exists(session_maker, "fn_borrow_fn")
+
+    @pytest.mark.anyio
+    async def test_function_scope_error_rolls_back(self, engine, session_maker):
+        """The early commit must still not fire when the request fails."""
+        app = _build_app(Database(engine=engine))
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/roles-function-scope?boom=true", json={"name": "fn_ghost"}
+            )
+
+        assert resp.status_code == 500
+        assert not await _row_exists(session_maker, "fn_ghost")
+        assert not await _row_exists(session_maker, "fn_ghost_fn")
 
     @pytest.mark.anyio
     async def test_multi_write_atomicity(self, engine, session_maker):
