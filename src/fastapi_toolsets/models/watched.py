@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import event, select, tuple_
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value as _sa_set_committed_value
 
 from ..logger import get_logger
@@ -189,17 +190,44 @@ async def _invoke_callback(
         await result
 
 
+def _loaded_relationships(obj: Any) -> set[str]:
+    """Relationship keys currently loaded on *obj*."""
+    state = sa_inspect(obj)
+    unloaded = state.unloaded
+    return {
+        rel.key
+        for rel in state.mapper.relationships
+        if rel.key not in unloaded and rel.lazy not in ("dynamic", "write_only")
+    }
+
+
+def _snapshot_loaded_relationships(session: Any) -> dict[int, set[str]]:
+    """Record loaded relationships for the tracked objects, keyed by ``id``."""
+    objs = list(session.info.get(_SESSION_CREATES, []))
+    objs += [obj for obj, _ in session.info.get(_SESSION_UPDATES, {}).values()]
+    return {id(obj): _loaded_relationships(obj) for obj in objs}
+
+
 async def _batch_reload(
-    session: AsyncSession, model: type, pk_tuples: list[tuple[Any, ...]]
+    session: AsyncSession,
+    model: type,
+    objs: list[Any],
+    preloaded: dict[int, set[str]],
 ) -> None:
-    """Re-populate all rows of *model* identified by *pk_tuples* in one round trip."""
+    """Re-populate all rows of *model* in one round trip."""
     pk_cols = sa_inspect(model, raiseerr=True).primary_key
+    pk_tuples = [sa_inspect(obj).key[1] for obj in objs]
     where = (
         pk_cols[0].in_([pk[0] for pk in pk_tuples])
         if len(pk_cols) == 1
         else tuple_(*pk_cols).in_(pk_tuples)
     )
     q = select(model).where(where).execution_options(populate_existing=True)
+    loaded: set[str] = set()
+    for obj in objs:
+        loaded |= preloaded.get(id(obj), set())
+    if loaded:
+        q = q.options(*(selectinload(getattr(model, key)) for key in loaded))
     await session.execute(q)
 
 
@@ -207,6 +235,7 @@ class EventSession(AsyncSession):
     """AsyncSession subclass that dispatches lifecycle callbacks after commit."""
 
     async def commit(self) -> None:
+        preloaded = _snapshot_loaded_relationships(self)
         await super().commit()
 
         creates: list[Any] = self.info.pop(_SESSION_CREATES, [])
@@ -249,25 +278,25 @@ class EventSession(AsyncSession):
         # session.get() per object.
         create_items: list[Any] = []
         update_items: list[tuple[Any, dict[str, dict[str, Any]]]] = []
-        pk_by_type: dict[type, list[tuple[Any, ...]]] = {}
+        objs_by_type: dict[type, list[Any]] = {}
 
         for obj in creates:
             state = sa_inspect(obj, raiseerr=False)
             if state is None or state.detached or state.transient:  # pragma: no cover
                 continue
             create_items.append(obj)
-            pk_by_type.setdefault(type(obj), []).append(state.key[1])
+            objs_by_type.setdefault(type(obj), []).append(obj)
 
         for obj, changes in field_changes.values():
             state = sa_inspect(obj, raiseerr=False)
             if state is None or state.detached or state.transient:  # pragma: no cover
                 continue
             update_items.append((obj, changes))
-            pk_by_type.setdefault(type(obj), []).append(state.key[1])
+            objs_by_type.setdefault(type(obj), []).append(obj)
 
-        for model, pk_tuples in pk_by_type.items():
+        for model, objs in objs_by_type.items():
             try:
-                await _batch_reload(self, model, pk_tuples)
+                await _batch_reload(self, model, objs, preloaded)
             except Exception as exc:
                 _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
 
