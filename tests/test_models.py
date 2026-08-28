@@ -6,9 +6,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import String
+from sqlalchemy import ForeignKey, String, select
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+    selectinload,
+)
 
 import fastapi_toolsets.models.watched as _watched_module
 from fastapi_toolsets.models import (
@@ -105,6 +112,27 @@ async def _watched_on_delete(obj, event_type, changes):
 @listens_for(WatchedModel, [ModelEvent.UPDATE])
 async def _watched_on_update(obj, event_type, changes):
     _test_events.append({"event": "update", "obj_id": obj.id, "changes": changes})
+
+
+class RelTarget(MixinBase, UUIDMixin):
+    __tablename__ = "mixin_rel_targets"
+
+    name: Mapped[str] = mapped_column(String(50))
+
+
+class RelOwner(MixinBase, UUIDMixin):
+    """Watched model with a relationship, to check eager loads survive commit."""
+
+    __tablename__ = "mixin_rel_owners"
+
+    title: Mapped[str] = mapped_column(String(50))
+    target_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("mixin_rel_targets.id"))
+    target: Mapped[RelTarget] = relationship()
+
+
+@listens_for(RelOwner, [ModelEvent.CREATE, ModelEvent.UPDATE])
+async def _rel_owner_handler(obj, event_type, changes):
+    _test_events.append({"event": event_type.value, "obj_id": obj.id})
 
 
 class WatchAllModel(MixinBase, UUIDMixin):
@@ -353,6 +381,62 @@ async def mixin_session_maker():
         async with engine.begin() as conn:
             await conn.run_sync(MixinBase.metadata.drop_all)
         await engine.dispose()
+
+
+class TestEventSessionPreservesEagerLoads:
+    """EventSession.commit() must not discard relations an eager load populated."""
+
+    async def _seed_eager(self, session):
+        target = RelTarget(name="t")
+        session.add(target)
+        await session.flush()
+        owner = RelOwner(title="o", target_id=target.id)
+        session.add(owner)
+        await session.flush()
+        loaded = (
+            await session.execute(
+                select(RelOwner)
+                .where(RelOwner.id == owner.id)
+                .options(selectinload(RelOwner.target))
+            )
+        ).scalar_one()
+        assert "target" not in sa_inspect(loaded).unloaded
+        return loaded
+
+    @pytest.mark.anyio
+    async def test_eager_load_survives_commit(self, mixin_session):
+        """expire_on_commit=False: the reload must not expire the relation."""
+        owner = await self._seed_eager(mixin_session)
+
+        await mixin_session.commit()
+
+        assert "target" not in sa_inspect(owner).unloaded
+        assert owner.target.name == "t"
+
+    @pytest.mark.anyio
+    async def test_eager_load_survives_commit_expire_on_commit(
+        self, mixin_session_expire
+    ):
+        """expire_on_commit=True: what was loaded must be recorded before the commit."""
+        owner = await self._seed_eager(mixin_session_expire)
+
+        await mixin_session_expire.commit()
+
+        assert "target" not in sa_inspect(owner).unloaded
+        assert owner.target.name == "t"
+
+    @pytest.mark.anyio
+    async def test_unloaded_relation_stays_unloaded(self, mixin_session):
+        """Only what was loaded is restored: the reload must not eager-load extra."""
+        target = RelTarget(name="t")
+        mixin_session.add(target)
+        await mixin_session.flush()
+        owner = RelOwner(title="o", target_id=target.id)
+        mixin_session.add(owner)
+
+        await mixin_session.commit()
+
+        assert "target" in sa_inspect(owner).unloaded
 
 
 class TestUUIDMixin:
@@ -1013,10 +1097,10 @@ class TestEventCallbacks:
 
         real_batch_reload = _watched_module._batch_reload
 
-        async def racing_batch_reload(session, model, pk_tuples):
-            if any(pk[0] == doomed_id for pk in pk_tuples):
+        async def racing_batch_reload(session, model, objs, preloaded):
+            if any(getattr(o, "id", None) == doomed_id for o in objs):
                 await kill_doomed_row_once()
-            return await real_batch_reload(session, model, pk_tuples)
+            return await real_batch_reload(session, model, objs, preloaded)
 
         # Patch the batched reload EventSession.commit() uses to pick up
         # server defaults, so this test still exercises the race.
@@ -1039,7 +1123,7 @@ class TestEventCallbacks:
         obj = WatchedModel(status="active", other="x")
         mixin_session.add(obj)
 
-        async def failing_batch_reload(session, model, pk_tuples):
+        async def failing_batch_reload(session, model, objs, preloaded):
             raise RuntimeError("reload failed")
 
         with (
