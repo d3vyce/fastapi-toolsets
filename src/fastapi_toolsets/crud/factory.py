@@ -270,7 +270,9 @@ class AsyncCrud(Generic[ModelType]):
         return cls.default_load_options
 
     @classmethod
-    def _capture_pk_values(cls: type[Self], instance: ModelType) -> dict[str, Any]:
+    def _capture_pk_values(
+        cls: type[Self], instance: DeclarativeBase
+    ) -> dict[str, Any]:
         """Capture PK values off instance — call before commit expires attributes."""
         return {
             cast(str, col.key): getattr(instance, cast(str, col.key))
