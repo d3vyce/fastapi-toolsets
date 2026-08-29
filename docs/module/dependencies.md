@@ -62,6 +62,36 @@ async def create_user(body: UserCreateSchema, role: Role = RoleDep):
     ...
 ```
 
+## Eager loading
+
+By default both factories fetch through a bare `CrudFactory(model)`, so relationships are not loaded. Pass `load_options` for a one-off, or `crud` to reuse a CRUD class you already configured:
+
+```python
+from sqlalchemy.orm import selectinload
+
+from fastapi_toolsets.crud import CrudFactory
+from fastapi_toolsets.dependencies import PathDependency
+
+UserDep = PathDependency(
+    model=User,
+    field=User.id,
+    session_dep=get_db,
+    load_options=[selectinload(User.role)],
+)
+
+# Or reuse the app's configured CRUD and its default_load_options
+UserCrud = CrudFactory(User, default_load_options=[selectinload(User.role)])
+UserDep = PathDependency(model=User, field=User.id, session_dep=get_db, crud=UserCrud)
+
+
+@router.get("/users/{user_id}")
+async def get_user(user: User = UserDep):
+    return user.role.name  # already loaded, no extra query
+```
+
+Both parameters work the same way on `BodyDependency`. When given together, the
+usual [relationship loading](crud.md#relationship-loading) precedence applies.
+
 ---
 
 [:material-api: API Reference](../reference/dependencies.md)
