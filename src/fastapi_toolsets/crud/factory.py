@@ -14,12 +14,25 @@ from typing import Any, ClassVar, Generic, Literal, Self, TypeAlias, cast, overl
 
 from fastapi import Query
 from pydantic import BaseModel
-from sqlalchemy import Date, DateTime, Float, Integer, Numeric, Uuid, and_, func, select
+from sqlalchemy import (
+    Date,
+    DateTime,
+    Float,
+    Integer,
+    Numeric,
+    Uuid,
+    and_,
+    func,
+    select,
+    tuple_,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, QueryableAttribute, selectinload
+from sqlalchemy.sql import operators
 from sqlalchemy.sql.base import ExecutableOption
+from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.roles import WhereHavingRole
 
 from ..db import transaction
@@ -128,6 +141,32 @@ def _apply_joins(q: Any, joins: JoinType | None, outer_join: bool) -> Any:
     return q
 
 
+def _fans_out(
+    search_joins: Sequence[Any] | None, order_joins: Sequence[Any] | None
+) -> bool:
+    """True if any relationship join yields a collection."""
+    return any(
+        rel.property.uselist for rel in (*(search_joins or ()), *(order_joins or ()))
+    )
+
+
+def _grouped_order(clause: Any, table: Any) -> Any:
+    """Recast an order clause for a query grouped by the entity's key."""
+    inner = clause.element if isinstance(clause, UnaryExpression) else clause
+    expr = inner.__clause_element__() if hasattr(inner, "__clause_element__") else inner
+    tables = {
+        t
+        for c in getattr(expr, "base_columns", ())
+        if (t := getattr(c, "table", None)) is not None
+    }
+    if tables and tables <= {table}:
+        return clause
+    agg = func.min(inner)
+    if isinstance(clause, UnaryExpression) and clause.modifier is operators.desc_op:
+        return agg.desc()
+    return agg.asc()
+
+
 class AsyncCrud(Generic[ModelType]):
     """Generic async CRUD operations for SQLAlchemy models.
 
@@ -162,6 +201,64 @@ class AsyncCrud(Generic[ModelType]):
                 not isinstance(f, tuple) and f.key == pk_key for f in raw_fields
             ):
                 cls.searchable_fields = [pk_col, *raw_fields]
+
+    @classmethod
+    def _pk_attrs(cls: type[Self]) -> list[QueryableAttribute[Any]]:
+        """The model's primary key columns as instrumented attributes."""
+        return [
+            getattr(cls.model, cast(str, col.key))
+            for col in cls.model.__mapper__.primary_key
+        ]
+
+    @classmethod
+    async def _page_entities(
+        cls: type[Self],
+        session: AsyncSession,
+        q: Any,
+        *,
+        order_clauses: Sequence[Any],
+        limit: int,
+        offset: int | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
+        with_for_update: _ForUpdateMode = False,
+    ) -> list[ModelType]:
+        """Return up to *limit* entities, paging over distinct primary keys."""
+        pk_attrs = cls._pk_attrs()
+        table = cls.model.__table__
+        # Fall back to the primary key so the page boundary is deterministic.
+        grouped = [_grouped_order(c, table) for c in order_clauses] or [pk_attrs[0]]
+        id_q = (
+            q.order_by(None)
+            .with_only_columns(*pk_attrs)
+            .group_by(*pk_attrs)
+            .order_by(*grouped)
+            .limit(limit)
+        )
+        if offset:
+            id_q = id_q.offset(offset)
+        rows = (await session.execute(id_q)).all()
+        ids = [row[0] if len(pk_attrs) == 1 else tuple(row) for row in rows]
+        if not ids:
+            return []
+
+        where = (
+            pk_attrs[0].in_(ids) if len(pk_attrs) == 1 else tuple_(*pk_attrs).in_(ids)
+        )
+        item_q = select(cls.model).where(where)
+        if resolved := cls._resolve_load_options(load_options):
+            item_q = item_q.options(*resolved)
+        item_q = _apply_for_update(item_q, with_for_update)
+        found = (await session.execute(item_q)).unique().scalars().all()
+
+        rank = {pk: n for n, pk in enumerate(ids)}
+
+        def _key(obj: Any) -> Any:
+            values = tuple(getattr(obj, a.key) for a in pk_attrs)
+            return values[0] if len(pk_attrs) == 1 else values
+
+        return cast(
+            list[ModelType], sorted(found, key=lambda o: rank.get(_key(o), len(ids)))
+        )
 
     @classmethod
     def _resolve_load_options(
@@ -1023,9 +1120,21 @@ class AsyncCrud(Generic[ModelType]):
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
-        q = _apply_for_update(q, with_for_update)
         if order_by is not None:
             q = q.order_by(order_by)
+
+        if limit is not None and joins:
+            return await cls._page_entities(
+                session,
+                q,
+                order_clauses=[] if order_by is None else [order_by],
+                limit=limit,
+                offset=offset,
+                load_options=load_options,
+                with_for_update=with_for_update,
+            )
+
+        q = _apply_for_update(q, with_for_update)
         if offset is not None:
             q = q.offset(offset)
         if limit is not None:
@@ -1374,17 +1483,31 @@ class AsyncCrud(Generic[ModelType]):
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
-        if order_by is not None:
-            q = q.order_by(order_by)
+        order_clauses: list[Any] = [] if order_by is None else [order_by]
+        q = q.order_by(*order_clauses)
+
+        fetch_limit = items_per_page if include_total else items_per_page + 1
+        total_count: int | None = None
+        # A to-many join repeats each entity, so LIMIT would slice joined rows
+        # and `.unique()` would shrink the page after the fact.
+        if _fans_out(search_joins, order_joins):
+            raw_items = await cls._page_entities(
+                session,
+                q,
+                order_clauses=order_clauses,
+                limit=fetch_limit,
+                offset=offset,
+                load_options=load_options,
+            )
+        else:
+            result = await session.execute(q.offset(offset).limit(fetch_limit))
+            raw_items = cast(list[ModelType], result.unique().scalars().all())
+        fetched = len(raw_items)
+        raw_items = raw_items[:items_per_page]
 
         if include_total:
-            q = q.offset(offset).limit(items_per_page)
-            result = await session.execute(q)
-            raw_items = cast(list[ModelType], result.unique().scalars().all())
-
             # Count query (with same joins and filters)
-            pk_col = cls.model.__mapper__.primary_key[0]
-            count_q = select(func.count(func.distinct(getattr(cls.model, pk_col.name))))
+            count_q = select(func.count(func.distinct(cls._pk_attrs()[0])))
             count_q = count_q.select_from(cls.model)
 
             # Apply explicit joins to count query
@@ -1397,16 +1520,11 @@ class AsyncCrud(Generic[ModelType]):
                 count_q = count_q.where(and_(*filters))
 
             count_result = await session.execute(count_q)
-            total_count: int = count_result.scalar_one()
+            total_count = count_result.scalar_one()
             has_more = page * items_per_page < total_count
         else:
-            # Fetch one extra row to detect if a next page exists without COUNT
-            q = q.offset(offset).limit(items_per_page + 1)
-            result = await session.execute(q)
-            raw_items = cast(list[ModelType], result.unique().scalars().all())
-            has_more = len(raw_items) > items_per_page
-            raw_items = raw_items[:items_per_page]
-            total_count = None
+            # One extra row was fetched to detect a next page without COUNT
+            has_more = fetched > items_per_page
 
         items: list[Any] = [schema.model_validate(item) for item in raw_items]
 
@@ -1543,18 +1661,30 @@ class AsyncCrud(Generic[ModelType]):
             q = q.options(*resolved)
 
         # Cursor column is always the primary sort; reverse direction for prev traversal
-        if direction is _CursorDirection.PREV:
-            q = q.order_by(cursor_column.desc())
-        else:
-            q = q.order_by(cursor_column)
+        cursor_clause = (
+            cursor_column.desc()
+            if direction is _CursorDirection.PREV
+            else cursor_column
+        )
+        order_clauses: list[Any] = [cursor_clause]
         if order_by is not None:
-            q = q.order_by(order_by)
+            order_clauses.append(order_by)
+        q = q.order_by(*order_clauses)
 
-        # Fetch one extra to detect whether another page exists in this direction
-        q = q.limit(items_per_page + 1)
-        result = await session.execute(q)
-        raw_items = cast(list[ModelType], result.unique().scalars().all())
-
+        # One extra row detects whether another page exists in this direction.
+        # Under a to-many join that extra row may be a duplicate of one already
+        # on the page, which reads as "no next page" and ends traversal early.
+        if _fans_out(search_joins, order_joins):
+            raw_items = await cls._page_entities(
+                session,
+                q,
+                order_clauses=order_clauses,
+                limit=items_per_page + 1,
+                load_options=load_options,
+            )
+        else:
+            result = await session.execute(q.limit(items_per_page + 1))
+            raw_items = cast(list[ModelType], result.unique().scalars().all())
         has_more = len(raw_items) > items_per_page
         items_page = raw_items[:items_per_page]
 

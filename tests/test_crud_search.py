@@ -5,6 +5,7 @@ import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import ColumnElement, UnaryExpression
 
 from fastapi_toolsets.crud import (
@@ -16,7 +17,7 @@ from fastapi_toolsets.crud import (
     get_searchable_fields,
 )
 from fastapi_toolsets.exceptions import InvalidOrderFieldError
-from fastapi_toolsets.schemas import OffsetPagination, PaginationType
+from fastapi_toolsets.schemas import OffsetPagination, PaginationType, PydanticBase
 
 from .conftest import (
     Article,
@@ -29,15 +30,19 @@ from .conftest import (
     OrderCrud,
     OrderRead,
     OrderStatus,
+    Post,
+    PostCrud,
     Role,
     RoleCreate,
     RoleCrud,
     RoleCursorCrud,
     RoleRead,
+    Tag,
     User,
     UserCreate,
     UserCrud,
     UserRead,
+    post_tags,
 )
 
 
@@ -395,6 +400,225 @@ class TestBuildSearchFilters:
         filters, _ = build_search_filters(Order, "PEND", search_fields=[Order.status])
 
         assert "CAST" in str(filters[0])
+
+
+class _PostTitle(PydanticBase):
+    """Minimal read schema for the to-many pagination tests."""
+
+    id: uuid.UUID
+    title: str
+
+
+class _TagName(PydanticBase):
+    name: str
+
+
+class _PostWithTags(PydanticBase):
+    """Serialising `tags` fails unless the relation was eager-loaded."""
+
+    title: str
+    tags: list[_TagName]
+
+
+PostTagSearchCrud = CrudFactory(
+    Post,
+    searchable_fields=[Post.title, (Post.tags, Tag.name)],
+    cursor_column=Post.id,
+)
+
+_POST_COUNT = 10
+
+
+async def _seed_posts_with_tags(session) -> None:
+    """10 posts, each with 3 tags whose names all match the search term."""
+    author = await UserCrud.create(
+        session, UserCreate(username="fanout", email="fanout@test.com")
+    )
+    for i in range(_POST_COUNT):
+        tags = [Tag(name=f"shared-{i}-{j}") for j in range(3)]
+        session.add_all(tags)
+        session.add(Post(title=f"post{i:02d}", author_id=author.id, tags=tags))
+    await session.flush()
+
+
+class TestPaginateToManyJoin:
+    """Searching a to-many relationship must not truncate or duplicate pages."""
+
+    @pytest.mark.anyio
+    async def test_offset_pages_are_full_and_complete(self, db_session: AsyncSession):
+        """Every page is full and every post is returned exactly once."""
+        await _seed_posts_with_tags(db_session)
+
+        seen: list[str] = []
+        for page in (1, 2):
+            result = await PostTagSearchCrud.offset_paginate(
+                db_session,
+                page=page,
+                items_per_page=5,
+                search="shared",
+                schema=_PostTitle,
+            )
+            assert result.pagination.total_count == _POST_COUNT
+            assert len(result.data) == 5, f"page {page} came back short"
+            seen += [p.title for p in result.data]
+
+        assert len(set(seen)) == _POST_COUNT, "posts duplicated or missing"
+
+    @pytest.mark.anyio
+    async def test_offset_without_total_reports_has_more(
+        self, db_session: AsyncSession
+    ):
+        """``has_more`` counts entities, not joined rows."""
+        await _seed_posts_with_tags(db_session)
+
+        first = await PostTagSearchCrud.offset_paginate(
+            db_session,
+            page=1,
+            items_per_page=5,
+            search="shared",
+            include_total=False,
+            schema=_PostTitle,
+        )
+        assert len(first.data) == 5
+        assert first.pagination.has_more is True
+
+        last = await PostTagSearchCrud.offset_paginate(
+            db_session,
+            page=2,
+            items_per_page=5,
+            search="shared",
+            include_total=False,
+            schema=_PostTitle,
+        )
+        assert len(last.data) == 5
+        assert last.pagination.has_more is False
+
+    @pytest.mark.anyio
+    async def test_cursor_traverses_every_row(self, db_session: AsyncSession):
+        """Cursor traversal must not stop early."""
+        await _seed_posts_with_tags(db_session)
+
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(_POST_COUNT):
+            result = await PostTagSearchCrud.cursor_paginate(
+                db_session,
+                cursor=cursor,
+                items_per_page=5,
+                search="shared",
+                schema=_PostTitle,
+            )
+            seen += [p.title for p in result.data]
+            cursor = result.pagination.next_cursor
+            if cursor is None:
+                break
+
+        assert len(seen) == _POST_COUNT, "traversal stopped early or repeated rows"
+        assert len(set(seen)) == _POST_COUNT
+
+    @pytest.mark.anyio
+    async def test_orders_by_a_to_many_column(self, db_session: AsyncSession):
+        """Ordering by a related column has to be collapsed to an aggregate."""
+        await _seed_posts_with_tags(db_session)
+
+        result = await PostTagSearchCrud.offset_paginate(
+            db_session,
+            page=1,
+            items_per_page=5,
+            search="shared",
+            order_by=Tag.name.asc(),
+            order_joins=[Post.tags],
+            schema=_PostTitle,
+        )
+
+        assert len(result.data) == 5
+        assert result.pagination.total_count == _POST_COUNT
+
+    @pytest.mark.anyio
+    async def test_orders_by_a_bare_to_many_column(self, db_session: AsyncSession):
+        """An order clause with no explicit direction still needs aggregating."""
+        await _seed_posts_with_tags(db_session)
+
+        result = await PostTagSearchCrud.offset_paginate(
+            db_session,
+            page=1,
+            items_per_page=5,
+            search="shared",
+            order_by=Tag.name,
+            order_joins=[Post.tags],
+            schema=_PostTitle,
+        )
+
+        assert len(result.data) == 5
+
+    @pytest.mark.anyio
+    async def test_page_past_the_end_is_empty(self, db_session: AsyncSession):
+        """No keys on the page means no second query and an empty result."""
+        await _seed_posts_with_tags(db_session)
+
+        result = await PostTagSearchCrud.offset_paginate(
+            db_session, page=99, items_per_page=5, search="shared", schema=_PostTitle
+        )
+
+        assert result.data == []
+        assert result.pagination.total_count == _POST_COUNT
+
+    @pytest.mark.anyio
+    async def test_load_options_apply_on_the_fan_out_path(
+        self, db_session: AsyncSession
+    ):
+        """The entity query still honours loader options."""
+        await _seed_posts_with_tags(db_session)
+
+        result = await PostTagSearchCrud.offset_paginate(
+            db_session,
+            page=1,
+            items_per_page=5,
+            search="shared",
+            load_options=[selectinload(Post.tags)],
+            schema=_PostWithTags,
+        )
+
+        assert len(result.data) == 5
+        assert all(len(p.tags) == 3 for p in result.data)
+
+    @pytest.mark.anyio
+    async def test_get_multi_is_not_truncated_by_a_to_many_join(
+        self, db_session: AsyncSession
+    ):
+        """`get_multi` takes a raw join, so cardinality cannot be inspected."""
+        await _seed_posts_with_tags(db_session)
+
+        rows = await PostCrud.get_multi(
+            db_session,
+            joins=[(post_tags, post_tags.c.post_id == Post.id)],
+            outer_join=True,
+            limit=5,
+        )
+
+        assert len(rows) == 5
+        assert len({r.id for r in rows}) == 5
+
+    def test_grouped_order_only_aggregates_foreign_columns(self):
+        """A base-table column is left alone; anything else collapses to min()."""
+        from fastapi_toolsets.crud.factory import _grouped_order
+
+        table = Post.__table__
+
+        assert "min" not in str(_grouped_order(Post.title.desc(), table)).lower()
+
+        asc_on_join = str(_grouped_order(Tag.name.asc(), table))
+        desc_on_join = str(_grouped_order(Tag.name.desc(), table))
+        assert "min" in asc_on_join.lower() and asc_on_join.endswith("ASC")
+        assert "min" in desc_on_join.lower() and desc_on_join.endswith("DESC")
+
+    def test_to_one_join_does_not_take_the_fan_out_path(self):
+        """A to-one join keeps the single-query path."""
+        from fastapi_toolsets.crud.factory import _fans_out
+
+        assert _fans_out([User.role], None) is False
+        assert _fans_out([Post.tags], None) is True
+        assert _fans_out(None, [Post.tags]) is True
 
 
 class TestSearchEnumColumn:
