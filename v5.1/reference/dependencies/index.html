@@ -1757,7 +1757,7 @@
 
 
 <h2 id="fastapi_toolsets.dependencies.PathDependency" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">dependencies</span><span class="o">.</span><span class="n">PathDependency</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">field</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">session_dep</span><span class="p">,</span> <span class="n">param_name</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">dependencies</span><span class="o">.</span><span class="n">PathDependency</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">field</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">session_dep</span><span class="p">,</span> <span class="n">param_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">crud</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">load_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#fastapi_toolsets.dependencies.PathDependency" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -1842,6 +1842,40 @@
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>crud</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#type">type</a>[<a class="autorefs autorefs-internal" title="&lt;code&gt;fastapi_toolsets.crud.factory.AsyncCrud&lt;/code&gt;" href="../crud/#fastapi_toolsets.crud.factory.AsyncCrud">AsyncCrud</a>[<span title="fastapi_toolsets.types.ModelType">ModelType</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Existing CRUD class to fetch with, so its <code>default_load_options</code>
+apply. Defaults to a bare <code>CrudFactory(model)</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>load_options</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="collections.abc.Sequence" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence">Sequence</a>[<span title="sqlalchemy.sql.base.ExecutableOption">ExecutableOption</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>SQLAlchemy loader options for the fetch. Overrides the CRUD's
+<code>default_load_options</code> entirely rather than merging with them.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -1911,7 +1945,7 @@
 
 
 <h2 id="fastapi_toolsets.dependencies.BodyDependency" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">dependencies</span><span class="o">.</span><span class="n">BodyDependency</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">field</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">session_dep</span><span class="p">,</span> <span class="n">body_field</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">dependencies</span><span class="o">.</span><span class="n">BodyDependency</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">field</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">session_dep</span><span class="p">,</span> <span class="n">body_field</span><span class="p">,</span> <span class="n">crud</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">load_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#fastapi_toolsets.dependencies.BodyDependency" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -1994,6 +2028,40 @@
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>crud</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#type">type</a>[<a class="autorefs autorefs-internal" title="&lt;code&gt;fastapi_toolsets.crud.factory.AsyncCrud&lt;/code&gt;" href="../crud/#fastapi_toolsets.crud.factory.AsyncCrud">AsyncCrud</a>[<span title="fastapi_toolsets.types.ModelType">ModelType</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Existing CRUD class to fetch with, so its <code>default_load_options</code>
+apply. Defaults to a bare <code>CrudFactory(model)</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>load_options</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="collections.abc.Sequence" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence">Sequence</a>[<span title="sqlalchemy.sql.base.ExecutableOption">ExecutableOption</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>SQLAlchemy loader options for the fetch. Overrides the CRUD's
+<code>default_load_options</code> entirely rather than merging with them.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>

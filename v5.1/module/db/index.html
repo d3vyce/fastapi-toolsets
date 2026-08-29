@@ -2088,7 +2088,7 @@
 </span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="committing-before-the-response">Committing before the response<a class="headerlink" href="#committing-before-the-response" title="Permanent link">&para;</a></h2>
-<p><a href="../../reference/db/#fastapi_toolsets.db.Database"><code>db.install(app)</code></a> adds a middleware that commits the request's session when the response starts, after the endpoint returns and before the body is sent. With the middleware installed, the dependency does not commit again.</p>
+<p><a href="../../reference/db/#fastapi_toolsets.db.Database"><code>db.install(app)</code></a> adds a middleware that commits the request's session when the response starts, after the endpoint returns and before the body is sent. The dependency commits only if the middleware did not: when a function-scoped dependency unwinds before the response, or when the response never passes through the middleware. Either way the request is committed exactly once.</p>
 <p>The request is committed as a single transaction:</p>
 <ul>
 <li><strong>Read-after-write</strong>: a follow-up request sees the write.</li>
