@@ -7,15 +7,18 @@ from typing import Annotated, Any, cast
 
 import pytest
 from fastapi.params import Depends
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from fastapi_toolsets.crud import CrudFactory
 from fastapi_toolsets.dependencies import (
     BodyDependency,
     PathDependency,
     _unwrap_session_dep,
 )
 
-from .conftest import Role, RoleCreate, RoleCrud, User
+from .conftest import Role, RoleCreate, RoleCrud, User, UserCreate, UserCrud
 
 
 async def mock_get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -275,3 +278,78 @@ class TestBodyDependency:
 
         assert result.id == role.id
         assert result.name == "body_annotated_role"
+
+
+class TestDependencyLoadOptions:
+    """Both factories can eager-load relations instead of using a bare CRUD."""
+
+    @staticmethod
+    async def _make_user(db_session):
+        role = await RoleCrud.create(db_session, RoleCreate(name="load_opts_role"))
+        user = await UserCrud.create(
+            db_session,
+            UserCreate(username="load_opts", email="load@opts", role_id=role.id),
+        )
+        db_session.expunge_all()
+        return user
+
+    @pytest.mark.anyio
+    async def test_bare_crud_leaves_relation_unloaded(self, db_session):
+        """Baseline: without options the relation is not loaded (what the ticket reports)."""
+        user = await self._make_user(db_session)
+
+        dep = cast(Any, PathDependency(User, User.id, session_dep=mock_get_db))
+        result = await dep.dependency(session=db_session, user_id=user.id)
+
+        assert "role" in sa_inspect(result).unloaded
+
+    @pytest.mark.anyio
+    async def test_load_options_and_crud_eager_load(self, db_session):
+        """Every way of asking for eager loading, on both factories, actually loads."""
+        user = await self._make_user(db_session)
+        eager = [selectinload(User.role)]
+        eager_crud = CrudFactory(User, default_load_options=eager)
+
+        deps = {
+            "path/load_options": PathDependency(
+                User, User.id, session_dep=mock_get_db, load_options=eager
+            ),
+            "path/crud": PathDependency(
+                User, User.id, session_dep=mock_get_db, crud=eager_crud
+            ),
+            "body/load_options": BodyDependency(
+                User,
+                User.id,
+                session_dep=mock_get_db,
+                body_field="user_id",
+                load_options=eager,
+            ),
+            "body/crud": BodyDependency(
+                User,
+                User.id,
+                session_dep=mock_get_db,
+                body_field="user_id",
+                crud=eager_crud,
+            ),
+        }
+
+        for label, dep in deps.items():
+            # Drop the identity map, or the next fetch reuses the already-loaded
+            # instance and the assertion passes for the wrong reason.
+            db_session.expunge_all()
+            result = await cast(Any, dep).dependency(
+                session=db_session, user_id=user.id
+            )
+
+            assert "role" not in sa_inspect(result).unloaded, label
+            assert result.role.name == "load_opts_role", label
+
+    def test_crud_bound_to_another_model_is_rejected(self):
+        """A crud= for a different model would silently query the wrong table.
+
+        ``ty`` rejects this statically; the runtime guard covers untyped callers.
+        """
+        with pytest.raises(ValueError, match="bound to Role, not User"):
+            PathDependency(
+                User, User.id, session_dep=mock_get_db, crud=cast(Any, RoleCrud)
+            )

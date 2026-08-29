@@ -2,14 +2,15 @@
 
 import inspect
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from fastapi import Depends
 from fastapi.params import Depends as DependsClass
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.base import ExecutableOption
 
-from .crud import CrudFactory
+from .crud import AsyncCrud, CrudFactory
 from .types import ModelType, SessionDependency
 
 __all__ = ["BodyDependency", "PathDependency"]
@@ -24,12 +25,59 @@ def _unwrap_session_dep(session_dep: SessionDependency) -> Callable[..., Any]:
     return session_dep
 
 
+def _fetch_dependency(
+    model: type[ModelType],
+    field: Any,
+    *,
+    session_dep: SessionDependency,
+    param_name: str,
+    crud: type[AsyncCrud[ModelType]] | None,
+    load_options: Sequence[ExecutableOption] | None,
+) -> ModelType:
+    """Build a Depends() that fetches one row by ``field == <param_name>``."""
+    session_callable = _unwrap_session_dep(session_dep)
+    if crud is not None and crud.model is not model:
+        raise ValueError(
+            f"crud is bound to {crud.model.__name__}, not {model.__name__}"
+        )
+    crud = crud or CrudFactory(model)
+
+    # `session` has no default here: the __signature__ override below is what
+    # FastAPI reads, and it always passes `session` explicitly.
+    async def dependency(session: AsyncSession, **kwargs: Any) -> ModelType:
+        return await crud.get(
+            session,
+            filters=[field == kwargs[param_name]],
+            load_options=load_options,
+        )
+
+    dependency.__signature__ = inspect.Signature(  # ty:ignore[unresolved-attribute]
+        parameters=[
+            inspect.Parameter(
+                param_name,
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=field.type.python_type,
+            ),
+            inspect.Parameter(
+                "session",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=AsyncSession,
+                default=Depends(session_callable),
+            ),
+        ]
+    )
+
+    return cast(ModelType, Depends(cast(Callable[..., ModelType], dependency)))
+
+
 def PathDependency(
     model: type[ModelType],
     field: Any,
     *,
     session_dep: SessionDependency,
     param_name: str | None = None,
+    crud: type[AsyncCrud[ModelType]] | None = None,
+    load_options: Sequence[ExecutableOption] | None = None,
 ) -> ModelType:
     """Create a dependency that fetches a DB object from a path parameter.
 
@@ -38,6 +86,10 @@ def PathDependency(
         field: Model field to filter by (e.g., User.id)
         session_dep: Session dependency function (e.g., get_db)
         param_name: Path parameter name (defaults to model_field, e.g., user_id)
+        crud: Existing CRUD class to fetch with, so its ``default_load_options``
+            apply. Defaults to a bare ``CrudFactory(model)``.
+        load_options: SQLAlchemy loader options for the fetch. Overrides the CRUD's
+            ``default_load_options`` entirely rather than merging with them.
 
     Returns:
         A Depends() instance that resolves to the model instance
@@ -55,36 +107,14 @@ def PathDependency(
         ): ...
         ```
     """
-    session_callable = _unwrap_session_dep(session_dep)
-    crud = CrudFactory(model)
-    name = (
-        param_name
-        if param_name is not None
-        else f"{model.__name__.lower()}_{field.key}"
+    return _fetch_dependency(
+        model,
+        field,
+        session_dep=session_dep,
+        param_name=param_name or f"{model.__name__.lower()}_{field.key}",
+        crud=crud,
+        load_options=load_options,
     )
-    python_type = field.type.python_type
-
-    async def dependency(
-        session: AsyncSession = Depends(session_callable), **kwargs: Any
-    ) -> ModelType:
-        value = kwargs[name]
-        return await crud.get(session, filters=[field == value])
-
-    dependency.__signature__ = inspect.Signature(  # ty:ignore[unresolved-attribute]
-        parameters=[
-            inspect.Parameter(
-                name, inspect.Parameter.KEYWORD_ONLY, annotation=python_type
-            ),
-            inspect.Parameter(
-                "session",
-                inspect.Parameter.KEYWORD_ONLY,
-                annotation=AsyncSession,
-                default=Depends(session_callable),
-            ),
-        ]
-    )
-
-    return cast(ModelType, Depends(cast(Callable[..., ModelType], dependency)))
 
 
 def BodyDependency(
@@ -93,6 +123,8 @@ def BodyDependency(
     *,
     session_dep: SessionDependency,
     body_field: str,
+    crud: type[AsyncCrud[ModelType]] | None = None,
+    load_options: Sequence[ExecutableOption] | None = None,
 ) -> ModelType:
     """Create a dependency that fetches a DB object from a body field.
 
@@ -101,6 +133,10 @@ def BodyDependency(
         field: Model field to filter by (e.g., User.id)
         session_dep: Session dependency function (e.g., get_db)
         body_field: Name of the field in the request body
+        crud: Existing CRUD class to fetch with, so its ``default_load_options``
+            apply. Defaults to a bare ``CrudFactory(model)``.
+        load_options: SQLAlchemy loader options for the fetch. Overrides the CRUD's
+            ``default_load_options`` entirely rather than merging with them.
 
     Returns:
         A Depends() instance that resolves to the model instance
@@ -120,28 +156,11 @@ def BodyDependency(
         ): ...
         ```
     """
-    session_callable = _unwrap_session_dep(session_dep)
-    crud = CrudFactory(model)
-    python_type = field.type.python_type
-
-    async def dependency(
-        session: AsyncSession = Depends(session_callable), **kwargs: Any
-    ) -> ModelType:
-        value = kwargs[body_field]
-        return await crud.get(session, filters=[field == value])
-
-    dependency.__signature__ = inspect.Signature(  # ty:ignore[unresolved-attribute]
-        parameters=[
-            inspect.Parameter(
-                body_field, inspect.Parameter.KEYWORD_ONLY, annotation=python_type
-            ),
-            inspect.Parameter(
-                "session",
-                inspect.Parameter.KEYWORD_ONLY,
-                annotation=AsyncSession,
-                default=Depends(session_callable),
-            ),
-        ]
+    return _fetch_dependency(
+        model,
+        field,
+        session_dep=session_dep,
+        param_name=body_field,
+        crud=crud,
+        load_options=load_options,
     )
-
-    return cast(ModelType, Depends(cast(Callable[..., ModelType], dependency)))
