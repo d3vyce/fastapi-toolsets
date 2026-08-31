@@ -270,32 +270,17 @@ class AsyncCrud(Generic[ModelType]):
         return cls.default_load_options
 
     @classmethod
-    def _capture_pk_values(
-        cls: type[Self], instance: DeclarativeBase
-    ) -> dict[str, Any]:
-        """Capture PK values off instance — call before commit expires attributes."""
-        return {
-            cast(str, col.key): getattr(instance, cast(str, col.key))
-            for col in cls.model.__mapper__.primary_key
-        }
-
-    @classmethod
-    async def _reload_with_options_by_pk(
-        cls: type[Self], session: AsyncSession, pk_values: dict[str, Any]
+    async def _reload_with_options(
+        cls: type[Self], session: AsyncSession, instance: DeclarativeBase
     ) -> ModelType:
-        """Re-query by previously captured PK values, with default_load_options applied."""
-        # Only called when cls.default_load_options is set (see call sites).
+        """Re-query instance by PK with default_load_options applied."""
+        mapper = cls.model.__mapper__
         pk_filters = [
-            getattr(cls.model, key) == value for key, value in pk_values.items()
+            getattr(cls.model, cast(str, col.key))
+            == getattr(instance, cast(str, col.key))
+            for col in mapper.primary_key
         ]
-        q = select(cls.model).where(and_(*pk_filters))
-        q = q.execution_options(populate_existing=True)
-        q = q.options(*cast(Sequence[ExecutableOption], cls.default_load_options))
-        result = await session.execute(q)
-        item = result.unique().scalar_one_or_none()
-        if item is None:  # pragma: no cover — row was just flushed in this transaction
-            raise NotFoundError()
-        return cast(ModelType, item)
+        return await cls.get(session, filters=pk_filters)
 
     @classmethod
     async def _resolve_m2m(
@@ -849,14 +834,9 @@ class AsyncCrud(Generic[ModelType]):
                     setattr(db_model, rel_attr, related_instances)
 
             session.add(db_model)
-            pk_values: dict[str, Any] | None = None
-            if cls.default_load_options:
-                await session.flush()
-                pk_values = cls._capture_pk_values(db_model)
-        if pk_values is not None:
-            db_model = await cls._reload_with_options_by_pk(session, pk_values)
-        else:
-            await session.refresh(db_model)
+        await session.refresh(db_model)
+        if cls.default_load_options:
+            db_model = await cls._reload_with_options(session, db_model)
         result = cast(ModelType, db_model)
         if schema:
             return Response(data=schema.model_validate(result))
@@ -1233,15 +1213,9 @@ class AsyncCrud(Generic[ModelType]):
                 m2m_resolved = await cls._resolve_m2m(session, obj, only_set=True)
                 for rel_attr, related_instances in m2m_resolved.items():
                     setattr(db_model, rel_attr, related_instances)
-
-            pk_values: dict[str, Any] | None = None
-            if cls.default_load_options:
-                await session.flush()
-                pk_values = cls._capture_pk_values(db_model)
-        if pk_values is not None:
-            db_model = await cls._reload_with_options_by_pk(session, pk_values)
-        else:
-            await session.refresh(db_model)
+        await session.refresh(db_model)
+        if cls.default_load_options:
+            db_model = await cls._reload_with_options(session, db_model)
         if schema:
             return Response(data=schema.model_validate(db_model))
         return db_model

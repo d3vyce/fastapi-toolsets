@@ -467,6 +467,30 @@ class TestDefaultLoadOptionsIntegration:
         assert updated.role.name == "admin"
 
     @pytest.mark.anyio
+    async def test_create_does_not_expire_already_loaded_relationships(
+        self, db_session: AsyncSession
+    ):
+        """create()'s reload must not blow away loaded state on related objects."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        role = await RoleCrud.get(
+            db_session,
+            filters=[Role.id == role.id],
+            load_options=[selectinload(Role.users)],
+        )
+        assert role.users == []
+
+        await UserWithDefaultLoad.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+
+        # must not trigger a lazy load
+        assert role.users == []
+
+    @pytest.mark.anyio
     async def test_load_options_overrides_default_load_options(
         self, db_session: AsyncSession
     ):
