@@ -1,6 +1,6 @@
 [project]
 name = "fastapi-toolsets"
-version = "5.1.1"
+version = "5.1.2"
 description = "Production-ready utilities for FastAPI applications"
 readme = "README.md"
 license = "MIT"
