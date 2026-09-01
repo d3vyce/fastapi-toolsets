@@ -387,12 +387,28 @@ class AsyncCrud(Generic[ModelType]):
         )
 
     @classmethod
+    def _resolve_search_fields(
+        cls: type[Self],
+        search_fields: Sequence[SearchFieldType] | None,
+    ) -> Sequence[SearchFieldType] | None:
+        """Return search_fields if given, otherwise fall back to the class-level default."""
+        return search_fields if search_fields is not None else cls.searchable_fields
+
+    @classmethod
+    def _resolve_order_fields(
+        cls: type[Self],
+        order_fields: Sequence[OrderFieldType] | None,
+    ) -> Sequence[OrderFieldType] | None:
+        """Return order_fields if given, otherwise fall back to the class-level default."""
+        return order_fields if order_fields is not None else cls.order_fields
+
+    @classmethod
     def _resolve_search_columns(
         cls: type[Self],
         search_fields: Sequence[SearchFieldType] | None,
     ) -> list[str] | None:
         """Return search column keys, or None if no searchable fields configured."""
-        fields = search_fields if search_fields is not None else cls.searchable_fields
+        fields = cls._resolve_search_fields(search_fields)
         if not fields:
             return None
         return search_field_keys(fields)
@@ -403,7 +419,7 @@ class AsyncCrud(Generic[ModelType]):
         order_fields: Sequence[OrderFieldType] | None,
     ) -> list[str] | None:
         """Return sort column keys, or None if no order fields configured."""
-        fields = order_fields if order_fields is not None else cls.order_fields
+        fields = cls._resolve_order_fields(order_fields)
         if not fields:
             return None
         return sorted(facet_keys(fields))
@@ -482,9 +498,7 @@ class AsyncCrud(Generic[ModelType]):
         order_field_map: dict[str, OrderFieldType] | None = None
         order_valid_keys: list[str] | None = None
         if order:
-            resolved_order = (
-                order_fields if order_fields is not None else cls.order_fields
-            )
+            resolved_order = cls._resolve_order_fields(order_fields)
             if resolved_order:
                 keys = facet_keys(resolved_order)
                 order_field_map = dict(zip(keys, resolved_order))
@@ -510,8 +524,21 @@ class AsyncCrud(Generic[ModelType]):
                     ]
                 )
 
+        fixed: dict[str, Any] = {
+            **pagination_fixed,
+            "search_fields": (cls._resolve_search_fields(search_fields) or [])
+            if search
+            else [],
+            "facet_fields": (cls._resolve_facet_fields(facet_fields) or [])
+            if filter
+            else [],
+            "order_fields": (cls._resolve_order_fields(order_fields) or [])
+            if order
+            else [],
+        }
+
         async def dependency(**kwargs: Any) -> dict[str, Any]:
-            result: dict[str, Any] = dict(pagination_fixed)
+            result: dict[str, Any] = dict(fixed)
             for name in pagination_param_names:
                 result[name] = kwargs[name]
 

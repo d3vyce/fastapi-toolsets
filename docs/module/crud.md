@@ -373,6 +373,16 @@ Or via the dependency to narrow which fields are exposed as query parameters:
 params = UserCrud.offset_paginate_params(search_fields=[Post.title])
 ```
 
+`search_fields`, `facet_fields` and `order_fields` follow the same override rule
+everywhere they are accepted &mdash; `offset_paginate`, `cursor_paginate`,
+`paginate` and the matching `*_paginate_params` dependencies:
+
+| Passed | Effect |
+| --- | --- |
+| omitted or `None` | Use the class-level declaration |
+| `[]` | Disable this feature for this call |
+| `[...]` | Use exactly these fields (the primary key is **not** prepended &mdash; that only happens for the class-level `searchable_fields`) |
+
 This allows searching with both [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.offset_paginate) and [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate):
 
 ```python
