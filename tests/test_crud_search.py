@@ -2543,6 +2543,16 @@ class TestOrderParamsViaConsolidated:
         assert len(result.data) == 2
 
 
+def _fully_declared_user_crud():
+    """A CRUD class declaring all three field sets, as a real app would."""
+    return CrudFactory(
+        User,
+        searchable_fields=[User.username],
+        facet_fields=[User.email],
+        order_fields=[User.username],
+    )
+
+
 class TestOffsetPaginateParamsSchema:
     """Tests for AsyncCrud.offset_paginate_params()."""
 
@@ -2612,6 +2622,9 @@ class TestOffsetPaginateParamsSchema:
             "items_per_page": 10,
             "include_total": False,
             "include_facets": True,
+            "search_fields": [],
+            "facet_fields": [],
+            "order_fields": [],
         }
 
     @pytest.mark.anyio
@@ -2654,6 +2667,42 @@ class TestOffsetPaginateParamsSchema:
         param_names = set(inspect.signature(dep).parameters)
         assert "search" not in param_names
         assert "search_column" not in param_names
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"search": False, "filter": False, "order": False},
+            {"search_fields": [], "facet_fields": [], "order_fields": []},
+        ],
+        ids=["flags", "empty-overrides"],
+    )
+    async def test_disabled_features_clear_response_metadata(
+        self, db_session: AsyncSession, kwargs
+    ):
+        """Disabling a feature on one endpoint also drops it from the response."""
+        await UserCrud.create(db_session, UserCreate(username="bob", email="b@x.io"))
+        Crud = _fully_declared_user_crud()
+        dep = Crud.offset_paginate_params(**kwargs)
+        params = await dep(page=1, items_per_page=10)
+        result = await Crud.offset_paginate(db_session, **params, schema=UserRead)
+        assert result.search_columns is None
+        assert result.order_columns is None
+        assert result.filter_attributes is None
+
+    @pytest.mark.anyio
+    async def test_enabled_features_keep_response_metadata(
+        self, db_session: AsyncSession
+    ):
+        """The declared class defaults still reach the response when left enabled."""
+        await UserCrud.create(db_session, UserCreate(username="bob", email="b@x.io"))
+        Crud = _fully_declared_user_crud()
+        dep = Crud.offset_paginate_params()
+        params = await dep(page=1, items_per_page=10)
+        result = await Crud.offset_paginate(db_session, **params, schema=UserRead)
+        assert result.search_columns == ["id", "username"]
+        assert result.order_columns == ["username"]
+        assert result.filter_attributes == {"email": ["b@x.io"]}
 
     def test_filter_enabled_but_no_facet_fields(self):
         """filter=True with no facet_fields silently skips filter params."""
@@ -2727,6 +2776,9 @@ class TestCursorPaginateParamsSchema:
             "cursor": None,
             "items_per_page": 5,
             "include_facets": True,
+            "search_fields": [],
+            "facet_fields": [],
+            "order_fields": [],
         }
 
     @pytest.mark.anyio
@@ -2837,6 +2889,9 @@ class TestPaginateParamsSchema:
             "items_per_page": 10,
             "include_total": True,
             "include_facets": True,
+            "search_fields": [],
+            "facet_fields": [],
+            "order_fields": [],
         }
 
     @pytest.mark.anyio
