@@ -18,6 +18,8 @@ from sqlalchemy.orm import DeclarativeBase
 from ..db.testing import cleanup_tables, create_database
 from ..models.watched import EventSession
 
+_MISSING = object()
+
 
 def _get_xdist_worker(default_test_db: str) -> str:
     """Return the pytest-xdist worker name, or *default_test_db* when not running under xdist.
@@ -168,7 +170,7 @@ async def create_async_client(
         base_url: Base URL for requests. Defaults to "http://test".
         dependency_overrides: Optional mapping of original dependencies to
             their test replacements. Applied via ``app.dependency_overrides``
-            before yielding and cleaned up after.
+            before yielding and restored to their previous state after.
         **kwargs: Additional keyword arguments forwarded to
             :class:`httpx.AsyncClient` (e.g. ``headers``, ``cookies``,
             ``auth``, ``timeout``).
@@ -214,19 +216,22 @@ async def create_async_client(
                 yield c
         ```
     """
-    if dependency_overrides:
-        app.dependency_overrides.update(dependency_overrides)
+    overrides = dependency_overrides or {}
+    previous = {key: app.dependency_overrides.get(key, _MISSING) for key in overrides}
 
     transport = ASGITransport(app=app)
     try:
+        app.dependency_overrides.update(overrides)
         async with AsyncClient(
             transport=transport, base_url=base_url, **kwargs
         ) as client:
             yield client
     finally:
-        if dependency_overrides:
-            for key in dependency_overrides:
+        for key, original in previous.items():
+            if original is _MISSING:
                 app.dependency_overrides.pop(key, None)
+            else:
+                app.dependency_overrides[key] = original
 
 
 @asynccontextmanager
