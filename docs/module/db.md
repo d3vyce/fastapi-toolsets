@@ -122,7 +122,7 @@ async with db.begin() as session:
 
 ## Table locking
 
-[`db.lock_tables`](../reference/db.md#fastapi_toolsets.db.Database) acquires PostgreSQL table-level locks for a critical section. It opens a dedicated session internally and releases the lock when the context exits:
+[`db.lock_tables`](../reference/db.md#fastapi_toolsets.db.Database) acquires PostgreSQL table-level locks for a critical section. By default it opens a dedicated session internally and releases the lock when the context exits ([or locks on a session you pass](#locking-on-the-requests-own-session)):
 
 ```python
 from fastapi_toolsets.db import LockMode
@@ -140,6 +140,28 @@ Pass `timeout` to limit how long the lock waits. On timeout, a [`LockTimeoutErro
 async with db.lock_tables([Order], timeout="2s") as session:
     ...
 ```
+
+### Locking on the request's own session
+
+The dedicated session above is a **second** connection, on top of the one the request already holds through `Depends(db)`, and it is a different backend from the request's. Two consequences:
+
+- The request needs two simultaneous connections. Size the pool for concurrent *locking requests*, not concurrent users. Behind a transaction-mode pooler (PgBouncer, a CNPG `Pooler`) where `default_pool_size` is below peak concurrency, this self-deadlocks: every server connection is pinned by a request transaction waiting for a second one. SQLAlchemy's `pool_timeout` never fires, because the wait happens inside the pooler.
+- The block must not touch the request session under a conflicting mode (`SHARE`, `SHARE_ROW_EXCLUSIVE`, `EXCLUSIVE`, `ACCESS_EXCLUSIVE`). `timeout` applies only to the dedicated session, so the request session waits with no bound at all, and PostgreSQL sees no deadlock, because the lock holder is merely idle in transaction.
+
+Pass `session=` to avoid both: the lock is taken on the transaction the request already owns, on one connection, and the block is free to use that same session.
+
+```python
+@app.post("/orders")
+async def create_order(session=Depends(db)):
+    async with db.lock_tables([Order], session=session, mode=LockMode.EXCLUSIVE):
+        # Same session, same connection: writing through it cannot self-block
+        return await OrderCrud.create(session, data)
+```
+
+!!! note
+    On this path the caller keeps its transaction: `lock_tables` commits and rolls back nothing, so the lock is held until the request's transaction ends rather than released at block exit. Only the acquisition is wrapped in a savepoint, so a `LockTimeoutError` leaves the transaction usable and a handler can answer 409 instead of poisoning the commit. Opening that savepoint flushes pending ORM changes, and `SET LOCAL lock_timeout` stays in effect on the transaction after the block.
+
+Whichever path you take, `connect_args={"server_settings": {"statement_timeout": "30s", "idle_in_transaction_session_timeout": "60s"}}` turns a freeze into an error.
 
 ## Advisory locking
 
@@ -171,7 +193,9 @@ async with advisory_lock(session=session, key=(1, user_id)):
 ```
 
 !!! note
-    Advisory locks use PostgreSQL session-level functions (`pg_advisory_lock` / `pg_advisory_unlock`). The lock is tied to the database connection, not the SQLAlchemy transaction, so it is released when the context exits even if the surrounding transaction is still open.
+    Advisory locks use PostgreSQL session-level functions (`pg_advisory_lock` / `pg_advisory_unlock`). The lock is tied to the database connection, not the SQLAlchemy transaction, so it is released when the context exits even if the surrounding transaction is still open. For the same reason they are unsafe behind a transaction-mode pooler, which hands the server connection to another client between statements.
+
+    `timeout` issues `SET LOCAL lock_timeout` on the session you pass, so it stays in effect for the rest of that transaction.
 
 ## Row-change polling
 
