@@ -537,6 +537,153 @@ class TestLockTables:
             assert result is None
 
 
+class TestLockTablesOnCallerSession:
+    """Tests for ``lock_tables(session=...)``, the single-connection path."""
+
+    @staticmethod
+    async def _granted_locks(session_maker, mode: str) -> int:
+        """Count granted locks of *mode* on ``roles``, seen from another session."""
+        async with session_maker() as observer:
+            result = await observer.execute(
+                text(
+                    "SELECT count(*) FROM pg_locks l "
+                    "JOIN pg_class c ON c.oid = l.relation "
+                    "WHERE c.relname = 'roles' AND l.mode = :mode AND l.granted"
+                ),
+                {"mode": mode},
+            )
+            return result.scalar_one()
+
+    @pytest.mark.anyio
+    async def test_block_writes_through_the_locked_session(self, engine, session_maker):
+        """The block may write through the session holding the lock (TOOLS-11)."""
+        db = Database(engine=engine)
+        async with db.session() as session:
+            async with db.lock_tables(
+                [Role], session=session, mode=LockMode.EXCLUSIVE
+            ) as locked:
+                assert locked is session
+                session.add(Role(name="caller_lock_role"))
+                await session.flush()
+            await session.commit()
+
+        async with session_maker() as verify:
+            result = await RoleCrud.first(verify, [Role.name == "caller_lock_role"])
+            assert result is not None
+
+    @pytest.mark.anyio
+    async def test_completes_with_a_single_connection(self, session_maker):
+        """A locking request completes on a pool of one connection."""
+        db = Database(DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1)
+        try:
+            async with db.session() as session:
+                async with db.lock_tables([Role], session=session):
+                    session.add(Role(name="single_conn_role"))
+                    await session.flush()
+                await session.commit()
+        finally:
+            await db.engine.dispose()
+
+        async with session_maker() as verify:
+            result = await RoleCrud.first(verify, [Role.name == "single_conn_role"])
+            assert result is not None
+
+    @pytest.mark.anyio
+    async def test_timeout_leaves_the_callers_transaction_usable(
+        self, engine, session_maker
+    ):
+        """LockTimeoutError aborts only the savepoint, so the caller can commit."""
+        db = Database(engine=engine)
+        async with db.session() as session:
+            # Pending work on another table, so the caller does not itself
+            # conflict with the lock it is about to wait for.
+            session.add(Tag(name="survives_lock_timeout"))
+            await session.flush()
+
+            async with db.lock_tables([Role], mode=LockMode.EXCLUSIVE):
+                with pytest.raises(LockTimeoutError):
+                    async with db.lock_tables([Role], session=session, timeout="100ms"):
+                        pass  # pragma: no cover
+
+            assert (await session.execute(select(1))).scalar_one() == 1
+            await session.commit()
+
+        async with session_maker() as verify:
+            result = await verify.execute(
+                select(Tag).where(Tag.name == "survives_lock_timeout")
+            )
+            assert result.scalar_one_or_none() is not None
+
+    @pytest.mark.anyio
+    async def test_sets_lock_timeout_on_the_callers_session(
+        self, engine, session_maker
+    ):
+        """The caller's own session carries lock_timeout."""
+        # Opening the savepoint flushes pending ORM changes, and that flush can
+        # block on a table lock just like the LOCK itself, so the timeout has
+        # to be in effect by then.
+        db = Database(engine=engine)
+        async with db.session() as session:
+            session.add(Role(name="flushed_by_table_lock"))
+
+            async with db.lock_tables([Role], session=session, timeout="250ms"):
+                timeout = (
+                    await session.execute(text("SHOW lock_timeout"))
+                ).scalar_one()
+                assert timeout == "250ms"
+                assert not session.new  # flushed when the savepoint opened
+
+            await session.commit()
+
+        async with session_maker() as verify:
+            result = await RoleCrud.first(
+                verify, [Role.name == "flushed_by_table_lock"]
+            )
+            assert result is not None
+
+    @pytest.mark.anyio
+    async def test_lock_is_held_until_the_callers_transaction_ends(
+        self, engine, session_maker
+    ):
+        """The lock outlives the block and is released at commit."""
+        db = Database(engine=engine)
+        async with db.session() as session:
+            async with db.lock_tables([Role], session=session, mode=LockMode.EXCLUSIVE):
+                assert await self._granted_locks(session_maker, "ExclusiveLock") == 1
+
+            # Block exited, savepoint released, but the lock is still held.
+            assert await self._granted_locks(session_maker, "ExclusiveLock") == 1
+            await session.commit()
+
+        assert await self._granted_locks(session_maker, "ExclusiveLock") == 0
+
+    @pytest.mark.anyio
+    async def test_other_errors_propagate_unchanged(self, engine, session_maker):
+        """A failed flush stays itself, not a LockTimeoutError."""
+        db = Database(engine=engine)
+        async with db.session() as session:
+            session.add(Role(name="duplicate_under_lock"))
+            await session.commit()
+
+        async with db.session() as session:
+            session.add(Role(name="duplicate_under_lock"))  # violates unique
+            with pytest.raises(IntegrityError):
+                async with db.lock_tables([Role], session=session):
+                    pass  # pragma: no cover
+            await session.rollback()
+
+    @pytest.mark.anyio
+    async def test_requires_exactly_one_of_session_maker_or_session(
+        self, db_session, session_maker
+    ):
+        """Passing both or neither is a TypeError."""
+        with pytest.raises(TypeError):
+            lock_tables(session_maker, [Role], session=db_session)
+
+        with pytest.raises(TypeError):
+            lock_tables(None, [Role])
+
+
 class TestAdvisoryLock:
     """Tests for advisory_lock context manager (PostgreSQL-specific)."""
 
@@ -1091,7 +1238,7 @@ class TestDbErrors:
 
     @pytest.mark.anyio
     async def test_pool_exhausted_on_lock_tables_raises_pool_exhausted_error(self):
-        """PoolExhaustedError is raised when the pool is exhausted on lock_tables."""
+        """The dedicated-session path needs a second connection, so a pool of one is exhausted."""
         db = Database(DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1)
         try:
             async with db.session():  # check out the single available connection

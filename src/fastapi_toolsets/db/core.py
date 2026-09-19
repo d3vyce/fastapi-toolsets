@@ -295,21 +295,27 @@ class Database:
         self,
         tables: list[type[DeclarativeBase]],
         *,
+        session: AsyncSession | None = None,
         mode: LockMode = LockMode.SHARE_UPDATE_EXCLUSIVE,
         timeout: str = "5s",
     ) -> AbstractAsyncContextManager[AsyncSession]:
-        """Lock PostgreSQL tables for the duration of a dedicated transaction.
+        """Lock PostgreSQL tables for the duration of a transaction.
 
-        Opens its own session from the facade's sessionmaker, changes are
-        committed when the context exits.
+        Without *session*, a dedicated session is opened from the facade's
+        sessionmaker and committed at block exit. That is a **second**
+        connection, and the block must not touch the request session under a
+        conflicting mode. Pass ``session=`` to lock on the request's own
+        transaction instead: one connection, and the block may use it freely.
 
         Args:
             tables: List of SQLAlchemy model classes to lock.
+            session: Existing session whose transaction takes the lock. That
+                transaction holds the lock until it ends.
             mode: Lock mode (default: ``SHARE UPDATE EXCLUSIVE``).
             timeout: Lock timeout (default: ``"5s"``).
 
         Yields:
-            The dedicated session, open within the locked transaction.
+            The session holding the lock: the dedicated one, or *session*.
 
         Raises:
             LockTimeoutError: If the lock cannot be acquired within *timeout*.
@@ -320,6 +326,18 @@ class Database:
             async with db.lock_tables([User, Account]) as session:
                 user = await UserCrud.get(session, [User.id == 1])
                 user.balance += 100
+
+
+            @app.post("/transfer")
+            async def transfer(session=Depends(db)):
+                async with db.lock_tables([Account], session=session):
+                    ...  # same session, same connection
             ```
         """
-        return lock_tables(self._sessionmaker, tables, mode=mode, timeout=timeout)
+        return lock_tables(
+            None if session is not None else self._sessionmaker,
+            tables,
+            session=session,
+            mode=mode,
+            timeout=timeout,
+        )
