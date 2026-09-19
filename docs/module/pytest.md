@@ -37,36 +37,9 @@ async def http_client(db_session):
 
 !!! warning "`dependency_overrides` mutates the app, not the client"
 
-    `app.dependency_overrides` belongs to the FastAPI app, which is normally a
-    module-level singleton shared by every client in the test session. The
-    overrides passed here are saved and restored around the client's lifetime,
-    so *properly nested* clients compose — an inner client leaving no longer
-    strips the overrides an outer client still relies on.
+    `app.dependency_overrides` belongs to the app, which is normally a module-level singleton shared by every client. Each client layers its overrides on top of what was already there and unwinds them on exit, so clients compose in any order and leave nothing behind.
 
-    Clients whose lifetimes **overlap without nesting** are not supported,
-    because there is no per-client state to restore. When a test needs several
-    clients at once, bind the overrides to the test rather than to a client:
-
-    ```python
-    @pytest.fixture
-    def app_overrides(db_session, mock_redis):
-        app.dependency_overrides[get_db] = lambda: db_session
-        app.dependency_overrides[get_redis] = lambda: mock_redis
-        try:
-            yield
-        finally:
-            app.dependency_overrides.pop(get_db, None)
-            app.dependency_overrides.pop(get_redis, None)
-
-
-    @pytest.fixture
-    async def http_client(app_overrides):
-        async with create_async_client(app=app) as c:
-            yield c
-    ```
-
-    The fixture owns the overrides for the whole test, and the clients add
-    none, so any number of them can be open at the same time.
+    The app still has a single slot per dependency, so two clients open at once on the **same** key both resolve to the one applied most recently. When overlapping clients need to disagree, put the overrides in a test-scoped fixture and let the clients add none.
 
 Any extra keyword arguments are forwarded to `httpx.AsyncClient`, so you can set default headers, authentication, timeouts, and more:
 
