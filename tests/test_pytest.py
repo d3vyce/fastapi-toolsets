@@ -398,6 +398,131 @@ class TestCreateAsyncClient:
         assert original_dep not in app.dependency_overrides
 
     @pytest.mark.anyio
+    async def test_interleaved_clients_first_to_close_does_not_strip_the_other(self):
+        """A client closing while another is still open leaves that one working."""
+        app = FastAPI()
+
+        async def original_dep() -> str:
+            return "real"
+
+        async def dep_a() -> str:
+            return "a"
+
+        async def dep_b() -> str:
+            return "b"
+
+        @app.get("/dep")
+        async def dep_endpoint(value: str = Depends(original_dep)):
+            return {"value": value}
+
+        # Opened A then B, but closed A first: the lifetimes overlap without
+        # nesting, so there is no LIFO order to rely on.
+        a_ctx = create_async_client(app, dependency_overrides={original_dep: dep_a})
+        client_a = await a_ctx.__aenter__()
+        assert (await client_a.get("/dep")).json() == {"value": "a"}
+
+        b_ctx = create_async_client(app, dependency_overrides={original_dep: dep_b})
+        client_b = await b_ctx.__aenter__()
+
+        try:
+            assert (await client_b.get("/dep")).json() == {"value": "b"}
+        finally:
+            await a_ctx.__aexit__(None, None, None)
+
+        # B is still open and must not have fallen back to the real dependency.
+        try:
+            assert (await client_b.get("/dep")).json() == {"value": "b"}
+        finally:
+            await b_ctx.__aexit__(None, None, None)
+
+        # And nothing from either client is left behind on the shared app.
+        assert original_dep not in app.dependency_overrides
+
+    @pytest.mark.anyio
+    async def test_interleaved_clients_leave_no_resurrected_override(self):
+        """The last client to close does not restore a dead client's override."""
+        app = FastAPI()
+
+        async def original_dep() -> str:
+            return "real"
+
+        async def dep_a() -> str:
+            return "a"
+
+        async def dep_b() -> str:
+            return "b"
+
+        @app.get("/dep")
+        async def dep_endpoint(value: str = Depends(original_dep)):
+            return {"value": value}
+
+        a_ctx = create_async_client(app, dependency_overrides={original_dep: dep_a})
+        await a_ctx.__aenter__()
+        b_ctx = create_async_client(app, dependency_overrides={original_dep: dep_b})
+        await b_ctx.__aenter__()
+        await a_ctx.__aexit__(None, None, None)
+        await b_ctx.__aexit__(None, None, None)
+
+        assert original_dep not in app.dependency_overrides
+
+        async with create_async_client(app) as client:
+            assert (await client.get("/dep")).json() == {"value": "real"}
+
+    @pytest.mark.anyio
+    async def test_interleaved_clients_restore_a_pre_existing_override(self):
+        """Overlapping clients release the key back to the app-level override."""
+        app = FastAPI()
+
+        async def original_dep() -> str:
+            return "real"
+
+        async def app_dep() -> str:
+            return "app-level"
+
+        async def dep_a() -> str:
+            return "a"
+
+        async def dep_b() -> str:
+            return "b"
+
+        @app.get("/dep")
+        async def dep_endpoint(value: str = Depends(original_dep)):
+            return {"value": value}
+
+        app.dependency_overrides[original_dep] = app_dep
+        try:
+            a_ctx = create_async_client(app, dependency_overrides={original_dep: dep_a})
+            await a_ctx.__aenter__()
+            b_ctx = create_async_client(app, dependency_overrides={original_dep: dep_b})
+            await b_ctx.__aenter__()
+            await a_ctx.__aexit__(None, None, None)
+            await b_ctx.__aexit__(None, None, None)
+
+            assert app.dependency_overrides[original_dep] is app_dep
+        finally:
+            app.dependency_overrides.pop(original_dep, None)
+
+    @pytest.mark.anyio
+    async def test_override_bookkeeping_is_released(self):
+        """The internal layer registry does not retain the app after the last client."""
+        from fastapi_toolsets.pytest.utils import _override_layers
+
+        app = FastAPI()
+
+        async def original_dep() -> str:
+            return "original"
+
+        async def override_dep() -> str:
+            return "overridden"
+
+        async with create_async_client(
+            app, dependency_overrides={original_dep: override_dep}
+        ):
+            assert app in _override_layers
+
+        assert app not in _override_layers
+
+    @pytest.mark.anyio
     async def test_kwargs_forwarded_to_async_client(self):
         """Extra kwargs are forwarded to AsyncClient (e.g. default headers)."""
         from fastapi import Request

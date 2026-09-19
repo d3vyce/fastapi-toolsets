@@ -4,6 +4,7 @@ import os
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
@@ -19,6 +20,45 @@ from ..db.testing import cleanup_tables, create_database
 from ..models.watched import EventSession
 
 _MISSING = object()
+_BASE = object()
+
+_override_layers: WeakKeyDictionary[Any, dict[Any, list[tuple[Any, Any]]]] = (
+    WeakKeyDictionary()
+)
+
+
+def _push_overrides(app: Any, overrides: dict[Any, Any], owner: Any) -> None:
+    """Register *overrides* for *owner* and apply them to *app*."""
+    layers = _override_layers.setdefault(app, {})
+    for key, override in overrides.items():
+        if key not in layers:
+            layers[key] = [(_BASE, app.dependency_overrides.get(key, _MISSING))]
+        layers[key].append((owner, override))
+        app.dependency_overrides[key] = override
+
+
+def _pop_overrides(app: Any, overrides: dict[Any, Any], owner: Any) -> None:
+    """Drop *owner*'s layer and re-apply whichever layer is now on top."""
+    layers = _override_layers.get(app)
+    if layers is None:
+        return
+    for key in overrides:
+        stack = layers.get(key)
+        if stack is None:
+            continue
+        for index, (token, _) in enumerate(stack):
+            if token is owner:
+                del stack[index]
+                break
+        _, current = stack[-1]
+        if current is _MISSING:
+            app.dependency_overrides.pop(key, None)
+        else:
+            app.dependency_overrides[key] = current
+        if len(stack) == 1:
+            del layers[key]
+    if not layers:
+        del _override_layers[app]
 
 
 def _get_xdist_worker(default_test_db: str) -> str:
@@ -217,21 +257,19 @@ async def create_async_client(
         ```
     """
     overrides = dependency_overrides or {}
-    previous = {key: app.dependency_overrides.get(key, _MISSING) for key in overrides}
+    owner = object()
 
     transport = ASGITransport(app=app)
     try:
-        app.dependency_overrides.update(overrides)
+        if overrides:
+            _push_overrides(app, overrides, owner)
         async with AsyncClient(
             transport=transport, base_url=base_url, **kwargs
         ) as client:
             yield client
     finally:
-        for key, original in previous.items():
-            if original is _MISSING:
-                app.dependency_overrides.pop(key, None)
-            else:
-                app.dependency_overrides[key] = original
+        if overrides:
+            _pop_overrides(app, overrides, owner)
 
 
 @asynccontextmanager
