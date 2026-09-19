@@ -279,6 +279,125 @@ class TestCreateAsyncClient:
         assert original_dep not in app.dependency_overrides
 
     @pytest.mark.anyio
+    async def test_nested_clients_same_key_outer_override_survives(self):
+        """An inner client leaving does not strip the outer client's override."""
+        app = FastAPI()
+
+        async def original_dep() -> str:
+            return "original"
+
+        async def outer_dep() -> str:
+            return "outer"
+
+        async def inner_dep() -> str:
+            return "inner"
+
+        @app.get("/dep")
+        async def dep_endpoint(value: str = Depends(original_dep)):
+            return {"value": value}
+
+        async with create_async_client(
+            app, dependency_overrides={original_dep: outer_dep}
+        ) as outer:
+            async with create_async_client(
+                app, dependency_overrides={original_dep: inner_dep}
+            ) as inner:
+                assert (await inner.get("/dep")).json() == {"value": "inner"}
+
+            # The outer client is still open and must keep its own override.
+            assert (await outer.get("/dep")).json() == {"value": "outer"}
+
+        assert original_dep not in app.dependency_overrides
+
+    @pytest.mark.anyio
+    async def test_nested_clients_different_keys_do_not_leak(self):
+        """Nested clients overriding different keys each clean up only their own."""
+        app = FastAPI()
+
+        async def dep_a() -> str:
+            return "a"
+
+        async def dep_b() -> str:
+            return "b"
+
+        async def override_a() -> str:
+            return "override-a"
+
+        async def override_b() -> str:
+            return "override-b"
+
+        @app.get("/ab")
+        async def ab_endpoint(a: str = Depends(dep_a), b: str = Depends(dep_b)):
+            return {"a": a, "b": b}
+
+        async with create_async_client(
+            app, dependency_overrides={dep_a: override_a}
+        ) as outer:
+            async with create_async_client(
+                app, dependency_overrides={dep_b: override_b}
+            ) as inner:
+                assert (await inner.get("/ab")).json() == {
+                    "a": "override-a",
+                    "b": "override-b",
+                }
+
+            # Only dep_b was released.
+            assert dep_b not in app.dependency_overrides
+            assert (await outer.get("/ab")).json() == {"a": "override-a", "b": "b"}
+
+        assert dep_a not in app.dependency_overrides
+
+    @pytest.mark.anyio
+    async def test_pre_existing_override_is_restored_not_dropped(self):
+        """An override registered on the app before any client is put back on exit."""
+        app = FastAPI()
+
+        async def original_dep() -> str:
+            return "original"
+
+        async def app_dep() -> str:
+            return "app-level"
+
+        async def client_dep() -> str:
+            return "client-level"
+
+        @app.get("/dep")
+        async def dep_endpoint(value: str = Depends(original_dep)):
+            return {"value": value}
+
+        app.dependency_overrides[original_dep] = app_dep
+        try:
+            async with create_async_client(
+                app, dependency_overrides={original_dep: client_dep}
+            ) as client:
+                assert (await client.get("/dep")).json() == {"value": "client-level"}
+
+            assert app.dependency_overrides[original_dep] is app_dep
+        finally:
+            app.dependency_overrides.pop(original_dep, None)
+
+    @pytest.mark.anyio
+    async def test_overrides_restored_when_client_construction_fails(self):
+        """A failure building the AsyncClient still restores the overrides."""
+        app = FastAPI()
+
+        async def original_dep() -> str:
+            return "original"
+
+        async def override_dep() -> str:
+            return "overridden"
+
+        with pytest.raises(TypeError):
+            async with create_async_client(
+                app,
+                dependency_overrides={original_dep: override_dep},
+                not_a_real_kwarg=object(),
+            ):
+                pass  # pragma: no cover
+
+        assert original_dep not in app.dependency_overrides
+
+    @pytest.mark.anyio
     async def test_kwargs_forwarded_to_async_client(self):
         """Extra kwargs are forwarded to AsyncClient (e.g. default headers)."""
         from fastapi import Request
