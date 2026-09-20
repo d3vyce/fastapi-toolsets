@@ -177,7 +177,7 @@ Whichever path you take, `connect_args={"server_settings": {"statement_timeout":
 
 ## Advisory locking
 
-[`advisory_lock`](../reference/db.md#fastapi_toolsets.db.advisory_lock) acquires a PostgreSQL session-level advisory lock on a session you provide. The lock is released when the context exits:
+[`advisory_lock`](../reference/db.md#fastapi_toolsets.db.advisory_lock) acquires a PostgreSQL advisory lock on a session you provide. By default it is session-level and released when the context exits:
 
 ```python
 from fastapi_toolsets.db import advisory_lock
@@ -202,10 +202,31 @@ async with advisory_lock(session=session, key=42, shared=True):
 # Two-integer key for namespacing (e.g. lock_type + resource_id)
 async with advisory_lock(session=session, key=(1, user_id)):
     ...
+
+# Transaction-level: released by the commit, not at block exit
+async with advisory_lock(session=session, key=(1, user_id), xact=True):
+    ...
 ```
 
+### Choosing between session-level and transaction-level
+
+`xact=True` switches to `pg_advisory_xact_lock`, which PostgreSQL releases at commit or rollback. Reach for it whenever the protected read has to see the previous holder's write. A check-then-insert is the usual case:
+
+```python
+@app.post("/claims")
+async def claim(session=Depends(db)):
+    async with advisory_lock(session=session, key=(team_id, question_id), xact=True):
+        if await ClaimCrud.first(session, [Claim.question_id == question_id]):
+            raise ConflictError(detail="Already claimed")
+        return await ClaimCrud.create(session, data)
+```
+
+A session-level lock is wrong here. [`db.install`](#committing-before-the-response) commits the request session at `http.response.start`, which is *after* the handler returns and therefore after the `async with` block released the lock. Two concurrent requests both read "not present" and both insert. The lock is held over exactly the wrong interval.
+
+Keep the session-level default when the critical section is self-contained, for example one worker at a time over work that is not read back through the same transaction.
+
 !!! note
-    Advisory locks use PostgreSQL session-level functions (`pg_advisory_lock` / `pg_advisory_unlock`). The lock is tied to the database connection, not the SQLAlchemy transaction, so it is released when the context exits even if the surrounding transaction is still open. For the same reason they are unsafe behind a transaction-mode pooler, which hands the server connection to another client between statements.
+    A session-level lock is tied to the database connection, not the SQLAlchemy transaction, so it is released when the context exits even if the surrounding transaction is still open. For the same reason it is unsafe behind a transaction-mode pooler, which hands the server connection to another client between statements. `xact=True` does not have that problem: the lock and the pooler's connection assignment end together.
 
     `timeout` issues `SET LOCAL lock_timeout` on the session you pass, so it stays in effect for the rest of that transaction.
 

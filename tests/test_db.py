@@ -785,6 +785,111 @@ class TestAdvisoryLock:
                                     pass
 
 
+class TestAdvisoryLockXact:
+    """Tests for ``advisory_lock(xact=True)``, released by the transaction."""
+
+    @pytest.mark.anyio
+    async def test_held_after_the_block_until_commit(self, session_maker):
+        """The lock outlives the block and is released by the commit."""
+        async with session_maker() as holder:
+            await holder.execute(text("SELECT 1"))  # autobegin
+            async with advisory_lock(holder, 3001, xact=True) as acquired:
+                assert acquired is True
+
+            # Block exited, but the transaction still holds the lock.
+            async with session_maker() as contender:
+                async with contender.begin():
+                    async with advisory_lock(
+                        contender, 3001, xact=True, nowait=True
+                    ) as taken:
+                        assert taken is False
+
+            await holder.commit()
+
+        async with session_maker() as after:
+            async with after.begin():
+                async with advisory_lock(after, 3001, xact=True, nowait=True) as taken:
+                    assert taken is True
+
+    @pytest.mark.anyio
+    async def test_released_by_rollback(self, session_maker):
+        """A rollback releases the lock just as a commit does."""
+        async with session_maker() as holder:
+            async with advisory_lock(holder, 3002, xact=True):
+                pass
+            await holder.rollback()
+
+            async with session_maker() as contender:
+                async with contender.begin():
+                    async with advisory_lock(
+                        contender, 3002, xact=True, nowait=True
+                    ) as taken:
+                        assert taken is True
+
+    @pytest.mark.anyio
+    async def test_shared_allows_concurrent_readers(self, session_maker):
+        """Two shared transaction-level locks on the same key are both acquired."""
+        async with session_maker() as s1, session_maker() as s2:
+            async with s1.begin(), s2.begin():
+                async with advisory_lock(s1, 3003, shared=True, xact=True) as a1:
+                    async with advisory_lock(
+                        s2, 3003, shared=True, xact=True, nowait=True
+                    ) as a2:
+                        assert a1 is True
+                        assert a2 is True
+
+    @pytest.mark.anyio
+    async def test_timeout_raises_when_contended(self, session_maker):
+        """timeout= raises LockTimeoutError for a transaction-level lock too."""
+        async with session_maker() as holder:
+            async with holder.begin():
+                async with advisory_lock(holder, 3004, xact=True):
+                    async with session_maker() as contender:
+                        async with contender.begin():
+                            with pytest.raises(LockTimeoutError):
+                                async with advisory_lock(
+                                    contender, 3004, xact=True, timeout="10ms"
+                                ):
+                                    pass  # pragma: no cover
+
+    @pytest.mark.anyio
+    async def test_tuple_key(self, session_maker):
+        """(int, int) key variant works for a transaction-level lock."""
+        async with session_maker() as holder:
+            async with holder.begin():
+                async with advisory_lock(holder, (8, 42), xact=True) as acquired:
+                    assert acquired is True
+
+    @pytest.mark.anyio
+    async def test_check_then_insert_serializes(self, session_maker):
+        """The next waiter sees the previous holder's insert, the point of TOOLS-8.
+
+        A session-level lock is released at block exit, before the request
+        session commits, so the second caller reads a stale "not present".
+        """
+
+        async def claim(session) -> bool:
+            """Insert the role only if it is not there yet; True if inserted."""
+            async with advisory_lock(session, 3005, xact=True):
+                existing = await RoleCrud.first(session, [Role.name == "claimed_once"])
+                if existing is not None:
+                    return False
+                session.add(Role(name="claimed_once"))
+                await session.flush()
+                return True
+
+        async with session_maker() as first, session_maker() as second:
+            assert await claim(first) is True
+            # ``second`` blocks on the lock until ``first`` commits, then sees
+            # the row; without xact=True it would insert a duplicate.
+            task = asyncio.create_task(claim(second))
+            await asyncio.sleep(0.1)
+            assert not task.done()  # waiting on the lock first holds
+            await first.commit()
+            assert await task is False
+            await second.rollback()
+
+
 class TestWaitForRowChange:
     """Tests for wait_for_row_change polling function."""
 
