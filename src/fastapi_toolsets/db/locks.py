@@ -142,15 +142,17 @@ async def advisory_lock(
     *,
     shared: bool = False,
     nowait: bool = False,
+    xact: bool = False,
     timeout: str | None = None,
 ) -> AsyncGenerator[bool, None]:
-    """Acquire a PostgreSQL session-level advisory lock.
+    """Acquire a PostgreSQL advisory lock.
 
     Args:
         session: AsyncSession instance.
         key: Lock key, either a single ``int`` (bigint) or a ``(int, int)`` pair for namespacing.
         shared: Acquire a shared lock (multiple holders allowed). Default is exclusive.
         nowait: Return ``False`` immediately if the lock is unavailable instead of waiting.
+        xact: Hold the lock until the caller's transaction ends.
         timeout: Maximum wait time (e.g. ``"5s"``, ``"500ms"``). Raises ``DBAPIError``
             if exceeded. Ignored when *nowait* is ``True``.
 
@@ -177,10 +179,14 @@ async def advisory_lock(
 
         async with advisory_lock(session, (1, user_id), shared=True):
             ...
+
+        async with advisory_lock(session, (team_id, question_id), xact=True):
+            ...  # held until the request's transaction commits
         ```
     """
     suffix = "_shared" if shared else ""
-    acquire_fn = f"{'pg_try_advisory_lock' if nowait else 'pg_advisory_lock'}{suffix}"
+    scope = "_xact" if xact else ""
+    acquire_fn = f"pg_{'try_' if nowait else ''}advisory{scope}_lock{suffix}"
     release_fn = f"pg_advisory_unlock{suffix}"
 
     if isinstance(key, tuple):
@@ -213,6 +219,6 @@ async def advisory_lock(
     try:
         yield acquired
     finally:
-        if acquired:
+        if acquired and not xact:
             with session.no_autoflush:
                 await session.execute(release_sql, params)
