@@ -81,6 +81,9 @@ async def db_session(worker_db_url):
 !!! info
     `cleanup=True` truncates all tables between tests via `TRUNCATE … RESTART IDENTITY CASCADE`, which is faster than dropping and recreating tables.
 
+!!! note "The session is an `EventSession`"
+    `create_db_session` builds its factory with `class_=EventSession`, so [lifecycle events](models.md#lifecycle-events) always fire in tests. Your application only dispatches them if its `Database` was built with `session_class=EventSession`, so this fixture cannot tell you whether the app is wired correctly.
+
 ### Engine and session options
 
 Pass `engine_kwargs` or `session_kwargs` to forward options to the underlying SQLAlchemy primitives:
