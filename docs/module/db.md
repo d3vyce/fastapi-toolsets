@@ -52,6 +52,18 @@ db = Database(
 )
 ```
 
+### Session class
+
+`session_class` selects the class the internal factory builds sessions from. It defaults to plain `AsyncSession`.
+
+To use the [lifecycle events](models.md#lifecycle-events) of the `models` module, pass [`EventSession`](../reference/models.md#fastapi_toolsets.models.EventSession) here. It is the only place to wire them in `v5`: `Database` owns the session factory, so a factory you build yourself is no longer the one serving requests.
+
+```python
+from fastapi_toolsets.models import EventSession
+
+db = Database("postgresql+asyncpg://...", session_class=EventSession)
+```
+
 ## Committing before the response
 
 [`db.install(app)`](../reference/db.md#fastapi_toolsets.db.Database) adds a middleware that commits the request's session when the response starts, after the endpoint returns and before the body is sent. The dependency commits only if the middleware did not: when a function-scoped dependency unwinds before the response, or when the response never passes through the middleware. Either way the request is committed exactly once.

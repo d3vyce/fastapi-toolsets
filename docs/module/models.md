@@ -132,7 +132,18 @@ The event system provides lifecycle callbacks that fire **after commit**. If the
 
 ### Setup
 
-Event dispatch requires [`EventSession`](../reference/models.md#fastapi_toolsets.models.EventSession). Pass it as the session class when creating your session factory:
+Event dispatch requires [`EventSession`](../reference/models.md#fastapi_toolsets.models.EventSession). Pass it as the `session_class` of your [`Database`](../reference/db.md#fastapi_toolsets.db.Database), so every session the facade hands out dispatches callbacks:
+
+```python
+from fastapi_toolsets.db import Database
+from fastapi_toolsets.models import EventSession
+
+db = Database("postgresql+asyncpg://...", session_class=EventSession)
+```
+
+That single argument covers every session the facade opens: the `Depends(db)` request dependency, [`db.session()`](db.md#session-context-manager), [`db.begin()`](db.md#transactions), and [`db.lock_tables()`](db.md#table-locking).
+
+If you manage the session factory yourself instead of using `Database`, pass it to `async_sessionmaker` directly:
 
 ```python
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -141,6 +152,9 @@ from fastapi_toolsets.models import EventSession
 engine = create_async_engine("postgresql+asyncpg://...")
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=EventSession)
 ```
+
+!!! warning "End with an explicit `await session.commit()`"
+    On a self-managed session, the outermost commit must be `await session.commit()`. Using [`transaction`](db.md#transactions) or `session.begin()` as the **outermost** transaction commits through SQLAlchemy's transaction object, which bypasses `EventSession.commit()` and drops the events instead of deferring them. This does not affect sessions opened by `Database`, which are always already in a transaction, so `transaction()` nests as a savepoint under a commit the facade owns.
 
 !!! info "Callbacks fire on `session.commit()` only — not on savepoints."
     Savepoints created by [`transaction`](db.md) or `begin_nested()` do **not**
