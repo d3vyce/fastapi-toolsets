@@ -172,6 +172,33 @@ async def _failing_on_update(obj, event_type, changes):
     raise RuntimeError("update callback intentionally failed")
 
 
+class HandlerIsolationModel(MixinBase, UUIDMixin):
+    """Model with a raising handler sitting between two healthy ones."""
+
+    __tablename__ = "mixin_handler_isolation_models"
+
+    name: Mapped[str] = mapped_column(String(50))
+
+
+_isolation_calls: list[str] = []
+
+
+@listens_for(HandlerIsolationModel)
+async def _isolation_first(obj, event_type, changes):
+    _isolation_calls.append(f"first:{event_type.value}")
+
+
+@listens_for(HandlerIsolationModel)
+async def _isolation_raises(obj, event_type, changes):
+    _isolation_calls.append(f"raises:{event_type.value}")
+    raise RuntimeError("middle handler intentionally failed")
+
+
+@listens_for(HandlerIsolationModel)
+async def _isolation_last(obj, event_type, changes):
+    _isolation_calls.append(f"last:{event_type.value}")
+
+
 class NonWatchedModel(MixinBase):
     __tablename__ = "mixin_non_watched_models"
 
@@ -1061,6 +1088,53 @@ class TestEventCallbacks:
             await mixin_session.commit()
 
             mock_error.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_create_handler_failure_does_not_silence_later_handlers(
+        self, mixin_session
+    ):
+        """A raising CREATE handler must not stop the handlers registered after it."""
+        _isolation_calls.clear()
+        mixin_session.add(HandlerIsolationModel(name="x"))
+        with patch.object(_watched_module._logger, "error") as mock_error:
+            await mixin_session.commit()
+
+        assert _isolation_calls == ["first:create", "raises:create", "last:create"]
+        mock_error.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_update_handler_failure_does_not_silence_later_handlers(
+        self, mixin_session
+    ):
+        """A raising UPDATE handler must not stop the handlers registered after it."""
+        obj = HandlerIsolationModel(name="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+
+        _isolation_calls.clear()
+        obj.name = "changed"
+        with patch.object(_watched_module._logger, "error") as mock_error:
+            await mixin_session.commit()
+
+        assert _isolation_calls == ["first:update", "raises:update", "last:update"]
+        mock_error.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_delete_handler_failure_does_not_silence_later_handlers(
+        self, mixin_session
+    ):
+        """A raising DELETE handler must not stop the handlers registered after it."""
+        obj = HandlerIsolationModel(name="x")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+
+        _isolation_calls.clear()
+        await mixin_session.delete(obj)
+        with patch.object(_watched_module._logger, "error") as mock_error:
+            await mixin_session.commit()
+
+        assert _isolation_calls == ["first:delete", "raises:delete", "last:delete"]
+        mock_error.assert_called_once()
 
     @pytest.mark.anyio
     async def test_non_watched_model_no_callback(self, mixin_session):
