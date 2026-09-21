@@ -190,6 +190,19 @@ async def _invoke_callback(
         await result
 
 
+async def _dispatch(
+    obj: Any,
+    event_type: ModelEvent,
+    changes: dict[str, dict[str, Any]] | None,
+) -> None:
+    """Run every handler for *obj*, isolating a failure to the handler that raised."""
+    for handler in _get_handlers(type(obj), event_type):
+        try:
+            await _invoke_callback(handler, obj, event_type, changes)
+        except Exception as exc:
+            _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
+
+
 def _loaded_relationships(obj: Any) -> set[str]:
     """Relationship keys currently loaded on *obj*."""
     state = sa_inspect(obj)
@@ -302,29 +315,21 @@ class EventSession(AsyncSession):
 
         # Dispatch CREATE callbacks.
         for obj in create_items:
-            try:
-                for handler in _get_handlers(type(obj), ModelEvent.CREATE):
-                    await _invoke_callback(handler, obj, ModelEvent.CREATE, None)
-            except Exception as exc:
-                _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
+            await _dispatch(obj, ModelEvent.CREATE, None)
 
         # Dispatch DELETE callbacks (restore snapshot; row is gone).
         for obj, snapshot in deletes:
             try:
                 for key, value in snapshot.items():
                     _sa_set_committed_value(obj, key, value)
-                for handler in _get_handlers(type(obj), ModelEvent.DELETE):
-                    await _invoke_callback(handler, obj, ModelEvent.DELETE, None)
             except Exception as exc:
                 _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
+                continue
+            await _dispatch(obj, ModelEvent.DELETE, None)
 
         # Dispatch UPDATE callbacks.
         for obj, changes in update_items:
-            try:
-                for handler in _get_handlers(type(obj), ModelEvent.UPDATE):
-                    await _invoke_callback(handler, obj, ModelEvent.UPDATE, changes)
-            except Exception as exc:
-                _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
+            await _dispatch(obj, ModelEvent.UPDATE, changes)
 
     async def rollback(self) -> None:
         await super().rollback()
