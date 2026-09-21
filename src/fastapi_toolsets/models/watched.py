@@ -155,11 +155,14 @@ def _after_flush(session: Any, flush_context: Any) -> None:
         )
         for field, attr_state in attrs:
             history = attr_state.history
-            if history.has_changes() and history.deleted:
-                changes[field] = {
-                    "old": history.deleted[0],
-                    "new": history.added[0] if history.added else None,
-                }
+            if not history.has_changes():
+                continue
+            change: dict[str, Any] = {
+                "new": history.added[0] if history.added else None
+            }
+            if history.deleted:
+                change["old"] = history.deleted[0]
+            changes[field] = change
 
         if changes:
             _upsert_changes(

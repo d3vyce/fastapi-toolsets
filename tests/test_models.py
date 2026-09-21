@@ -172,6 +172,24 @@ async def _failing_on_update(obj, event_type, changes):
     raise RuntimeError("update callback intentionally failed")
 
 
+class DeferredFieldModel(MixinBase, UUIDMixin):
+    """Model with a deferred column, whose previous value is never loaded."""
+
+    __tablename__ = "mixin_deferred_field_models"
+
+    name: Mapped[str] = mapped_column(String(50))
+    payload: Mapped[str] = mapped_column(String(200), deferred=True)
+    nickname: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+
+_deferred_events: list[dict] = []
+
+
+@listens_for(DeferredFieldModel, [ModelEvent.UPDATE])
+async def _deferred_on_update(obj, event_type, changes):
+    _deferred_events.append({"event": "update", "changes": changes})
+
+
 class HandlerIsolationModel(MixinBase, UUIDMixin):
     """Model with a raising handler sitting between two healthy ones."""
 
@@ -1137,6 +1155,36 @@ class TestEventCallbacks:
         mock_error.assert_called_once()
 
     @pytest.mark.anyio
+    async def test_snapshot_restore_failure_skips_only_that_object(self, mixin_session):
+        """A failed snapshot restore logs, skips its object, and dispatches the rest."""
+        doomed = WatchedModel(status="a", other="x")
+        healthy = WatchedModel(status="b", other="y")
+        mixin_session.add_all([doomed, healthy])
+        await mixin_session.commit()
+        healthy_id = healthy.id
+
+        _test_events.clear()
+        await mixin_session.delete(doomed)
+        await mixin_session.delete(healthy)
+
+        real_set = _watched_module._sa_set_committed_value
+
+        def fail_for_doomed(obj, key, value):
+            if obj is doomed:
+                raise RuntimeError("snapshot restore intentionally failed")
+            return real_set(obj, key, value)
+
+        with (
+            patch.object(_watched_module, "_sa_set_committed_value", fail_for_doomed),
+            patch.object(_watched_module._logger, "error") as mock_error,
+        ):
+            await mixin_session.commit()
+
+        deletes = [e for e in _test_events if e["event"] == "delete"]
+        assert [e["obj_id"] for e in deletes] == [healthy_id]
+        mock_error.assert_called_once()
+
+    @pytest.mark.anyio
     async def test_non_watched_model_no_callback(self, mixin_session):
         """Dirty objects whose type has no registered handlers are skipped."""
         nw = NonWatchedModel(value="x")
@@ -2005,3 +2053,75 @@ class TestEventSessionWithFastAPIDependency:
             async with engine.begin() as conn:
                 await conn.run_sync(MixinBase.metadata.drop_all)
             await engine.dispose()
+
+
+class TestDeferredFieldUpdates:
+    """A change whose previous value was never loaded must still fire UPDATE."""
+
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _deferred_events.clear()
+        yield
+        _deferred_events.clear()
+
+    @staticmethod
+    async def _reload_without_deferred(session, obj_id):
+        """Drop the identity map so the deferred column comes back unloaded."""
+        session.expunge_all()
+        return await session.get(DeferredFieldModel, obj_id)
+
+    @pytest.mark.anyio
+    async def test_deferred_change_fires_update_and_omits_old(self, mixin_session):
+        """A deferred column never loaded fires UPDATE with no ``old`` key."""
+        obj = DeferredFieldModel(name="n", payload="before")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        obj_id = obj.id
+
+        obj = await self._reload_without_deferred(mixin_session, obj_id)
+        _deferred_events.clear()
+        obj.payload = "after"  # deferred, previous value never loaded
+        await mixin_session.commit()
+
+        assert len(_deferred_events) == 1
+        change = _deferred_events[0]["changes"]["payload"]
+        assert change["new"] == "after"
+        assert "old" not in change
+
+    @pytest.mark.anyio
+    async def test_deferred_change_reports_old_when_loaded(self, mixin_session):
+        """Loading the deferred column first makes ``old`` available as usual."""
+        obj = DeferredFieldModel(name="n", payload="before")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        obj_id = obj.id
+
+        obj = await self._reload_without_deferred(mixin_session, obj_id)
+        _deferred_events.clear()
+        await mixin_session.refresh(obj, ["payload"])
+        obj.payload = "after"
+        await mixin_session.commit()
+
+        assert len(_deferred_events) == 1
+        assert _deferred_events[0]["changes"]["payload"] == {
+            "old": "before",
+            "new": "after",
+        }
+
+    @pytest.mark.anyio
+    async def test_genuine_null_old_value_keeps_the_old_key(self, mixin_session):
+        """A previous value that was really NULL still reports ``old`` as None."""
+        obj = DeferredFieldModel(name="n", payload="p", nickname=None)
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        obj_id = obj.id
+
+        obj = await self._reload_without_deferred(mixin_session, obj_id)
+        _deferred_events.clear()
+        obj.nickname = "set-now"
+        await mixin_session.commit()
+
+        assert len(_deferred_events) == 1
+        change = _deferred_events[0]["changes"]["nickname"]
+        assert change == {"old": None, "new": "set-now"}
+        assert "old" in change  # distinguishable from the deferred case
