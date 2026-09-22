@@ -2134,15 +2134,9 @@
 </span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">engine</span> <span class="o">=</span> <span class="n">create_async_engine</span><span class="p">(</span><span class="s2">&quot;postgresql+asyncpg://...&quot;</span><span class="p">)</span>
 </span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">SessionLocal</span> <span class="o">=</span> <span class="n">async_sessionmaker</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span> <span class="n">expire_on_commit</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">class_</span><span class="o">=</span><span class="n">EventSession</span><span class="p">)</span>
 </span></code></pre></div>
-<div class="admonition warning">
-<p class="admonition-title">End with an explicit <code>await session.commit()</code></p>
-<p>On a self-managed session, the outermost commit must be <code>await session.commit()</code>. Using <a href="../db/#transactions"><code>transaction</code></a> or <code>session.begin()</code> as the <strong>outermost</strong> transaction commits through SQLAlchemy's transaction object, which bypasses <code>EventSession.commit()</code> and drops the events instead of deferring them. This does not affect sessions opened by <code>Database</code>, which are always already in a transaction, so <code>transaction()</code> nests as a savepoint under a commit the facade owns.</p>
-</div>
 <div class="admonition info">
-<p class="admonition-title">Callbacks fire on <code>session.commit()</code> only — not on savepoints.</p>
-<p>Savepoints created by <a href="../db/"><code>transaction</code></a> or <code>begin_nested()</code> do <strong>not</strong>
-trigger callbacks. All events accumulated across flushes are dispatched once
-when the outermost <code>commit()</code> is called.</p>
+<p class="admonition-title">Callbacks fire on the outermost commit, not on savepoints.</p>
+<p>Savepoints created by <a href="../db/"><code>transaction</code></a> or <code>begin_nested()</code> do <strong>not</strong> trigger callbacks. All events accumulated across flushes are dispatched once when the outermost transaction commits, whether that is an explicit <code>await session.commit()</code> or the exit of a top-level <code>session.begin()</code> block.</p>
 </div>
 <h3 id="events">Events<a class="headerlink" href="#events" title="Permanent link">&para;</a></h3>
 <p>Three event types are available, each corresponding to a <a href="../../reference/models/#fastapi_toolsets.models.ModelEvent"><code>ModelEvent</code></a> value:</p>
