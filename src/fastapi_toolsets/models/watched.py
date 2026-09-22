@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import event, select, tuple_
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value as _sa_set_committed_value
 
@@ -263,13 +263,43 @@ async def _batch_reload(
     await session.execute(q)
 
 
+class _EventSessionTransaction(AsyncSessionTransaction):
+    """Transaction context manager that dispatches on a real commit."""
+
+    __slots__ = ()
+
+    async def __aexit__(self, type_: object, value: object, traceback: object) -> None:
+        session = self.session
+        commits = (
+            type_ is None
+            and not self.nested
+            and isinstance(session, EventSession)
+            and self.is_active
+        )
+        preloaded = _snapshot_loaded_relationships(session) if commits else {}
+        await super().__aexit__(type_, value, traceback)
+        if commits:
+            await session._dispatch_pending(preloaded)
+
+
 class EventSession(AsyncSession):
     """AsyncSession subclass that dispatches lifecycle callbacks after commit."""
+
+    def begin(self) -> AsyncSessionTransaction:
+        """Return a transaction context manager that dispatches on commit."""
+        return _EventSessionTransaction(self)
+
+    def begin_nested(self) -> AsyncSessionTransaction:
+        """Return a savepoint context manager; events wait for the real commit."""
+        return _EventSessionTransaction(self, nested=True)
 
     async def commit(self) -> None:
         preloaded = _snapshot_loaded_relationships(self)
         await super().commit()
+        await self._dispatch_pending(preloaded)
 
+    async def _dispatch_pending(self, preloaded: dict[int, set[str]]) -> None:
+        """Run the callbacks collected for the transaction that just committed."""
         creates: list[Any] = self.info.pop(_SESSION_CREATES, [])
         deletes: list[tuple[Any, dict[str, Any]]] = self.info.pop(_SESSION_DELETES, [])
         field_changes: dict[int, tuple[Any, dict[str, dict[str, Any]]]] = self.info.pop(
