@@ -1,6 +1,7 @@
 """Tests for fastapi_toolsets.models mixins."""
 
 import asyncio
+import logging
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1867,6 +1868,112 @@ class TestEventSessionWithTransaction:
             "old": "initial",
             "new": "updated",
         }
+
+
+class TestEventSessionInsideBeginBlock:
+    """Regression tests for commits made inside an ``async with session.begin()`` block."""
+
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _test_events.clear()
+        _attr_access_events.clear()
+        yield
+        _test_events.clear()
+        _attr_access_events.clear()
+
+    @pytest.mark.anyio
+    async def test_create_commit_inside_begin_block(self, mixin_session_maker, caplog):
+        """CREATE callbacks fire, and the reload doesn't raise, inside begin()."""
+        async with mixin_session_maker() as session:
+            with caplog.at_level(logging.ERROR):
+                async with session.begin():
+                    session.add(WatchedModel(status="active", other="x"))
+                    await session.commit()
+
+            # The session is still usable once the block exits.
+            assert (
+                await session.get(WatchedModel, _test_events[0]["obj_id"]) is not None
+            )
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
+        assert "Can't operate on closed transaction" not in caplog.text
+
+    @pytest.mark.anyio
+    async def test_update_commit_inside_begin_block(self, mixin_session_maker, caplog):
+        """UPDATE callbacks report changes for a commit made inside begin()."""
+        async with mixin_session_maker() as session:
+            obj = WatchedModel(status="initial", other="x")
+            session.add(obj)
+            await session.commit()
+            obj_id = obj.id
+        _test_events.clear()
+
+        async with mixin_session_maker() as session:
+            with caplog.at_level(logging.ERROR):
+                async with session.begin():
+                    obj = await session.get(WatchedModel, obj_id)
+                    obj.status = "updated"
+                    await session.commit()
+
+        assert "Can't operate on closed transaction" not in caplog.text
+        updates = [e for e in _test_events if e["event"] == "update"]
+        assert len(updates) == 1
+        assert updates[0]["changes"]["status"] == {"old": "initial", "new": "updated"}
+
+    @pytest.mark.anyio
+    async def test_delete_commit_inside_begin_block(self, mixin_session_maker, caplog):
+        """DELETE callbacks fire for a commit made inside begin()."""
+        async with mixin_session_maker() as session:
+            obj = WatchedModel(status="doomed", other="x")
+            session.add(obj)
+            await session.commit()
+            obj_id = obj.id
+        _test_events.clear()
+
+        async with mixin_session_maker() as session:
+            with caplog.at_level(logging.ERROR):
+                async with session.begin():
+                    await session.delete(await session.get(WatchedModel, obj_id))
+                    await session.commit()
+
+        assert "Can't operate on closed transaction" not in caplog.text
+        deletes = [e for e in _test_events if e["event"] == "delete"]
+        assert len(deletes) == 1
+        assert deletes[0]["obj_id"] == obj_id
+
+    @pytest.mark.anyio
+    async def test_commit_inside_transaction_savepoint(
+        self, mixin_session_maker, caplog
+    ):
+        """A commit inside a savepoint block (``transaction``/``Database.begin``)."""
+        from fastapi_toolsets.db import transaction
+
+        async with mixin_session_maker() as session:
+            await session.connection()  # autobegin, as Database._open() does
+            with caplog.at_level(logging.ERROR):
+                async with transaction(session):  # nested -> savepoint
+                    session.add(WatchedModel(status="savepoint", other="x"))
+                    await session.commit()
+
+        assert "Can't operate on closed transaction" not in caplog.text
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
+
+    @pytest.mark.anyio
+    async def test_expired_attributes_load_inside_begin_block(self):
+        """With expire_on_commit=True, callbacks can still read attributes."""
+        async with create_db_session(
+            DATABASE_URL, MixinBase, expire_on_commit=True
+        ) as session:
+            async with session.begin():
+                session.add(AttrAccessModel(name="test", callback_url=None))
+                await session.commit()
+
+        events = [e for e in _attr_access_events if e["event"] == "create"]
+        assert len(events) == 1
+        assert events[0]["name"] == "test"
+        assert events[0]["callback_url"] is None
 
 
 class TestEventSessionWithNullableFields:

@@ -1,7 +1,8 @@
 """Field-change monitoring via SQLAlchemy session events."""
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from enum import Enum
 from typing import Any
 
@@ -224,6 +225,21 @@ def _snapshot_loaded_relationships(session: Any) -> dict[int, set[str]]:
     return {id(obj): _loaded_relationships(obj) for obj in objs}
 
 
+@contextmanager
+def _suspended_trans_ctx(session: AsyncSession) -> Iterator[None]:
+    """Allow post-commit SQL while an outer ``session.begin()`` block is open."""
+    sync_session = session.sync_session
+    ctx = getattr(sync_session, "_trans_context_manager", None)
+    if ctx is None:
+        yield
+        return
+    sync_session._trans_context_manager = None
+    try:
+        yield
+    finally:
+        sync_session._trans_context_manager = ctx
+
+
 async def _batch_reload(
     session: AsyncSession,
     model: type,
@@ -310,29 +326,30 @@ class EventSession(AsyncSession):
             update_items.append((obj, changes))
             objs_by_type.setdefault(type(obj), []).append(obj)
 
-        for model, objs in objs_by_type.items():
-            try:
-                await _batch_reload(self, model, objs, preloaded)
-            except Exception as exc:
-                _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
+        with _suspended_trans_ctx(self):
+            for model, objs in objs_by_type.items():
+                try:
+                    await _batch_reload(self, model, objs, preloaded)
+                except Exception as exc:
+                    _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
 
-        # Dispatch CREATE callbacks.
-        for obj in create_items:
-            await _dispatch(obj, ModelEvent.CREATE, None)
+            # Dispatch CREATE callbacks.
+            for obj in create_items:
+                await _dispatch(obj, ModelEvent.CREATE, None)
 
-        # Dispatch DELETE callbacks (restore snapshot; row is gone).
-        for obj, snapshot in deletes:
-            try:
-                for key, value in snapshot.items():
-                    _sa_set_committed_value(obj, key, value)
-            except Exception as exc:
-                _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
-                continue
-            await _dispatch(obj, ModelEvent.DELETE, None)
+            # Dispatch DELETE callbacks (restore snapshot; row is gone).
+            for obj, snapshot in deletes:
+                try:
+                    for key, value in snapshot.items():
+                        _sa_set_committed_value(obj, key, value)
+                except Exception as exc:
+                    _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
+                    continue
+                await _dispatch(obj, ModelEvent.DELETE, None)
 
-        # Dispatch UPDATE callbacks.
-        for obj, changes in update_items:
-            await _dispatch(obj, ModelEvent.UPDATE, changes)
+            # Dispatch UPDATE callbacks.
+            for obj, changes in update_items:
+                await _dispatch(obj, ModelEvent.UPDATE, changes)
 
     async def rollback(self) -> None:
         await super().rollback()
