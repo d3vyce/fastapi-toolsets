@@ -32,6 +32,7 @@ from fastapi_toolsets.models.watched import (
     _EVENT_HANDLERS,
     _SESSION_CREATES,
     _SESSION_DELETES,
+    _SESSION_PRELOADED,
     _SESSION_UPDATES,
     EventSession,
     _after_rollback,
@@ -471,6 +472,63 @@ class TestEventSessionPreservesEagerLoads:
         assert "target" not in sa_inspect(owner).unloaded
         assert owner.target.name == "t"
 
+    async def _seed_committed(self, session):
+        """Commit a row, then drop it from the session so it must be re-read."""
+        target = RelTarget(name="t")
+        owner = RelOwner(title="o", target=target)
+        session.add_all([target, owner])
+        await session.commit()
+        owner_id = owner.id
+        await session.rollback()
+        session.expunge_all()
+        return owner_id
+
+    async def _load_eager(self, session, owner_id):
+        loaded = (
+            await session.execute(
+                select(RelOwner)
+                .where(RelOwner.id == owner_id)
+                .options(selectinload(RelOwner.target))
+            )
+        ).scalar_one()
+        assert "target" not in sa_inspect(loaded).unloaded
+        return loaded
+
+    @pytest.mark.anyio
+    async def test_eager_load_survives_commit_without_flush(self, mixin_session):
+        """The dirty object is only collected by the commit's own flush."""
+        owner_id = await self._seed_committed(mixin_session)
+        owner = await self._load_eager(mixin_session, owner_id)
+        owner.title = "changed"
+
+        await mixin_session.commit()
+
+        assert "target" not in sa_inspect(owner).unloaded
+
+    @pytest.mark.anyio
+    async def test_eager_load_survives_begin_block(self, mixin_session):
+        """Same as above for the ``session.begin()`` block CRUD writes through."""
+        owner_id = await self._seed_committed(mixin_session)
+
+        async with mixin_session.begin():
+            owner = await self._load_eager(mixin_session, owner_id)
+            owner.title = "changed"
+
+        assert "target" not in sa_inspect(owner).unloaded
+
+    @pytest.mark.anyio
+    async def test_relation_set_on_create_survives_commit(self, mixin_session):
+        """A relation assigned before the first flush must survive the reload."""
+        target = RelTarget(name="t")
+        mixin_session.add(target)
+        await mixin_session.flush()
+        owner = RelOwner(title="o", target=target)
+        mixin_session.add(owner)
+
+        await mixin_session.commit()
+
+        assert "target" not in sa_inspect(owner).unloaded
+
     @pytest.mark.anyio
     async def test_unloaded_relation_stays_unloaded(self, mixin_session):
         """Only what was loaded is restored: the reload must not eager-load extra."""
@@ -870,12 +928,13 @@ class TestAfterFlush:
 
 class TestAfterRollback:
     def test_clears_all_session_info_keys(self):
-        """_after_rollback removes all three tracking keys on full rollback."""
+        """_after_rollback removes every tracking key on full rollback."""
         session = SimpleNamespace(
             info={
                 _SESSION_CREATES: [object()],
                 _SESSION_DELETES: [object()],
                 _SESSION_UPDATES: {1: ("obj", {"f": {"old": "a", "new": "b"}})},
+                _SESSION_PRELOADED: {1: {"target"}},
             },
             in_transaction=lambda: False,
         )
@@ -883,6 +942,7 @@ class TestAfterRollback:
         assert _SESSION_CREATES not in session.info
         assert _SESSION_DELETES not in session.info
         assert _SESSION_UPDATES not in session.info
+        assert _SESSION_PRELOADED not in session.info
 
     def test_tolerates_missing_keys(self):
         """_after_rollback does not raise when session.info has no pending data."""
@@ -2128,6 +2188,7 @@ class TestCollectionSkippedForNonDispatchingSessions:
                     _watched_module._SESSION_CREATES,
                     _watched_module._SESSION_UPDATES,
                     _watched_module._SESSION_DELETES,
+                    _watched_module._SESSION_PRELOADED,
                 )
             )
 

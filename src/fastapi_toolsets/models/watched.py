@@ -30,6 +30,7 @@ _CALLBACK_ERROR_MSG = "Event callback raised an unhandled exception"
 _SESSION_CREATES = "_ft_creates"
 _SESSION_DELETES = "_ft_deletes"
 _SESSION_UPDATES = "_ft_updates"
+_SESSION_PRELOADED = "_ft_preloaded"
 _DEFERRED_STRATEGY_KEY = (("deferred", True), ("instrument", True))
 _EVENT_HANDLERS: dict[tuple[type, ModelEvent], list[Callable[..., Any]]] = {}
 _HANDLER_CACHE: dict[tuple[type, ModelEvent], list[Callable[..., Any]]] = {}
@@ -145,6 +146,7 @@ def _collect(session: Any) -> None:
     for obj in session.new:
         if _get_handlers(type(obj), ModelEvent.CREATE):
             session.info.setdefault(_SESSION_CREATES, []).append(obj)
+            _record_loaded_relationships(session, obj)
 
     # Deleted objects: snapshot now while attributes are still loaded.
     for obj in session.deleted:
@@ -183,6 +185,7 @@ def _collect(session: Any) -> None:
                 obj,
                 changes,
             )
+            _record_loaded_relationships(session, obj)
 
 
 @event.listens_for(AsyncSession.sync_session_class, "after_rollback")
@@ -192,6 +195,7 @@ def _after_rollback(session: Any) -> None:
     session.info.pop(_SESSION_CREATES, None)
     session.info.pop(_SESSION_DELETES, None)
     session.info.pop(_SESSION_UPDATES, None)
+    session.info.pop(_SESSION_PRELOADED, None)
 
 
 async def _invoke_callback(
@@ -221,7 +225,9 @@ async def _dispatch(
 
 def _loaded_relationships(obj: Any) -> set[str]:
     """Relationship keys currently loaded on *obj*."""
-    state = sa_inspect(obj)
+    state = sa_inspect(obj, raiseerr=False)
+    if state is None:
+        return set()
     unloaded = state.unloaded
     return {
         rel.key
@@ -230,11 +236,23 @@ def _loaded_relationships(obj: Any) -> set[str]:
     }
 
 
+def _record_loaded_relationships(session: Any, obj: Any) -> None:
+    """Merge the relationships loaded on *obj* into the session's record."""
+    store: dict[int, set[str]] = session.info.setdefault(_SESSION_PRELOADED, {})
+    store.setdefault(id(obj), set()).update(_loaded_relationships(obj))
+
+
 def _snapshot_loaded_relationships(session: Any) -> dict[int, set[str]]:
-    """Record loaded relationships for the tracked objects, keyed by ``id``."""
+    """Loaded relationships for the tracked objects, keyed by ``id``."""
+    snapshot = {
+        key: set(value)
+        for key, value in session.info.get(_SESSION_PRELOADED, {}).items()
+    }
     objs = list(session.info.get(_SESSION_CREATES, []))
     objs += [obj for obj, _ in session.info.get(_SESSION_UPDATES, {}).values()]
-    return {id(obj): _loaded_relationships(obj) for obj in objs}
+    for obj in objs:
+        snapshot.setdefault(id(obj), set()).update(_loaded_relationships(obj))
+    return snapshot
 
 
 @contextmanager
@@ -312,6 +330,10 @@ class EventSession(AsyncSession):
 
     async def _dispatch_pending(self, preloaded: dict[int, set[str]]) -> None:
         """Run the callbacks collected for the transaction that just committed."""
+        # The commit itself flushes, so objects first collected there are only
+        # recorded now; merge them into the pre-commit snapshot.
+        for key, value in self.info.pop(_SESSION_PRELOADED, {}).items():
+            preloaded.setdefault(key, set()).update(value)
         creates: list[Any] = self.info.pop(_SESSION_CREATES, [])
         deletes: list[tuple[Any, dict[str, Any]]] = self.info.pop(_SESSION_DELETES, [])
         field_changes: dict[int, tuple[Any, dict[str, dict[str, Any]]]] = self.info.pop(
@@ -398,3 +420,4 @@ class EventSession(AsyncSession):
         self.info.pop(_SESSION_CREATES, None)
         self.info.pop(_SESSION_DELETES, None)
         self.info.pop(_SESSION_UPDATES, None)
+        self.info.pop(_SESSION_PRELOADED, None)
