@@ -14,6 +14,7 @@ from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
     mapped_column,
+    object_session,
     relationship,
     selectinload,
 )
@@ -541,6 +542,86 @@ class TestEventSessionPreservesEagerLoads:
         await mixin_session.commit()
 
         assert "target" in sa_inspect(owner).unloaded
+
+
+class TestEventSessionTransactionState:
+    """commit() must not leave the reload's transaction open on the session."""
+
+    @pytest.fixture(autouse=True)
+    def clear_handlers(self):
+        yield
+        for key in list(_EVENT_HANDLERS):
+            if key[0] is ListenerModel:
+                del _EVENT_HANDLERS[key]
+        _invalidate_caches()
+
+    @pytest.mark.anyio
+    async def test_commit_leaves_no_transaction_open(self, mixin_session):
+        """The post-commit reload must close the transaction it opened."""
+        target = RelTarget(name="t")
+        owner = RelOwner(title="o", target=target)
+        mixin_session.add_all([target, owner])
+
+        await mixin_session.commit()
+
+        assert mixin_session.in_transaction() is False
+
+    @pytest.mark.anyio
+    async def test_begin_block_after_commit(self, mixin_session):
+        """``session.begin()`` right after a commit must not raise."""
+        target = RelTarget(name="t")
+        owner = RelOwner(title="o", target=target)
+        mixin_session.add_all([target, owner])
+        await mixin_session.commit()
+
+        async with mixin_session.begin():
+            owner.title = "changed"
+
+        assert owner.title == "changed"
+
+    @pytest.mark.anyio
+    async def test_eager_load_survives_commit_expire_on_commit(
+        self, mixin_session_expire
+    ):
+        """Closing that transaction must not expire what the reload populated."""
+        target = RelTarget(name="t")
+        owner = RelOwner(title="o", target=target)
+        mixin_session_expire.add_all([target, owner])
+
+        await mixin_session_expire.commit()
+
+        assert mixin_session_expire.in_transaction() is False
+        assert "target" not in sa_inspect(owner).unloaded
+        assert mixin_session_expire.sync_session.expire_on_commit is True
+
+    @pytest.mark.anyio
+    async def test_callback_writes_are_left_to_the_caller(self, mixin_session):
+        """A callback's ``session.add`` stays pending until the caller commits."""
+
+        @listens_for(ListenerModel, [ModelEvent.CREATE])
+        async def _on_create(obj, event_type, changes):
+            if obj.status == "seed":
+                session = object_session(obj)
+                assert session is not None
+                session.add(ListenerModel(status="from-callback", other="y"))
+
+        mixin_session.add(ListenerModel(status="seed", other="x"))
+        await mixin_session.commit()
+
+        assert len(mixin_session.new) == 1
+
+        await mixin_session.commit()
+
+        rows = (
+            (
+                await mixin_session.execute(
+                    select(ListenerModel).where(ListenerModel.status == "from-callback")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
 
 
 class TestUUIDMixin:

@@ -27,6 +27,7 @@ class ModelEvent(str, Enum):
 
 
 _CALLBACK_ERROR_MSG = "Event callback raised an unhandled exception"
+_RELOAD_TRANSACTION_ERROR_MSG = "Closing the post-commit reload transaction failed"
 _SESSION_CREATES = "_ft_creates"
 _SESSION_DELETES = "_ft_deletes"
 _SESSION_UPDATES = "_ft_updates"
@@ -391,11 +392,14 @@ class EventSession(AsyncSession):
             objs_by_type.setdefault(type(obj), []).append(obj)
 
         with _suspended_trans_ctx(self):
+            had_transaction = self.in_transaction()
             for model, objs in objs_by_type.items():
                 try:
                     await _batch_reload(self, model, objs, preloaded)
                 except Exception as exc:
                     _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
+            if not had_transaction and self.in_transaction():
+                await self._end_reload_transaction()
 
             # Dispatch CREATE callbacks.
             for obj in create_items:
@@ -414,6 +418,18 @@ class EventSession(AsyncSession):
             # Dispatch UPDATE callbacks.
             for obj, changes in update_items:
                 await _dispatch(obj, ModelEvent.UPDATE, changes)
+
+    async def _end_reload_transaction(self) -> None:
+        """Commit the read-only transaction the reload opened, keeping state loaded."""
+        sync_session = self.sync_session
+        expire_on_commit = sync_session.expire_on_commit
+        sync_session.expire_on_commit = False
+        try:
+            await super().commit()
+        except Exception as exc:
+            _logger.error(_RELOAD_TRANSACTION_ERROR_MSG, exc_info=exc)
+        finally:
+            sync_session.expire_on_commit = expire_on_commit
 
     async def rollback(self) -> None:
         await super().rollback()
