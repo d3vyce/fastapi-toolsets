@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import ForeignKey, String, select
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -34,8 +34,8 @@ from fastapi_toolsets.models.watched import (
     _SESSION_DELETES,
     _SESSION_UPDATES,
     EventSession,
-    _after_flush,
     _after_rollback,
+    _collect,
     _get_watched_fields,
     _invalidate_caches,
     _snapshot_column_attrs,
@@ -818,9 +818,9 @@ class TestUpsertChanges:
 
 class TestAfterFlush:
     def test_does_nothing_with_empty_session(self):
-        """_after_flush writes nothing to session.info when all collections are empty."""
+        """_collect writes nothing to session.info when all collections are empty."""
         session = SimpleNamespace(new=[], deleted=[], dirty=[], info={})
-        _after_flush(session, None)
+        _collect(session)
         assert session.info == {}
 
     def test_captures_new_watched_objects(self):
@@ -831,14 +831,14 @@ class TestAfterFlush:
             "fastapi_toolsets.models.watched._get_handlers",
             return_value=[lambda *a: None],
         ):
-            _after_flush(session, None)
+            _collect(session)
         assert session.info[_SESSION_CREATES] == [obj]
 
     def test_ignores_new_non_watched_objects(self):
         """New objects that are not watched are not captured."""
         obj = object()
         session = SimpleNamespace(new=[obj], deleted=[], dirty=[], info={})
-        _after_flush(session, None)
+        _collect(session)
         assert _SESSION_CREATES not in session.info
 
     def test_captures_deleted_watched_objects(self):
@@ -855,7 +855,7 @@ class TestAfterFlush:
                 return_value={"id": 1},
             ),
         ):
-            _after_flush(session, None)
+            _collect(session)
         assert len(session.info[_SESSION_DELETES]) == 1
         assert session.info[_SESSION_DELETES][0][0] is obj
         assert session.info[_SESSION_DELETES][0][1] == {"id": 1}
@@ -864,7 +864,7 @@ class TestAfterFlush:
         """Deleted objects that are not watched are not captured."""
         obj = object()
         session = SimpleNamespace(new=[], deleted=[obj], dirty=[], info={})
-        _after_flush(session, None)
+        _collect(session)
         assert _SESSION_DELETES not in session.info
 
 
@@ -2076,6 +2076,80 @@ class TestEventSessionCommitByContextManager:
 
             assert _test_events == []
             await session.commit()
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
+
+
+class TestCollectionSkippedForNonDispatchingSessions:
+    """The global flush listener must not collect for sessions that never dispatch."""
+
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _test_events.clear()
+        yield
+        _test_events.clear()
+
+    @pytest.mark.anyio
+    async def test_plain_session_collects_nothing(self, mixin_session_maker):
+        """A non-EventSession accumulates no pending state across commits."""
+        engine = mixin_session_maker.kw["bind"]
+        async with async_sessionmaker(engine, class_=AsyncSession)() as session:
+            for i in range(3):
+                session.add(WatchedModel(status=f"s{i}", other="x"))
+                await session.commit()
+
+            assert _watched_module._SESSION_CREATES not in session.info
+            assert _watched_module._SESSION_UPDATES not in session.info
+            assert _watched_module._SESSION_DELETES not in session.info
+
+        assert _test_events == []
+
+    @pytest.mark.anyio
+    async def test_plain_session_collects_nothing_for_update_and_delete(
+        self, mixin_session_maker
+    ):
+        """UPDATE and DELETE collection is skipped too, not just CREATE."""
+        engine = mixin_session_maker.kw["bind"]
+        async with async_sessionmaker(engine, class_=AsyncSession)() as session:
+            obj = WatchedModel(status="initial", other="x")
+            session.add(obj)
+            await session.commit()
+
+            obj.status = "updated"
+            await session.commit()
+
+            await session.delete(obj)
+            await session.commit()
+
+            assert not any(
+                key in session.info
+                for key in (
+                    _watched_module._SESSION_CREATES,
+                    _watched_module._SESSION_UPDATES,
+                    _watched_module._SESSION_DELETES,
+                )
+            )
+
+        assert _test_events == []
+
+    @pytest.mark.anyio
+    async def test_event_session_still_collects_before_commit(
+        self, mixin_session_maker
+    ):
+        """The guard must not skip a real EventSession: it collects on flush."""
+        async with mixin_session_maker() as session:
+            session.add(WatchedModel(status="active", other="x"))
+            await session.flush()
+
+            # Collected by the flush listener, still waiting for the commit.
+            assert len(session.info[_watched_module._SESSION_CREATES]) == 1
+            assert _test_events == []
+
+            await session.commit()
+
+            # Drained by the commit that dispatched it.
+            assert _watched_module._SESSION_CREATES not in session.info
 
         creates = [e for e in _test_events if e["event"] == "create"]
         assert len(creates) == 1

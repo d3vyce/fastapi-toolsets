@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import event, select, tuple_
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
+from sqlalchemy.ext.asyncio import async_session as _async_session
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value as _sa_set_committed_value
 
@@ -127,8 +128,19 @@ def _upsert_changes(
         pending[key] = (obj, changes)
 
 
+def _dispatches(session: Any) -> bool:
+    """True when *session* is driven by an :class:`EventSession`."""
+    return isinstance(_async_session(session), EventSession)
+
+
 @event.listens_for(AsyncSession.sync_session_class, "after_flush")
 def _after_flush(session: Any, flush_context: Any) -> None:
+    if _dispatches(session):
+        _collect(session)
+
+
+def _collect(session: Any) -> None:
+    """Record the flushed changes that the next commit will dispatch."""
     # New objects: capture reference. Attributes will be refreshed after commit.
     for obj in session.new:
         if _get_handlers(type(obj), ModelEvent.CREATE):
