@@ -1777,12 +1777,16 @@ class TestEventSessionWithTransaction:
         """transaction creates a savepoint; callbacks fire only on outer commit."""
         from fastapi_toolsets.db import transaction
 
+        # Open the outer transaction first, so transaction() nests a savepoint
+        # instead of running a top-level block that commits on its own.
+        await mixin_session.connection()
+
         async with transaction(mixin_session):
             obj = WatchedModel(status="active", other="x")
             mixin_session.add(obj)
 
-        # Still inside the session's outer transaction — savepoint committed,
-        # but EventSession.commit() hasn't been called yet.
+        # Still inside the session's outer transaction: the savepoint was
+        # released, but nothing is durably committed yet.
         assert _test_events == []
 
         await mixin_session.commit()
@@ -1794,6 +1798,9 @@ class TestEventSessionWithTransaction:
     async def test_nested_transactions_accumulate_events(self, mixin_session):
         """Multiple transaction blocks accumulate events for a single commit."""
         from fastapi_toolsets.db import transaction
+
+        # Open the outer transaction so both blocks nest savepoints.
+        await mixin_session.connection()
 
         async with transaction(mixin_session):
             obj1 = WatchedModel(status="first", other="x")
@@ -1974,6 +1981,104 @@ class TestEventSessionInsideBeginBlock:
         assert len(events) == 1
         assert events[0]["name"] == "test"
         assert events[0]["callback_url"] is None
+
+
+class TestEventSessionCommitByContextManager:
+    """Regression tests for commits driven by ``async with session.begin()``."""
+
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _test_events.clear()
+        yield
+        _test_events.clear()
+
+    @pytest.mark.anyio
+    async def test_begin_block_without_explicit_commit(self, mixin_session_maker):
+        """A top-level begin() block dispatches on exit."""
+        async with mixin_session_maker() as session:
+            async with session.begin():
+                session.add(WatchedModel(status="active", other="x"))
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
+
+    @pytest.mark.anyio
+    async def test_transaction_helper_without_prior_io(self, mixin_session_maker):
+        """transaction() on a fresh session takes the begin() branch and dispatches."""
+        from fastapi_toolsets.db import transaction
+
+        async with mixin_session_maker() as session:
+            async with transaction(session):
+                session.add(WatchedModel(status="active", other="x"))
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
+
+    @pytest.mark.anyio
+    async def test_update_in_begin_block(self, mixin_session_maker):
+        """UPDATE callbacks report changes for a begin() block."""
+        async with mixin_session_maker() as session:
+            obj = WatchedModel(status="initial", other="x")
+            session.add(obj)
+            await session.commit()
+            obj_id = obj.id
+        _test_events.clear()
+
+        async with mixin_session_maker() as session:
+            async with session.begin():
+                obj = await session.get(WatchedModel, obj_id)
+                obj.status = "updated"
+
+        updates = [e for e in _test_events if e["event"] == "update"]
+        assert len(updates) == 1
+        assert updates[0]["changes"]["status"] == {"old": "initial", "new": "updated"}
+
+    @pytest.mark.anyio
+    async def test_sessionmaker_begin_dispatches(self, mixin_session_maker):
+        """async_sessionmaker.begin() routes through the session's begin()."""
+        async with mixin_session_maker.begin() as session:
+            session.add(WatchedModel(status="active", other="x"))
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
+
+    @pytest.mark.anyio
+    async def test_explicit_commit_inside_block_dispatches_once(
+        self, mixin_session_maker
+    ):
+        """An explicit commit inside the block must not dispatch twice on exit."""
+        async with mixin_session_maker() as session:
+            async with session.begin():
+                session.add(WatchedModel(status="active", other="x"))
+                await session.commit()
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
+
+    @pytest.mark.anyio
+    async def test_exception_in_block_dispatches_nothing(self, mixin_session_maker):
+        """A block that raises rolls back, so no callback fires."""
+        async with mixin_session_maker() as session:
+            with pytest.raises(RuntimeError):
+                async with session.begin():
+                    session.add(WatchedModel(status="active", other="x"))
+                    raise RuntimeError("boom")
+
+        assert _test_events == []
+
+    @pytest.mark.anyio
+    async def test_savepoint_alone_dispatches_nothing(self, mixin_session_maker):
+        """Releasing a savepoint is not a durable commit, so nothing dispatches."""
+        async with mixin_session_maker() as session:
+            await session.connection()
+            async with session.begin_nested():
+                session.add(WatchedModel(status="active", other="x"))
+
+            assert _test_events == []
+            await session.commit()
+
+        creates = [e for e in _test_events if e["event"] == "create"]
+        assert len(creates) == 1
 
 
 class TestEventSessionWithNullableFields:

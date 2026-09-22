@@ -153,13 +153,8 @@ engine = create_async_engine("postgresql+asyncpg://...")
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=EventSession)
 ```
 
-!!! warning "End with an explicit `await session.commit()`"
-    On a self-managed session, the outermost commit must be `await session.commit()`. Using [`transaction`](db.md#transactions) or `session.begin()` as the **outermost** transaction commits through SQLAlchemy's transaction object, which bypasses `EventSession.commit()` and drops the events instead of deferring them. This does not affect sessions opened by `Database`, which are always already in a transaction, so `transaction()` nests as a savepoint under a commit the facade owns.
-
-!!! info "Callbacks fire on `session.commit()` only — not on savepoints."
-    Savepoints created by [`transaction`](db.md) or `begin_nested()` do **not**
-    trigger callbacks. All events accumulated across flushes are dispatched once
-    when the outermost `commit()` is called.
+!!! info "Callbacks fire on the outermost commit, not on savepoints."
+    Savepoints created by [`transaction`](db.md) or `begin_nested()` do **not** trigger callbacks. All events accumulated across flushes are dispatched once when the outermost transaction commits, whether that is an explicit `await session.commit()` or the exit of a top-level `session.begin()` block.
 
 ### Events
 
