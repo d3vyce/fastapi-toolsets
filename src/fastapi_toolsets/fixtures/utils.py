@@ -247,7 +247,10 @@ async def _reload_with_relationships(
         pk_attr = getattr(model, pk_key)
         pks = [getattr(inst, pk_key) for inst in instances]
         result = await session.execute(
-            select(model).where(pk_attr.in_(pks)).options(*load_options)
+            select(model)
+            .where(pk_attr.in_(pks))
+            .options(*load_options)
+            .execution_options(populate_existing=True)
         )
         by_pk = {getattr(row, pk_key): row for row in result.unique().scalars()}
         return [by_pk[pk] for pk in pks]

@@ -110,6 +110,7 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Security"]
 testpaths = ["tests"]
 filterwarnings = [
     "ignore::DeprecationWarning",
+    "error::sqlalchemy.exc.SADeprecationWarning",
 ]
 
 [tool.coverage.run]

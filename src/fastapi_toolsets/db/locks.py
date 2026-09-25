@@ -215,7 +215,7 @@ async def advisory_lock(
                 f"Advisory lock {key!r} could not be acquired within {timeout}."
             ) from e
         raise  # pragma: no cover
-    acquired = result.scalar() if nowait else True
+    acquired = result.scalar_one() if nowait else True
     try:
         yield acquired
     finally:

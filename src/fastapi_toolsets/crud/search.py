@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import String, and_, distinct, func, or_, select
+from sqlalchemy import String, and_, any_, distinct, func, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
@@ -383,7 +383,7 @@ def build_filter_by(
             if isinstance(value, list):
                 filters[key] = column.overlap(value)
             else:
-                filters[key] = column.any(value)
+                filters[key] = any_(column) == value
         elif isinstance(col_type, Enum):
             enum_class = col_type.enum_class
             if enum_class is not None:
