@@ -709,6 +709,35 @@ class TestLoadFixtures:
         assert row.notes == "original"  # omitted → preserved
 
     @pytest.mark.anyio
+    async def test_merge_returns_fresh_values_for_instances_in_identity_map(
+        self, db_session: AsyncSession
+    ):
+        """MERGE returns the upserted values even if the row is already loaded."""
+        registry = FixtureRegistry()
+        role_id = uuid.uuid4()
+
+        @registry.register
+        def roles():
+            return [Role(id=role_id, name="admin")]
+
+        first = await load_fixtures(
+            db_session, registry, "roles", strategy=LoadStrategy.MERGE
+        )
+
+        registry2 = FixtureRegistry()
+
+        @registry2.register
+        def roles():  # noqa: F811
+            return [Role(id=role_id, name="superadmin")]
+
+        second = await load_fixtures(
+            db_session, registry2, "roles", strategy=LoadStrategy.MERGE
+        )
+
+        assert cast(Role, second["roles"][0]).name == "superadmin"
+        assert cast(Role, first["roles"][0]).name == "superadmin"
+
+    @pytest.mark.anyio
     async def test_load_with_skip_existing_strategy(self, db_session: AsyncSession):
         """Load fixtures with SKIP_EXISTING strategy."""
         registry = FixtureRegistry()
