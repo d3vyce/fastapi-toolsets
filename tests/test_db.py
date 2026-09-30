@@ -21,7 +21,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -1090,6 +1090,166 @@ class TestWaitForRowChange:
         # transaction() committed cleanly on exit; the write above landed.
         check = await db_session.get(Role, other_role.id)
         assert check is not None
+
+    @pytest.mark.anyio
+    async def test_releases_connection_between_polls(self, db_session: AsyncSession):
+        """The watcher returns its connection to the pool while it sleeps."""
+        role = Role(name="release_role")
+        db_session.add(role)
+        await db_session.commit()
+
+        small = create_async_engine(
+            DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=1
+        )
+        caller = AsyncSession(bind=small)
+        watch = asyncio.create_task(
+            wait_for_row_change(caller, Role, role.id, interval=0.5, timeout=1.2)
+        )
+        try:
+            await asyncio.sleep(0.25)
+            async with small.connect() as conn:
+                assert (await conn.execute(text("SELECT 1"))).scalar_one() == 1
+            with pytest.raises(TimeoutError):
+                await watch
+        finally:
+            watch.cancel()
+            await asyncio.gather(watch, return_exceptions=True)
+            await caller.close()
+            await small.dispose()
+
+    @pytest.mark.anyio
+    async def test_does_not_hold_table_lock_between_polls(
+        self, db_session: AsyncSession, engine
+    ):
+        """The watcher holds no lock on the watched table while it sleeps."""
+        role = Role(name="lock_role")
+        db_session.add(role)
+        await db_session.commit()
+
+        watch = asyncio.create_task(
+            wait_for_row_change(db_session, Role, role.id, interval=0.5, timeout=1.2)
+        )
+        try:
+            await asyncio.sleep(0.25)
+            async with engine.connect() as conn:
+                await conn.execute(
+                    text(
+                        f"LOCK TABLE {Role.__tablename__} "
+                        "IN ACCESS EXCLUSIVE MODE NOWAIT"
+                    )
+                )
+                await conn.rollback()
+            with pytest.raises(TimeoutError):
+                await watch
+        finally:
+            watch.cancel()
+            await asyncio.gather(watch, return_exceptions=True)
+
+    @pytest.mark.anyio
+    async def test_survives_idle_in_transaction_session_timeout(
+        self, db_session: AsyncSession
+    ):
+        """An idle_in_transaction_session_timeout shorter than interval is harmless."""
+        role = Role(name="idle_timeout_role")
+        db_session.add(role)
+        await db_session.commit()
+
+        strict = create_async_engine(
+            DATABASE_URL,
+            connect_args={
+                "server_settings": {"idle_in_transaction_session_timeout": "200"}
+            },
+        )
+        caller = AsyncSession(bind=strict)
+
+        async def update_later():
+            await asyncio.sleep(0.8)
+            factory = async_sessionmaker(strict, expire_on_commit=False)
+            async with factory() as other:
+                r = await other.get(Role, role.id)
+                assert r is not None
+                r.name = "idle_timeout_updated"
+                await other.commit()
+
+        update_task = asyncio.create_task(update_later())
+        try:
+            result = await wait_for_row_change(
+                caller, Role, role.id, interval=0.5, timeout=3.0
+            )
+            assert result.name == "idle_timeout_updated"
+        finally:
+            await asyncio.gather(update_task, return_exceptions=True)
+            await caller.close()
+            await strict.dispose()
+
+    @pytest.mark.anyio
+    async def test_connection_bound_session_keeps_outer_transaction(self, engine):
+        """A session bound to a connection keeps its outer transaction intact."""
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        try:
+            async with engine.connect() as conn:
+                outer = await conn.begin()
+                session = AsyncSession(
+                    bind=conn,
+                    join_transaction_mode="create_savepoint",
+                    expire_on_commit=False,
+                )
+                role = Role(name="outer_tx_role")
+                session.add(role)
+                await session.commit()
+
+                with pytest.raises(TimeoutError):
+                    await wait_for_row_change(
+                        session, Role, role.id, interval=0.05, timeout=0.3
+                    )
+
+                assert outer.is_active
+                assert await session.get(Role, role.id) is not None
+                await outer.rollback()
+        finally:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+
+    @pytest.mark.anyio
+    async def test_connection_bound_session_survives_failed_poll(self, engine):
+        """A poll failing inside its transaction leaves the outer one intact."""
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        try:
+            async with engine.connect() as conn:
+                outer = await conn.begin()
+                session = AsyncSession(
+                    bind=conn,
+                    join_transaction_mode="create_savepoint",
+                    expire_on_commit=False,
+                )
+                role = Role(name="failed_poll_role")
+                session.add(role)
+                await session.commit()
+
+                original_get = AsyncSession.get
+                calls = 0
+
+                async def failing_get(self, *args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls > 1:
+                        await self.execute(text("SELECT 1 / 0"))
+                    return await original_get(self, *args, **kwargs)
+
+                with patch.object(AsyncSession, "get", failing_get):
+                    with pytest.raises(DBAPIError):
+                        await wait_for_row_change(
+                            session, Role, role.id, interval=0.05, timeout=1.0
+                        )
+
+                assert outer.is_active
+                assert await session.get(Role, role.id) is not None
+                await outer.rollback()
+        finally:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
 
 
 class TestCreateDatabase:

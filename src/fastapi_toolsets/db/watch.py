@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any, TypeVar
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
 from ..exceptions import NotFoundError
@@ -63,12 +63,21 @@ async def wait_for_row_change(
             "wait_for_row_change requires a session bound to an engine "
             "(session.bind is None)"
         )
-    watcher = AsyncSession(bind=bind)
+    # Join a caller's open transaction through a savepoint, so a failed or
+    # cancelled poll only rolls back its own savepoint.
+    join_mode = (
+        "create_savepoint"
+        if isinstance(bind, AsyncConnection) and bind.in_transaction()
+        else "conditional_savepoint"
+    )
+    watcher = AsyncSession(
+        bind=bind, expire_on_commit=False, join_transaction_mode=join_mode
+    )
     try:
 
         async def _reload() -> _M | None:
-            await watcher.rollback()
-            return await watcher.get(model, pk_value, populate_existing=True)
+            async with watcher.begin():
+                return await watcher.get(model, pk_value, populate_existing=True)
 
         instance = await _reload()
         if instance is None:
