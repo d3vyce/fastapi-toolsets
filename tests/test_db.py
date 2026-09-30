@@ -21,7 +21,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -1203,6 +1203,46 @@ class TestWaitForRowChange:
                     await wait_for_row_change(
                         session, Role, role.id, interval=0.05, timeout=0.3
                     )
+
+                assert outer.is_active
+                assert await session.get(Role, role.id) is not None
+                await outer.rollback()
+        finally:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+
+    @pytest.mark.anyio
+    async def test_connection_bound_session_survives_failed_poll(self, engine):
+        """A poll failing inside its transaction leaves the outer one intact."""
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        try:
+            async with engine.connect() as conn:
+                outer = await conn.begin()
+                session = AsyncSession(
+                    bind=conn,
+                    join_transaction_mode="create_savepoint",
+                    expire_on_commit=False,
+                )
+                role = Role(name="failed_poll_role")
+                session.add(role)
+                await session.commit()
+
+                original_get = AsyncSession.get
+                calls = 0
+
+                async def failing_get(self, *args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls > 1:
+                        await self.execute(text("SELECT 1 / 0"))
+                    return await original_get(self, *args, **kwargs)
+
+                with patch.object(AsyncSession, "get", failing_get):
+                    with pytest.raises(DBAPIError):
+                        await wait_for_row_change(
+                            session, Role, role.id, interval=0.05, timeout=1.0
+                        )
 
                 assert outer.is_active
                 assert await session.get(Role, role.id) is not None
