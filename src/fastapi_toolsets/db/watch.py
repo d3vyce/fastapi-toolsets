@@ -63,12 +63,12 @@ async def wait_for_row_change(
             "wait_for_row_change requires a session bound to an engine "
             "(session.bind is None)"
         )
-    watcher = AsyncSession(bind=bind)
+    watcher = AsyncSession(bind=bind, expire_on_commit=False)
     try:
 
         async def _reload() -> _M | None:
-            await watcher.rollback()
-            return await watcher.get(model, pk_value, populate_existing=True)
+            async with watcher.begin():
+                return await watcher.get(model, pk_value, populate_existing=True)
 
         instance = await _reload()
         if instance is None:
