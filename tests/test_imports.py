@@ -82,6 +82,19 @@ class TestImportGuards:
         restored = importlib.import_module("fastapi_toolsets.metrics")
         assert restored.init_metrics.__module__ == "fastapi_toolsets.metrics.handler"
 
+    def test_logger_requiring_the_otel_bridge_names_the_missing_extra(self):
+        """The logger imports without the ``otel`` extra; only ``otel=True`` fails."""
+        with _without_package(
+            "fastapi_toolsets.logger", "opentelemetry.instrumentation"
+        ):
+            mod = importlib.import_module("fastapi_toolsets.logger")
+
+            with pytest.raises(
+                ImportError,
+                match=r"'opentelemetry-instrumentation-logging' is required.*\[otel\]",
+            ):
+                mod.configure_logging(otel=True)
+
     @pytest.mark.parametrize(
         "module",
         ["fastapi_toolsets.pytest", "fastapi_toolsets.cli", "fastapi_toolsets.metrics"],

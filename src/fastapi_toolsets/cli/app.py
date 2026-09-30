@@ -33,5 +33,5 @@ if _config.get("fixtures") and _config.get("db_context"):
 @cli.callback()
 def main(ctx: typer.Context) -> None:
     """FastAPI utilities CLI."""
-    configure_logging()
+    configure_logging(style="console")
     ctx.ensure_object(dict)
