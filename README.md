@@ -52,12 +52,13 @@ uv add "fastapi-toolsets[all]"
 - **Lifecycle Events**: Post-commit event system (`EventSession`, `listens_for`) that dispatches async/sync callbacks for insert, update, and delete operations
 - **Standardized API Responses**: Consistent response format with `Response`, `ErrorResponse`, `PaginatedResponse`, `CursorPaginatedResponse` and `OffsetPaginatedResponse`.
 - **Exception Handling**: Structured error responses with automatic OpenAPI documentation
-- **Logging**: Logging configuration with uvicorn integration via `configure_logging` and `get_logger`
+- **Logging**: Console or JSON logging with request context, an access log middleware, and trace correlation for FastAPI's OpenTelemetry support
 
 ### Optional
 
 - **CLI**: Django-like command-line interface with fixture management and custom commands support
 - **Metrics**: Prometheus metrics endpoint with provider/collector registry
+- **OpenTelemetry logs**: Forward standard `logging` records to OpenTelemetry logs
 - **Pytest Helpers**: Async test client, database session management, `pytest-xdist` support, and table cleanup utilities
 
 ## License
