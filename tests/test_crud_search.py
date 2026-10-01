@@ -598,6 +598,9 @@ PostTagSearchCrud = CrudFactory(
 )
 
 PostTagFacetCrud = CrudFactory(Post, facet_fields=[(Post.tags, Tag.name)])
+PostTagSiblingFacetCrud = CrudFactory(
+    Post, facet_fields=[(Post.tags, Tag.name), (Post.tags, Tag.id)]
+)
 
 
 @contextlib.contextmanager
@@ -893,6 +896,47 @@ class TestPaginateToManyJoin:
         assert any("count(distinct(" in sql for sql in statements)
         assert result.pagination.total_count == 1
         assert [p.title for p in result.data] == ["post00"]
+
+    @pytest.mark.anyio
+    async def test_to_many_facet_lists_values_of_matching_rows_only(
+        self, db_session: AsyncSession
+    ):
+        """A facet through an association table only sees the filtered owners."""
+        await _seed_posts_with_tags(db_session)
+
+        result = await PostTagFacetCrud.offset_paginate(
+            db_session, filters=[Post.title == "post03"], schema=_PostTitle
+        )
+
+        assert result.filter_attributes == {
+            "tags__name": ["shared-3-0", "shared-3-1", "shared-3-2"]
+        }
+
+    @pytest.mark.anyio
+    async def test_facet_shares_the_related_row_with_a_filter_on_it(
+        self, db_session: AsyncSession
+    ):
+        """filter_by on a to-many facet narrows a sibling facet to the same tags."""
+        await _seed_posts_with_tags(db_session)
+        tag = (
+            await db_session.execute(select(Tag).where(Tag.name == "shared-0-0"))
+        ).scalar_one()
+
+        result = await PostTagSiblingFacetCrud.offset_paginate(
+            db_session, filter_by={"tags__id": tag.id}, schema=_PostTitle
+        )
+
+        assert result.filter_attributes is not None
+        assert result.filter_attributes["tags__name"] == ["shared-0-0"]
+
+    def test_facet_with_custom_join_condition_keeps_the_join(self):
+        """A relationship the subquery form cannot express is joined instead."""
+        from fastapi_toolsets.crud.search import _facet_rows
+
+        sql = str(_facet_rows(_Shelf, [_Shelf.active_books], [], []))
+
+        assert "JOIN books" in sql
+        assert "IN (SELECT" not in sql
 
     def test_grouped_order_only_aggregates_foreign_columns(self):
         """A base-table column is left alone; anything else collapses to min()."""
