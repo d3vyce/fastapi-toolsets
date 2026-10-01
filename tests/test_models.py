@@ -1,12 +1,17 @@
-"""Tests for fastapi_toolsets.models mixins."""
+"""Tests for ``fastapi_toolsets.models``: column mixins and ``EventSession`` events."""
 
 import asyncio
 import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import ANY, patch
 
 import pytest
+from fastapi import Depends, FastAPI
+from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 from sqlalchemy import ForeignKey, String, select
 from sqlalchemy import inspect as sa_inspect
@@ -22,8 +27,9 @@ from sqlalchemy.orm import (
 
 import fastapi_toolsets.models.watched as _watched_module
 from fastapi_toolsets.crud import CrudFactory
+from fastapi_toolsets.db import Database, lock_tables, transaction
 from fastapi_toolsets.models import (
-    CreatedAtMixin,
+    EventSession,
     ModelEvent,
     TimestampMixin,
     UpdatedAtMixin,
@@ -33,25 +39,27 @@ from fastapi_toolsets.models import (
 )
 from fastapi_toolsets.models.watched import (
     _EVENT_HANDLERS,
+    _RELOAD_TRANSACTION_ERROR_MSG,
     _SESSION_CREATES,
     _SESSION_DELETES,
     _SESSION_PRELOADED,
     _SESSION_UPDATES,
-    EventSession,
     _after_rollback,
     _collect,
     _get_watched_fields,
     _invalidate_caches,
-    _snapshot_column_attrs,
     _upsert_changes,
 )
 from fastapi_toolsets.pytest import create_db_session
 
 from .conftest import DATABASE_URL, capture_sql, following, selects
 
+_INFO_KEYS = (_SESSION_CREATES, _SESSION_DELETES, _SESSION_UPDATES, _SESSION_PRELOADED)
+_CLOSED_TRANSACTION = "Can't operate on closed transaction"
+
 
 class MixinBase(DeclarativeBase):
-    pass
+    """Declarative base of the models in this module."""
 
 
 class UUIDModel(MixinBase, UUIDMixin):
@@ -60,17 +68,9 @@ class UUIDModel(MixinBase, UUIDMixin):
     name: Mapped[str] = mapped_column(String(50))
 
 
-class UpdatedAtModel(MixinBase, UpdatedAtMixin):
-    __tablename__ = "mixin_updated_at_models"
+class UUIDv7Model(MixinBase, UUIDv7Mixin):
+    __tablename__ = "mixin_uuidv7_models"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(50))
-
-
-class CreatedAtModel(MixinBase, CreatedAtMixin):
-    __tablename__ = "mixin_created_at_models"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(50))
 
 
@@ -81,22 +81,36 @@ class TimestampModel(MixinBase, TimestampMixin):
     name: Mapped[str] = mapped_column(String(50))
 
 
-class UUIDv7Model(MixinBase, UUIDv7Mixin):
-    __tablename__ = "mixin_uuidv7_models"
+class StampedModel(MixinBase, UUIDMixin, UpdatedAtMixin):
+    """A UUID key and ``updated_at`` together, written through the CRUD."""
+
+    __tablename__ = "mixin_stamped_models"
 
     name: Mapped[str] = mapped_column(String(50))
 
 
-class FullMixinModel(MixinBase, UUIDMixin, UpdatedAtMixin):
-    __tablename__ = "mixin_full_models"
-
-    name: Mapped[str] = mapped_column(String(50))
+_events: list[dict[str, Any]] = []
+_calls: list[str] = []
 
 
-_test_events: list[dict] = []
+def _record(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+    """The handler every static watched model shares: it logs the event."""
+    _events.append(
+        {"event": event_type.value, "obj": obj, "obj_id": obj.id, "changes": changes}
+    )
+
+
+def _kinds() -> list[str]:
+    return [e["event"] for e in _events]
+
+
+def _of(kind: str) -> list[dict[str, Any]]:
+    return [e for e in _events if e["event"] == kind]
 
 
 class WatchedModel(MixinBase, UUIDMixin):
+    """Watches ``status`` only."""
+
     __tablename__ = "mixin_watched_models"
     __watched_fields__ = ("status",)
 
@@ -104,30 +118,80 @@ class WatchedModel(MixinBase, UUIDMixin):
     other: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(WatchedModel, [ModelEvent.CREATE])
-async def _watched_on_create(obj, event_type, changes):
-    _test_events.append({"event": "create", "obj_id": obj.id})
-
-
-@listens_for(WatchedModel, [ModelEvent.DELETE])
-async def _watched_on_delete(obj, event_type, changes):
-    _test_events.append({"event": "delete", "obj_id": obj.id})
-
-
-@listens_for(WatchedModel, [ModelEvent.UPDATE])
-async def _watched_on_update(obj, event_type, changes):
-    _test_events.append({"event": "update", "obj_id": obj.id, "changes": changes})
+listens_for(WatchedModel)(_record)
 
 
 class WatchedStampedModel(MixinBase, UUIDMixin, UpdatedAtMixin):
+    """A watched model whose UPDATE leaves an ``onupdate`` column expired."""
+
     __tablename__ = "mixin_watched_stamped_models"
 
     status: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(WatchedStampedModel, [ModelEvent.CREATE, ModelEvent.UPDATE])
-async def _stamped_on_write(obj, event_type, changes):
-    _test_events.append({"event": event_type.value, "obj_id": obj.id})
+listens_for(WatchedStampedModel, [ModelEvent.CREATE, ModelEvent.UPDATE])(_record)
+
+
+class PlainModel(MixinBase, UUIDMixin):
+    """No ``__watched_fields__``: every column is watched; ``nickname`` is nullable."""
+
+    __tablename__ = "mixin_plain_models"
+
+    name: Mapped[str] = mapped_column(String(50))
+    nickname: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+
+@listens_for(PlainModel)
+async def _plain_handler(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+    """Read the columns inside the callback, where an expired object would fail."""
+    _record(obj, event_type, changes)
+    _events[-1]["fields"] = {"name": obj.name, "nickname": obj.nickname}
+
+
+class NonWatchedModel(MixinBase):
+    """No handler is registered for this model."""
+
+    __tablename__ = "mixin_non_watched_models"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    value: Mapped[str] = mapped_column(String(50))
+
+
+class FlakyModel(MixinBase, UUIDMixin):
+    """A raising handler sits between two healthy ones, for every event."""
+
+    __tablename__ = "mixin_flaky_models"
+
+    name: Mapped[str] = mapped_column(String(50))
+
+
+@listens_for(FlakyModel)
+async def _flaky_first(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+    _calls.append(f"first:{event_type.value}")
+
+
+@listens_for(FlakyModel)
+async def _flaky_raises(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+    _calls.append(f"raises:{event_type.value}")
+    raise RuntimeError("middle handler intentionally failed")
+
+
+@listens_for(FlakyModel)
+async def _flaky_last(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+    _calls.append(f"last:{event_type.value}")
+
+
+class DeferredFieldModel(MixinBase, UUIDMixin):
+    """A deferred column, whose previous value is never loaded."""
+
+    __tablename__ = "mixin_deferred_field_models"
+
+    name: Mapped[str] = mapped_column(String(50))
+    payload: Mapped[str] = mapped_column(String(200), deferred=True)
+    nickname: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+
+listens_for(DeferredFieldModel, [ModelEvent.UPDATE])(_record)
 
 
 class RelTarget(MixinBase, UUIDMixin):
@@ -137,7 +201,7 @@ class RelTarget(MixinBase, UUIDMixin):
 
 
 class RelOwner(MixinBase, UUIDMixin):
-    """Watched model with a relationship, to check eager loads survive commit."""
+    """A watched model with a relationship, to check eager loads survive the commit."""
 
     __tablename__ = "mixin_rel_owners"
 
@@ -146,261 +210,39 @@ class RelOwner(MixinBase, UUIDMixin):
     target: Mapped[RelTarget] = relationship()
 
 
-@listens_for(RelOwner, [ModelEvent.CREATE, ModelEvent.UPDATE])
-async def _rel_owner_handler(obj, event_type, changes):
-    _test_events.append({"event": event_type.value, "obj_id": obj.id})
+listens_for(RelOwner, [ModelEvent.CREATE, ModelEvent.UPDATE])(_record)
 
 
-class WatchAllModel(MixinBase, UUIDMixin):
-    """Model without __watched_fields__ — watches all mapped fields by default."""
+class Animal(MixinBase, UUIDMixin):
+    """STI root watching ``status``; subclasses inherit its handlers and filter."""
 
-    __tablename__ = "mixin_watch_all_models"
+    __tablename__ = "mixin_animals"
+    __watched_fields__ = ("status",)
+    __mapper_args__ = {"polymorphic_on": "kind", "polymorphic_identity": "animal"}
 
+    kind: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(50))
     other: Mapped[str] = mapped_column(String(50))
 
 
-@listens_for(WatchAllModel, [ModelEvent.UPDATE])
-async def _watch_all_on_update(obj, event_type, changes):
-    _test_events.append({"event": "update", "obj_id": obj.id, "changes": changes})
+listens_for(Animal)(_record)
 
 
-class FailingCallbackModel(MixinBase, UUIDMixin):
-    """Model whose CREATE handler always raises to test exception logging."""
-
-    __tablename__ = "mixin_failing_callback_models"
-
-    name: Mapped[str] = mapped_column(String(50))
-
-
-@listens_for(FailingCallbackModel, [ModelEvent.CREATE])
-async def _failing_on_create(obj, event_type, changes):
-    raise RuntimeError("callback intentionally failed")
-
-
-@listens_for(FailingCallbackModel, [ModelEvent.DELETE])
-async def _failing_on_delete(obj, event_type, changes):
-    raise RuntimeError("delete callback intentionally failed")
-
-
-@listens_for(FailingCallbackModel, [ModelEvent.UPDATE])
-async def _failing_on_update(obj, event_type, changes):
-    raise RuntimeError("update callback intentionally failed")
-
-
-class DeferredFieldModel(MixinBase, UUIDMixin):
-    """Model with a deferred column, whose previous value is never loaded."""
-
-    __tablename__ = "mixin_deferred_field_models"
-
-    name: Mapped[str] = mapped_column(String(50))
-    payload: Mapped[str] = mapped_column(String(200), deferred=True)
-    nickname: Mapped[str | None] = mapped_column(String(50), nullable=True)
-
-
-_deferred_events: list[dict] = []
-
-
-@listens_for(DeferredFieldModel, [ModelEvent.UPDATE])
-async def _deferred_on_update(obj, event_type, changes):
-    _deferred_events.append({"event": "update", "changes": changes})
-
-
-class HandlerIsolationModel(MixinBase, UUIDMixin):
-    """Model with a raising handler sitting between two healthy ones."""
-
-    __tablename__ = "mixin_handler_isolation_models"
-
-    name: Mapped[str] = mapped_column(String(50))
-
-
-_isolation_calls: list[str] = []
-
-
-@listens_for(HandlerIsolationModel)
-async def _isolation_first(obj, event_type, changes):
-    _isolation_calls.append(f"first:{event_type.value}")
-
-
-@listens_for(HandlerIsolationModel)
-async def _isolation_raises(obj, event_type, changes):
-    _isolation_calls.append(f"raises:{event_type.value}")
-    raise RuntimeError("middle handler intentionally failed")
-
-
-@listens_for(HandlerIsolationModel)
-async def _isolation_last(obj, event_type, changes):
-    _isolation_calls.append(f"last:{event_type.value}")
-
-
-class NonWatchedModel(MixinBase):
-    __tablename__ = "mixin_non_watched_models"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    value: Mapped[str] = mapped_column(String(50))
-
-
-_poly_events: list[dict] = []
-
-
-class PolyAnimal(MixinBase, UUIDMixin):
-    """Base class for STI polymorphism tests."""
-
-    __tablename__ = "mixin_poly_animals"
-    __mapper_args__ = {"polymorphic_on": "kind", "polymorphic_identity": "animal"}
-
-    kind: Mapped[str] = mapped_column(String(50))
-    name: Mapped[str] = mapped_column(String(50))
-
-
-@listens_for(PolyAnimal, [ModelEvent.CREATE])
-async def _poly_on_create(obj, event_type, changes):
-    _poly_events.append(
-        {"event": "create", "type": type(obj).__name__, "obj_id": obj.id}
-    )
-
-
-@listens_for(PolyAnimal, [ModelEvent.DELETE])
-async def _poly_on_delete(obj, event_type, changes):
-    _poly_events.append(
-        {"event": "delete", "type": type(obj).__name__, "obj_id": obj.id}
-    )
-
-
-class PolyDog(PolyAnimal):
-    """STI subclass — shares the same table as PolyAnimal."""
+class Dog(Animal):
+    """Inherits ``__watched_fields__`` from ``Animal``."""
 
     __mapper_args__ = {"polymorphic_identity": "dog"}
 
 
-_watch_inherit_events: list[dict] = []
-
-
-class WatchParent(MixinBase, UUIDMixin):
-    """Base class with __watched_fields__ = ("status",) — subclasses inherit."""
-
-    __tablename__ = "mixin_watch_parent"
-    __watched_fields__ = ("status",)
-    __mapper_args__ = {"polymorphic_on": "kind", "polymorphic_identity": "parent"}
-
-    kind: Mapped[str] = mapped_column(String(50))
-    status: Mapped[str] = mapped_column(String(50))
-    other: Mapped[str] = mapped_column(String(50))
-
-
-@listens_for(WatchParent, [ModelEvent.UPDATE])
-async def _watch_parent_on_update(obj, event_type, changes):
-    _watch_inherit_events.append({"type": type(obj).__name__, "changes": changes})
-
-
-class WatchChild(WatchParent):
-    """STI subclass that does NOT redeclare __watched_fields__ — inherits parent's filter."""
-
-    __mapper_args__ = {"polymorphic_identity": "child"}
-
-
-class WatchOverride(WatchParent):
-    """STI subclass that overrides __watched_fields__ with a different field."""
+class Cat(Animal):
+    """Overrides ``__watched_fields__``."""
 
     __watched_fields__ = ("other",)
-
-    __mapper_args__ = {"polymorphic_identity": "override"}
-
-
-_attr_access_events: list[dict] = []
-
-
-class AttrAccessModel(MixinBase, UUIDMixin):
-    """Model used to verify that attributes are accessible in every callback."""
-
-    __tablename__ = "mixin_attr_access_models"
-
-    name: Mapped[str] = mapped_column(String(50))
-    callback_url: Mapped[str | None] = mapped_column(String(200), nullable=True)
-
-
-@listens_for(AttrAccessModel, [ModelEvent.CREATE])
-async def _attr_on_create(obj, event_type, changes):
-    _attr_access_events.append(
-        {
-            "event": "create",
-            "id": obj.id,
-            "name": obj.name,
-            "callback_url": obj.callback_url,
-        }
-    )
-
-
-@listens_for(AttrAccessModel, [ModelEvent.DELETE])
-async def _attr_on_delete(obj, event_type, changes):
-    _attr_access_events.append(
-        {
-            "event": "delete",
-            "id": obj.id,
-            "name": obj.name,
-            "callback_url": obj.callback_url,
-        }
-    )
-
-
-@listens_for(AttrAccessModel, [ModelEvent.UPDATE])
-async def _attr_on_update(obj, event_type, changes):
-    _attr_access_events.append(
-        {
-            "event": "update",
-            "id": obj.id,
-            "name": obj.name,
-            "callback_url": obj.callback_url,
-        }
-    )
-
-
-_sync_events: list[dict] = []
-_future_events: list[str] = []
-
-
-class SyncCallbackModel(MixinBase, UUIDMixin):
-    """Model with plain (sync) callbacks."""
-
-    __tablename__ = "mixin_sync_callback_models"
-    __watched_fields__ = ("status",)
-
-    status: Mapped[str] = mapped_column(String(50))
-
-
-@listens_for(SyncCallbackModel, [ModelEvent.CREATE])
-def _sync_on_create(obj, event_type, changes):
-    _sync_events.append({"event": "create", "obj_id": obj.id})
-
-
-@listens_for(SyncCallbackModel, [ModelEvent.DELETE])
-def _sync_on_delete(obj, event_type, changes):
-    _sync_events.append({"event": "delete", "obj_id": obj.id})
-
-
-@listens_for(SyncCallbackModel, [ModelEvent.UPDATE])
-def _sync_on_update(obj, event_type, changes):
-    _sync_events.append({"event": "update", "changes": changes})
-
-
-class FutureCallbackModel(MixinBase, UUIDMixin):
-    """Model whose CREATE handler returns an asyncio.Task (awaitable, not a coroutine)."""
-
-    __tablename__ = "mixin_future_callback_models"
-
-    name: Mapped[str] = mapped_column(String(50))
-
-
-@listens_for(FutureCallbackModel, [ModelEvent.CREATE])
-def _future_on_create(obj, event_type, changes):
-    async def _work():
-        _future_events.append("created")
-
-    return asyncio.ensure_future(_work())
+    __mapper_args__ = {"polymorphic_identity": "cat"}
 
 
 class ListenerModel(MixinBase, UUIDMixin):
-    """Model for testing the listens_for decorator with dynamic registration."""
+    """Its handlers are registered by each test and removed afterwards."""
 
     __tablename__ = "mixin_listener_models"
     __watched_fields__ = ("status",)
@@ -409,2168 +251,148 @@ class ListenerModel(MixinBase, UUIDMixin):
     other: Mapped[str] = mapped_column(String(50))
 
 
-_listener_events: list[dict] = []
+@pytest.fixture(autouse=True)
+def _clear_events():
+    _events.clear()
+    _calls.clear()
+    yield
+    _events.clear()
+    _calls.clear()
 
 
-@pytest.fixture(scope="function")
-async def mixin_session():
+@pytest.fixture
+def listener_cleanup():
+    """Drop the handlers a test registered on ``ListenerModel``."""
+    yield
+    for key in list(_EVENT_HANDLERS):
+        if key[0] is ListenerModel:
+            del _EVENT_HANDLERS[key]
+    _invalidate_caches()
+
+
+@pytest.fixture
+async def session():
+    """An ``EventSession`` with ``expire_on_commit=False`` over fresh tables."""
     async with create_db_session(DATABASE_URL, MixinBase) as session:
         yield session
 
 
-@pytest.fixture(scope="function")
-async def mixin_session_expire():
-    """Session with expire_on_commit=True (the default) to exercise attribute access after commit."""
+@pytest.fixture(params=[False, True], ids=["keep", "expire"])
+async def session_any(request):
+    """An ``EventSession`` under both ``expire_on_commit`` settings."""
     async with create_db_session(
-        DATABASE_URL, MixinBase, expire_on_commit=True
+        DATABASE_URL, MixinBase, expire_on_commit=request.param
     ) as session:
         yield session
 
 
-@pytest.fixture(scope="function")
-async def mixin_session_maker():
-    """Provide an EventSession-backed session factory with MixinBase tables."""
+@pytest.fixture
+async def event_maker():
+    """An ``EventSession`` factory with the tables created around the test."""
     engine = create_async_engine(DATABASE_URL, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(MixinBase.metadata.create_all)
-
-    factory = async_sessionmaker(engine, expire_on_commit=False, class_=EventSession)
-
     try:
-        yield factory
+        yield async_sessionmaker(engine, expire_on_commit=False, class_=EventSession)
     finally:
         async with engine.begin() as conn:
             await conn.run_sync(MixinBase.metadata.drop_all)
         await engine.dispose()
 
 
-class TestEventSessionPreservesEagerLoads:
-    """EventSession.commit() must not discard relations an eager load populated."""
+async def _committed(session: AsyncSession, obj: Any) -> Any:
+    """Insert *obj*, commit, and forget the CREATE event it fired."""
+    session.add(obj)
+    await session.commit()
+    _events.clear()
+    return obj
 
-    async def _seed_eager(self, session):
-        target = RelTarget(name="t")
-        session.add(target)
-        await session.flush()
-        owner = RelOwner(title="o", target_id=target.id)
-        session.add(owner)
-        await session.flush()
-        loaded = (
-            await session.execute(
-                select(RelOwner)
-                .where(RelOwner.id == owner.id)
-                .options(selectinload(RelOwner.target))
-            )
-        ).scalar_one()
-        assert "target" not in sa_inspect(loaded).unloaded
-        return loaded
+
+async def _seed(maker: async_sessionmaker[EventSession]) -> uuid.UUID:
+    """Commit a ``WatchedModel`` in a session of its own and return its id."""
+    async with maker() as session:
+        obj = await _committed(session, WatchedModel(status="initial", other="x"))
+        return obj.id
+
+
+async def _committed_owner(session: AsyncSession) -> uuid.UUID:
+    """Commit an owner with its target, then drop both from the session."""
+    owner = RelOwner(title="o", target=RelTarget(name="t"))
+    await _committed(session, owner)
+    session.expunge_all()
+    return owner.id
+
+
+async def _load_with_target(session: AsyncSession, owner_id: uuid.UUID) -> RelOwner:
+    """Select the owner with its target eagerly loaded."""
+    query = (
+        select(RelOwner)
+        .where(RelOwner.id == owner_id)
+        .options(selectinload(RelOwner.target))
+    )
+    owner = (await session.execute(query)).scalar_one()
+    assert "target" not in sa_inspect(owner).unloaded
+    return owner
+
+
+@asynccontextmanager
+async def _block(maker: Any, enter: str) -> AsyncIterator[EventSession]:
+    """A session inside a top-level transaction block, entered *enter*'s way."""
+    if enter == "sessionmaker.begin":
+        async with maker.begin() as session:
+            yield session
+        return
+    async with maker() as session:
+        ctx = session.begin() if enter == "session.begin" else transaction(session)
+        async with ctx:
+            yield session
+
+
+class TestColumnMixins:
+    """The id and timestamp mixins are filled in by the database."""
 
     @pytest.mark.anyio
-    async def test_eager_load_survives_commit(self, mixin_session):
-        """expire_on_commit=False: the reload must not expire the relation."""
-        owner = await self._seed_eager(mixin_session)
-
-        await mixin_session.commit()
-
-        assert "target" not in sa_inspect(owner).unloaded
-        assert owner.target.name == "t"
-
-    @pytest.mark.anyio
-    async def test_eager_load_survives_commit_expire_on_commit(
-        self, mixin_session_expire
+    @pytest.mark.parametrize(
+        ("model", "default", "version"),
+        [(UUIDModel, "gen_random_uuid", 4), (UUIDv7Model, "uuidv7", 7)],
+        ids=["uuid", "uuidv7"],
+    )
+    async def test_uuid_key_is_generated_by_the_database(
+        self, session, model, default, version
     ):
-        """expire_on_commit=True: what was loaded must be recorded before the commit."""
-        owner = await self._seed_eager(mixin_session_expire)
+        column = model.__table__.c["id"]
+        a, b = model(name="a"), model(name="b")
+        session.add_all([a, b])
+        await session.flush()
 
-        await mixin_session_expire.commit()
-
-        assert "target" not in sa_inspect(owner).unloaded
-        assert owner.target.name == "t"
-
-    async def _seed_committed(self, session):
-        """Commit a row, then drop it from the session so it must be re-read."""
-        target = RelTarget(name="t")
-        owner = RelOwner(title="o", target=target)
-        session.add_all([target, owner])
-        await session.commit()
-        owner_id = owner.id
-        await session.rollback()
-        session.expunge_all()
-        return owner_id
-
-    async def _load_eager(self, session, owner_id):
-        loaded = (
-            await session.execute(
-                select(RelOwner)
-                .where(RelOwner.id == owner_id)
-                .options(selectinload(RelOwner.target))
-            )
-        ).scalar_one()
-        assert "target" not in sa_inspect(loaded).unloaded
-        return loaded
+        assert [c.name for c in model.__table__.primary_key] == ["id"]
+        assert column.server_default is not None
+        assert default in str(column.server_default.arg)
+        assert isinstance(a.id, uuid.UUID) and a.id != b.id
+        assert a.id.version == version
 
     @pytest.mark.anyio
-    async def test_eager_load_survives_commit_without_flush(self, mixin_session):
-        """The dirty object is only collected by the commit's own flush."""
-        owner_id = await self._seed_committed(mixin_session)
-        owner = await self._load_eager(mixin_session, owner_id)
-        owner.title = "changed"
-
-        await mixin_session.commit()
-
-        assert "target" not in sa_inspect(owner).unloaded
-
-    @pytest.mark.anyio
-    async def test_eager_load_survives_begin_block(self, mixin_session):
-        """Same as above for the ``session.begin()`` block CRUD writes through."""
-        owner_id = await self._seed_committed(mixin_session)
-
-        async with mixin_session.begin():
-            owner = await self._load_eager(mixin_session, owner_id)
-            owner.title = "changed"
-
-        assert "target" not in sa_inspect(owner).unloaded
-
-    @pytest.mark.anyio
-    async def test_relation_set_on_create_survives_commit(self, mixin_session):
-        """A relation assigned before the first flush must survive the reload."""
-        target = RelTarget(name="t")
-        mixin_session.add(target)
-        await mixin_session.flush()
-        owner = RelOwner(title="o", target=target)
-        mixin_session.add(owner)
-
-        await mixin_session.commit()
-
-        assert "target" not in sa_inspect(owner).unloaded
-
-    @pytest.mark.anyio
-    async def test_unloaded_relation_stays_unloaded(self, mixin_session):
-        """Only what was loaded is restored: the reload must not eager-load extra."""
-        target = RelTarget(name="t")
-        mixin_session.add(target)
-        await mixin_session.flush()
-        owner = RelOwner(title="o", target_id=target.id)
-        mixin_session.add(owner)
-
-        await mixin_session.commit()
-
-        assert "target" in sa_inspect(owner).unloaded
-
-
-class TestEventSessionTransactionState:
-    """commit() must not leave the reload's transaction open on the session."""
-
-    @pytest.fixture(autouse=True)
-    def clear_handlers(self):
-        yield
-        for key in list(_EVENT_HANDLERS):
-            if key[0] is ListenerModel:
-                del _EVENT_HANDLERS[key]
-        _invalidate_caches()
-
-    @pytest.mark.anyio
-    async def test_commit_leaves_no_transaction_open(self, mixin_session):
-        """The post-commit reload must close the transaction it opened."""
-        target = RelTarget(name="t")
-        owner = RelOwner(title="o", target=target)
-        mixin_session.add_all([target, owner])
-
-        await mixin_session.commit()
-
-        assert mixin_session.in_transaction() is False
-
-    @pytest.mark.anyio
-    async def test_begin_block_after_commit(self, mixin_session):
-        """``session.begin()`` right after a commit must not raise."""
-        target = RelTarget(name="t")
-        owner = RelOwner(title="o", target=target)
-        mixin_session.add_all([target, owner])
-        await mixin_session.commit()
-
-        async with mixin_session.begin():
-            owner.title = "changed"
-
-        assert owner.title == "changed"
-
-    @pytest.mark.anyio
-    async def test_eager_load_survives_commit_expire_on_commit(
-        self, mixin_session_expire
+    async def test_timestamps_are_set_on_insert_and_only_updated_at_moves(
+        self, session
     ):
-        """Closing that transaction must not expire what the reload populated."""
-        target = RelTarget(name="t")
-        owner = RelOwner(title="o", target=target)
-        mixin_session_expire.add_all([target, owner])
-
-        await mixin_session_expire.commit()
-
-        assert mixin_session_expire.in_transaction() is False
-        assert "target" not in sa_inspect(owner).unloaded
-        assert mixin_session_expire.sync_session.expire_on_commit is True
-
-    @pytest.mark.anyio
-    async def test_callback_writes_are_left_to_the_caller(self, mixin_session):
-        """A callback's ``session.add`` stays pending until the caller commits."""
-
-        @listens_for(ListenerModel, [ModelEvent.CREATE])
-        async def _on_create(obj, event_type, changes):
-            if obj.status == "seed":
-                session = object_session(obj)
-                assert session is not None
-                session.add(ListenerModel(status="from-callback", other="y"))
-
-        mixin_session.add(ListenerModel(status="seed", other="x"))
-        await mixin_session.commit()
-
-        assert len(mixin_session.new) == 1
-
-        await mixin_session.commit()
-
-        rows = (
-            (
-                await mixin_session.execute(
-                    select(ListenerModel).where(ListenerModel.status == "from-callback")
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1
-
-
-class TestUUIDMixin:
-    @pytest.mark.anyio
-    async def test_uuid_generated_by_db(self, mixin_session):
-        """UUID is generated server-side and populated after flush."""
-        obj = UUIDModel(name="test")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-
-        assert obj.id is not None
-        assert isinstance(obj.id, uuid.UUID)
-
-    @pytest.mark.anyio
-    async def test_uuid_is_primary_key(self):
-        """UUIDMixin adds id as primary key column."""
-        pk_cols = [c.name for c in UUIDModel.__table__.primary_key]
-        assert pk_cols == ["id"]
-
-    @pytest.mark.anyio
-    async def test_each_row_gets_unique_uuid(self, mixin_session):
-        """Each inserted row gets a distinct UUID."""
-        a = UUIDModel(name="a")
-        b = UUIDModel(name="b")
-        mixin_session.add_all([a, b])
-        await mixin_session.flush()
-
-        assert a.id != b.id
-
-    @pytest.mark.anyio
-    async def test_uuid_server_default_set(self):
-        """Column has gen_random_uuid() as server default."""
-        col = UUIDModel.__table__.c["id"]
-        assert col.server_default is not None
-        assert "gen_random_uuid" in str(col.server_default.arg)
-
-
-class TestUpdatedAtMixin:
-    @pytest.mark.anyio
-    async def test_updated_at_set_on_insert(self, mixin_session):
-        """updated_at is populated after insert."""
-        obj = UpdatedAtModel(name="initial")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        assert obj.updated_at is not None
-        assert obj.updated_at.tzinfo is not None
-
-    @pytest.mark.anyio
-    async def test_updated_at_changes_on_update(self, mixin_session):
-        """updated_at is updated when the row is modified."""
-        obj = UpdatedAtModel(name="initial")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        original_ts = obj.updated_at
-
-        obj.name = "modified"
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        assert obj.updated_at >= original_ts
-
-    @pytest.mark.anyio
-    async def test_updated_at_column_is_not_nullable(self):
-        """updated_at column is non-nullable."""
-        col = UpdatedAtModel.__table__.c["updated_at"]
-        assert not col.nullable
-
-    @pytest.mark.anyio
-    async def test_updated_at_has_server_default(self):
-        """updated_at column has a server-side default."""
-        col = UpdatedAtModel.__table__.c["updated_at"]
-        assert col.server_default is not None
-
-    @pytest.mark.anyio
-    async def test_updated_at_has_onupdate(self):
-        """updated_at column has an onupdate clause."""
-        col = UpdatedAtModel.__table__.c["updated_at"]
-        assert col.onupdate is not None
-
-
-class TestCreatedAtMixin:
-    @pytest.mark.anyio
-    async def test_created_at_set_on_insert(self, mixin_session):
-        """created_at is populated after insert."""
-        obj = CreatedAtModel(name="new")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        assert obj.created_at is not None
-        assert obj.created_at.tzinfo is not None
-
-    @pytest.mark.anyio
-    async def test_created_at_not_changed_on_update(self, mixin_session):
-        """created_at is not modified when the row is updated."""
-        obj = CreatedAtModel(name="original")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        original_ts = obj.created_at
-
-        obj.name = "updated"
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        assert obj.created_at == original_ts
-
-    @pytest.mark.anyio
-    async def test_created_at_column_is_not_nullable(self):
-        """created_at column is non-nullable."""
-        col = CreatedAtModel.__table__.c["created_at"]
-        assert not col.nullable
-
-    @pytest.mark.anyio
-    async def test_created_at_has_no_onupdate(self):
-        """created_at column has no onupdate clause."""
-        col = CreatedAtModel.__table__.c["created_at"]
-        assert col.onupdate is None
-
-
-class TestTimestampMixin:
-    @pytest.mark.anyio
-    async def test_both_columns_set_on_insert(self, mixin_session):
-        """created_at and updated_at are both populated after insert."""
+        created = TimestampModel.__table__.c["created_at"]
+        updated = TimestampModel.__table__.c["updated_at"]
         obj = TimestampModel(name="new")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        assert obj.created_at is not None
-        assert obj.updated_at is not None
-
-    @pytest.mark.anyio
-    async def test_created_at_stable_updated_at_changes_on_update(self, mixin_session):
-        """On update: created_at stays the same, updated_at advances."""
-        obj = TimestampModel(name="original")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        original_created = obj.created_at
-        original_updated = obj.updated_at
+        session.add(obj)
+        await session.flush()
+        await session.refresh(obj)
+        first_created, first_updated = obj.created_at, obj.updated_at
 
         obj.name = "modified"
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        assert obj.created_at == original_created
-        assert obj.updated_at >= original_updated
-
-    @pytest.mark.anyio
-    async def test_timestamp_mixin_has_both_columns(self):
-        """TimestampModel exposes both created_at and updated_at columns."""
-        col_names = {c.name for c in TimestampModel.__table__.columns}
-        assert "created_at" in col_names
-        assert "updated_at" in col_names
-
-
-class TestUUIDv7Mixin:
-    @pytest.mark.anyio
-    async def test_uuid7_generated_by_db(self, mixin_session):
-        """UUIDv7 is generated server-side and populated after flush."""
-        obj = UUIDv7Model(name="test")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-
-        assert obj.id is not None
-        assert isinstance(obj.id, uuid.UUID)
-
-    @pytest.mark.anyio
-    async def test_uuid7_is_primary_key(self):
-        """UUIDv7Mixin adds id as primary key column."""
-        pk_cols = [c.name for c in UUIDv7Model.__table__.primary_key]
-        assert pk_cols == ["id"]
-
-    @pytest.mark.anyio
-    async def test_each_row_gets_unique_uuid7(self, mixin_session):
-        """Each inserted row gets a distinct UUIDv7."""
-        a = UUIDv7Model(name="a")
-        b = UUIDv7Model(name="b")
-        mixin_session.add_all([a, b])
-        await mixin_session.flush()
-
-        assert a.id != b.id
-
-    @pytest.mark.anyio
-    async def test_uuid7_version(self, mixin_session):
-        """Generated UUIDs have version 7."""
-        obj = UUIDv7Model(name="test")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-
-        assert obj.id.version == 7
-
-    @pytest.mark.anyio
-    async def test_uuid7_server_default_set(self):
-        """Column has uuidv7() as server default."""
-        col = UUIDv7Model.__table__.c["id"]
-        assert col.server_default is not None
-        assert "uuidv7" in str(col.server_default.arg)
-
-
-class TestFullMixinModel:
-    @pytest.mark.anyio
-    async def test_combined_mixins_work_together(self, mixin_session):
-        """UUIDMixin and UpdatedAtMixin can be combined on the same model."""
-        obj = FullMixinModel(name="combined")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        await mixin_session.refresh(obj)
-
-        assert isinstance(obj.id, uuid.UUID)
-        assert obj.updated_at is not None
-        assert obj.updated_at.tzinfo is not None
-
-
-class TestWatchedFields:
-    def test_specific_fields_set(self):
-        """__watched_fields__ stores the watched field tuple."""
-        assert WatchedModel.__watched_fields__ == ("status",)
-
-    def test_no_watched_fields_means_all(self):
-        """A model without __watched_fields__ watches all fields."""
-        assert _get_watched_fields(WatchAllModel) is None
-
-    def test_inherits_from_parent(self):
-        """Subclass without __watched_fields__ inherits parent's value."""
-        assert WatchChild.__watched_fields__ == ("status",)
-
-    def test_override_takes_precedence(self):
-        """Subclass __watched_fields__ overrides parent's value."""
-        assert WatchOverride.__watched_fields__ == ("other",)
-
-    def test_invalid_watched_fields_raises_type_error(self):
-        """__watched_fields__ must be a tuple of strings."""
-
-        class BadModel(MixinBase, UUIDMixin):
-            __tablename__ = "mixin_bad_watched_fields"
-            __watched_fields__ = ["status"]  # list, not tuple
-
-            status: Mapped[str] = mapped_column(String(50))
-
-        with pytest.raises(TypeError, match="must be a tuple"):
-            _get_watched_fields(BadModel)
-
-
-class TestWatchInheritance:
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _watch_inherit_events.clear()
-        yield
-        _watch_inherit_events.clear()
-
-    @pytest.mark.anyio
-    async def test_child_inherits_parent_watch_filter(self, mixin_session):
-        """Subclass without __watched_fields__ inherits the parent's field filter."""
-        obj = WatchChild(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        obj.other = "changed"  # not watched by parent's __watched_fields__
-        await mixin_session.commit()
-
-        assert _watch_inherit_events == []
-
-    @pytest.mark.anyio
-    async def test_child_triggers_on_watched_field(self, mixin_session):
-        """Subclass without __watched_fields__ triggers handler for the parent's watched field."""
-        obj = WatchChild(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        obj.status = "updated"
-        await mixin_session.commit()
-
-        assert len(_watch_inherit_events) == 1
-        assert _watch_inherit_events[0]["type"] == "WatchChild"
-        assert "status" in _watch_inherit_events[0]["changes"]
-
-    @pytest.mark.anyio
-    async def test_subclass_override_takes_precedence(self, mixin_session):
-        """Subclass __watched_fields__ overrides the parent's field filter."""
-        obj = WatchOverride(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        obj.status = "changed"  # overridden by child's __watched_fields__ = ("other",)
-        await mixin_session.commit()
-
-        assert _watch_inherit_events == []
-
-        obj.other = "changed"
-        await mixin_session.commit()
-
-        assert len(_watch_inherit_events) == 1
-        assert "other" in _watch_inherit_events[0]["changes"]
-
-
-class TestUpsertChanges:
-    def test_inserts_new_entry(self):
-        """New key is inserted with the full changes dict."""
-        pending: dict = {}
-        obj = object()
-        changes = {"status": {"old": None, "new": "active"}}
-        _upsert_changes(pending, obj, changes)
-        assert pending[id(obj)] == (obj, changes)
-
-    def test_merges_existing_field_keeps_old_updates_new(self):
-        """When the field already exists, old is preserved and new is overwritten."""
-        obj = object()
-        pending = {
-            id(obj): (obj, {"status": {"old": "initial", "new": "intermediate"}})
-        }
-        _upsert_changes(
-            pending, obj, {"status": {"old": "intermediate", "new": "final"}}
-        )
-        assert pending[id(obj)][1]["status"] == {"old": "initial", "new": "final"}
-
-    def test_adds_new_field_to_existing_entry(self):
-        """A previously unseen field is added alongside existing ones."""
-        obj = object()
-        pending = {id(obj): (obj, {"status": {"old": "a", "new": "b"}})}
-        _upsert_changes(pending, obj, {"role": {"old": "user", "new": "admin"}})
-        fields = pending[id(obj)][1]
-        assert fields["status"] == {"old": "a", "new": "b"}
-        assert fields["role"] == {"old": "user", "new": "admin"}
-
-
-class TestAfterFlush:
-    def test_does_nothing_with_empty_session(self):
-        """_collect writes nothing to session.info when all collections are empty."""
-        session = SimpleNamespace(new=[], deleted=[], dirty=[], info={})
-        _collect(session)
-        assert session.info == {}
-
-    def test_captures_new_watched_objects(self):
-        """New watched objects are added to _SESSION_CREATES."""
-        obj = object()
-        session = SimpleNamespace(new=[obj], deleted=[], dirty=[], info={})
-        with patch(
-            "fastapi_toolsets.models.watched._get_handlers",
-            return_value=[lambda *a: None],
-        ):
-            _collect(session)
-        assert session.info[_SESSION_CREATES] == [obj]
-
-    def test_ignores_new_non_watched_objects(self):
-        """New objects that are not watched are not captured."""
-        obj = object()
-        session = SimpleNamespace(new=[obj], deleted=[], dirty=[], info={})
-        _collect(session)
-        assert _SESSION_CREATES not in session.info
-
-    def test_captures_deleted_watched_objects(self):
-        """Deleted watched objects are stored as (obj, snapshot) tuples."""
-        obj = object()
-        session = SimpleNamespace(new=[], deleted=[obj], dirty=[], info={})
-        with (
-            patch(
-                "fastapi_toolsets.models.watched._get_handlers",
-                return_value=[lambda *a: None],
-            ),
-            patch(
-                "fastapi_toolsets.models.watched._snapshot_column_attrs",
-                return_value={"id": 1},
-            ),
-        ):
-            _collect(session)
-        assert len(session.info[_SESSION_DELETES]) == 1
-        assert session.info[_SESSION_DELETES][0][0] is obj
-        assert session.info[_SESSION_DELETES][0][1] == {"id": 1}
-
-    def test_ignores_deleted_non_watched_objects(self):
-        """Deleted objects that are not watched are not captured."""
-        obj = object()
-        session = SimpleNamespace(new=[], deleted=[obj], dirty=[], info={})
-        _collect(session)
-        assert _SESSION_DELETES not in session.info
-
-
-class TestAfterRollback:
-    def test_clears_all_session_info_keys(self):
-        """_after_rollback removes every tracking key on full rollback."""
-        session = SimpleNamespace(
-            info={
-                _SESSION_CREATES: [object()],
-                _SESSION_DELETES: [object()],
-                _SESSION_UPDATES: {1: ("obj", {"f": {"old": "a", "new": "b"}})},
-                _SESSION_PRELOADED: {1: {"target"}},
-            },
-            in_transaction=lambda: False,
-        )
-        _after_rollback(session)
-        assert _SESSION_CREATES not in session.info
-        assert _SESSION_DELETES not in session.info
-        assert _SESSION_UPDATES not in session.info
-        assert _SESSION_PRELOADED not in session.info
-
-    def test_tolerates_missing_keys(self):
-        """_after_rollback does not raise when session.info has no pending data."""
-        session = SimpleNamespace(info={}, in_transaction=lambda: False)
-        _after_rollback(session)  # must not raise
-
-    def test_preserves_events_on_savepoint_rollback(self):
-        """_after_rollback keeps events when still in a transaction (savepoint)."""
-        creates = [object()]
-        session = SimpleNamespace(
-            info={
-                _SESSION_CREATES: creates,
-                _SESSION_DELETES: [],
-                _SESSION_UPDATES: {},
-            },
-            in_transaction=lambda: True,
-        )
-        _after_rollback(session)
-        assert session.info[_SESSION_CREATES] is creates
-
-
-class TestEventCallbacks:
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        yield
-        _test_events.clear()
-
-    # --- CREATE ---
-
-    @pytest.mark.anyio
-    async def test_create_fires_after_insert(self, mixin_session):
-        """CREATE handler is called after INSERT commit."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-    @pytest.mark.anyio
-    async def test_create_server_defaults_populated(self, mixin_session):
-        """id (server default via RETURNING) is available inside CREATE handler."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert creates[0]["obj_id"] is not None
-        assert isinstance(creates[0]["obj_id"], uuid.UUID)
-
-    @pytest.mark.anyio
-    async def test_create_not_fired_on_update(self, mixin_session):
-        """CREATE handler is NOT called when an existing row is updated."""
-        obj = WatchedModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        obj.status = "updated"
-        await mixin_session.commit()
-
-        assert not any(e["event"] == "create" for e in _test_events)
-
-    # --- DELETE ---
-
-    @pytest.mark.anyio
-    async def test_delete_fires_after_delete(self, mixin_session):
-        """DELETE handler is called after DELETE commit."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        saved_id = obj.id
-        _test_events.clear()
-
-        await mixin_session.delete(obj)
-        await mixin_session.commit()
-
-        deletes = [e for e in _test_events if e["event"] == "delete"]
-        assert len(deletes) == 1
-        assert deletes[0]["obj_id"] == saved_id
-
-    @pytest.mark.anyio
-    async def test_delete_not_fired_on_insert(self, mixin_session):
-        """DELETE handler is NOT called when a new row is inserted."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        assert not any(e["event"] == "delete" for e in _test_events)
-
-    # --- UPDATE ---
-
-    @pytest.mark.anyio
-    async def test_update_fires_on_update(self, mixin_session):
-        """UPDATE handler reports the correct before/after values."""
-        obj = WatchedModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        obj.status = "updated"
-        await mixin_session.commit()
-
-        changes_events = [e for e in _test_events if e["event"] == "update"]
-        assert len(changes_events) == 1
-        assert changes_events[0]["changes"]["status"] == {
-            "old": "initial",
-            "new": "updated",
-        }
-
-    @pytest.mark.anyio
-    async def test_update_not_fired_on_insert(self, mixin_session):
-        """UPDATE handler is NOT called on INSERT (CREATE handles that)."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        assert not any(e["event"] == "update" for e in _test_events)
-
-    @pytest.mark.anyio
-    async def test_create_and_update_in_same_tx_only_fires_create(self, mixin_session):
-        """Modifying a watched field before commit only fires CREATE, not UPDATE."""
-        obj = WatchedModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-
-        obj.status = "updated-before-commit"
-        await mixin_session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        updates = [e for e in _test_events if e["event"] == "update"]
-        assert len(creates) == 1
-        assert updates == []
-
-    @pytest.mark.anyio
-    async def test_unwatched_field_update_no_callback(self, mixin_session):
-        """Changing a field not in __watched_fields__ does not fire UPDATE handler."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        obj.other = "changed"
-        await mixin_session.commit()
-
-        assert _test_events == []
-
-    @pytest.mark.anyio
-    async def test_multiple_flushes_merge_earliest_old_latest_new(self, mixin_session):
-        """Two flushes in one transaction produce a single callback with earliest old / latest new."""
-        obj = WatchedModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        obj.status = "intermediate"
-        await mixin_session.flush()
-
-        obj.status = "final"
-        await mixin_session.commit()
-
-        changes_events = [e for e in _test_events if e["event"] == "update"]
-        assert len(changes_events) == 1
-        assert changes_events[0]["changes"]["status"] == {
-            "old": "initial",
-            "new": "final",
-        }
-
-    @pytest.mark.anyio
-    async def test_rollback_suppresses_all_callbacks(self, mixin_session):
-        """No callbacks are fired when the transaction is rolled back."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        obj.status = "changed"
-        await mixin_session.flush()
-        await mixin_session.rollback()
-
-        assert _test_events == []
-
-    @pytest.mark.anyio
-    async def test_create_callback_exception_is_logged(self, mixin_session):
-        """Exceptions raised inside a CREATE handler are logged, not propagated."""
-        obj = FailingCallbackModel(name="boom")
-        mixin_session.add(obj)
-        with patch.object(_watched_module._logger, "error") as mock_error:
-            await mixin_session.commit()
-
-            mock_error.assert_called_once()
-
-    @pytest.mark.anyio
-    async def test_delete_callback_exception_is_logged(self, mixin_session):
-        """Exceptions raised inside a DELETE handler are logged, not propagated."""
-        obj = FailingCallbackModel(name="boom")
-        mixin_session.add(obj)
-        await mixin_session.commit()  # CREATE handler fails (logged)
-
-        await mixin_session.delete(obj)
-        with patch.object(_watched_module._logger, "error") as mock_error:
-            await mixin_session.commit()
-
-            mock_error.assert_called_once()
-
-    @pytest.mark.anyio
-    async def test_update_callback_exception_is_logged(self, mixin_session):
-        """Exceptions raised inside an UPDATE handler are logged, not propagated."""
-        obj = FailingCallbackModel(name="boom")
-        mixin_session.add(obj)
-        await mixin_session.commit()  # CREATE handler fails (logged)
-
-        obj.name = "changed"
-        with patch.object(_watched_module._logger, "error") as mock_error:
-            await mixin_session.commit()
-
-            mock_error.assert_called_once()
-
-    @pytest.mark.anyio
-    async def test_create_handler_failure_does_not_silence_later_handlers(
-        self, mixin_session
-    ):
-        """A raising CREATE handler must not stop the handlers registered after it."""
-        _isolation_calls.clear()
-        mixin_session.add(HandlerIsolationModel(name="x"))
-        with patch.object(_watched_module._logger, "error") as mock_error:
-            await mixin_session.commit()
-
-        assert _isolation_calls == ["first:create", "raises:create", "last:create"]
-        mock_error.assert_called_once()
-
-    @pytest.mark.anyio
-    async def test_update_handler_failure_does_not_silence_later_handlers(
-        self, mixin_session
-    ):
-        """A raising UPDATE handler must not stop the handlers registered after it."""
-        obj = HandlerIsolationModel(name="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _isolation_calls.clear()
-        obj.name = "changed"
-        with patch.object(_watched_module._logger, "error") as mock_error:
-            await mixin_session.commit()
-
-        assert _isolation_calls == ["first:update", "raises:update", "last:update"]
-        mock_error.assert_called_once()
-
-    @pytest.mark.anyio
-    async def test_delete_handler_failure_does_not_silence_later_handlers(
-        self, mixin_session
-    ):
-        """A raising DELETE handler must not stop the handlers registered after it."""
-        obj = HandlerIsolationModel(name="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _isolation_calls.clear()
-        await mixin_session.delete(obj)
-        with patch.object(_watched_module._logger, "error") as mock_error:
-            await mixin_session.commit()
-
-        assert _isolation_calls == ["first:delete", "raises:delete", "last:delete"]
-        mock_error.assert_called_once()
-
-    @pytest.mark.anyio
-    async def test_snapshot_restore_failure_skips_only_that_object(self, mixin_session):
-        """A failed snapshot restore logs, skips its object, and dispatches the rest."""
-        doomed = WatchedModel(status="a", other="x")
-        healthy = WatchedModel(status="b", other="y")
-        mixin_session.add_all([doomed, healthy])
-        await mixin_session.commit()
-        healthy_id = healthy.id
-
-        _test_events.clear()
-        await mixin_session.delete(doomed)
-        await mixin_session.delete(healthy)
-
-        real_set = _watched_module._sa_set_committed_value
-
-        def fail_for_doomed(obj, key, value):
-            if obj is doomed:
-                raise RuntimeError("snapshot restore intentionally failed")
-            return real_set(obj, key, value)
-
-        with (
-            patch.object(_watched_module, "_sa_set_committed_value", fail_for_doomed),
-            patch.object(_watched_module._logger, "error") as mock_error,
-        ):
-            await mixin_session.commit()
-
-        deletes = [e for e in _test_events if e["event"] == "delete"]
-        assert [e["obj_id"] for e in deletes] == [healthy_id]
-        mock_error.assert_called_once()
-
-    @pytest.mark.anyio
-    async def test_non_watched_model_no_callback(self, mixin_session):
-        """Dirty objects whose type has no registered handlers are skipped."""
-        nw = NonWatchedModel(value="x")
-        mixin_session.add(nw)
-        await mixin_session.flush()
-        nw.value = "y"
-        await mixin_session.commit()
-
-        assert _test_events == []
-
-    @pytest.mark.anyio
-    async def test_create_survives_row_deleted_before_reload(self, mixin_session):
-        """A row deleted by another transaction right after commit still fires CREATE."""
-        keep = WatchedModel(status="active", other="x")
-        doomed = WatchedModel(status="active", other="x")
-        mixin_session.add_all([keep, doomed])
-        await mixin_session.flush()
-        doomed_id = doomed.id
-        # Leave something to re-read, or the reload is skipped.
-        mixin_session.sync_session.expire(doomed, ["other"])
-
-        raced = {"done": False}
-
-        async def kill_doomed_row_once():
-            if raced["done"]:
-                return
-            raced["done"] = True
-            engine = create_async_engine(DATABASE_URL, echo=False)
-            async with async_sessionmaker(engine)() as other:
-                row = await other.get(WatchedModel, doomed_id)
-                await other.delete(row)
-                await other.commit()
-            await engine.dispose()
-
-        real_batch_reload = _watched_module._batch_reload
-
-        async def racing_batch_reload(session, model, objs, preloaded):
-            if any(getattr(o, "id", None) == doomed_id for o in objs):
-                await kill_doomed_row_once()
-            return await real_batch_reload(session, model, objs, preloaded)
-
-        # Patch the batched reload EventSession.commit() uses to pick up
-        # server defaults, so this test still exercises the race.
-        with (
-            patch.object(_watched_module, "_batch_reload", racing_batch_reload),
-            patch.object(_watched_module._logger, "error") as mock_error,
-        ):
-            await mixin_session.commit()
-            mock_error.assert_not_called()
-
-        assert raced["done"]
-        created_ids = {e["obj_id"] for e in _test_events if e["event"] == "create"}
-        assert created_ids == {keep.id, doomed_id}
-
-    @pytest.mark.anyio
-    async def test_batch_reload_exception_is_logged_and_dispatch_continues(
-        self, mixin_session
-    ):
-        """A batched-reload failure is logged; CREATE handlers still fire."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        # Leave something to re-read, or the reload is skipped.
-        mixin_session.sync_session.expire(obj, ["other"])
-
-        async def failing_batch_reload(session, model, objs, preloaded):
-            raise RuntimeError("reload failed")
-
-        with (
-            patch.object(_watched_module, "_batch_reload", failing_batch_reload),
-            patch.object(_watched_module._logger, "error") as mock_error,
-        ):
-            await mixin_session.commit()
-
-        mock_error.assert_called_once()
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-
-class TestTransientObject:
-    """Create + delete within the same transaction should fire no events."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        yield
-        _test_events.clear()
-
-    @pytest.mark.anyio
-    async def test_no_events_when_created_and_deleted_in_same_transaction(
-        self, mixin_session
-    ):
-        """Neither CREATE nor DELETE fires when the object never survives a commit."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.flush()
-        await mixin_session.delete(obj)
-        await mixin_session.commit()
-
-        assert _test_events == []
-
-    @pytest.mark.anyio
-    async def test_other_objects_unaffected(self, mixin_session):
-        """CREATE still fires for objects that are not deleted in the same transaction."""
-        survivor = WatchedModel(status="active", other="x")
-        transient = WatchedModel(status="gone", other="y")
-        mixin_session.add(survivor)
-        mixin_session.add(transient)
-        await mixin_session.flush()
-        await mixin_session.delete(transient)
-        await mixin_session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        deletes = [e for e in _test_events if e["event"] == "delete"]
-        assert len(creates) == 1
-        assert creates[0]["obj_id"] == survivor.id
-        assert deletes == []
-
-    @pytest.mark.anyio
-    async def test_distinct_create_and_delete_both_fire(self, mixin_session):
-        """CREATE and DELETE both fire when different objects are created and deleted."""
-        existing = WatchedModel(status="old", other="x")
-        mixin_session.add(existing)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        new_obj = WatchedModel(status="new", other="y")
-        mixin_session.add(new_obj)
-        await mixin_session.delete(existing)
-        await mixin_session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        deletes = [e for e in _test_events if e["event"] == "delete"]
-        assert len(creates) == 1
-        assert len(deletes) == 1
-
-    @pytest.mark.anyio
-    async def test_update_then_delete_suppresses_update_callback(self, mixin_session):
-        """UPDATE callback is suppressed when the object is also deleted in the same transaction."""
-        obj = WatchedModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        obj.status = "changed"
-        await mixin_session.flush()
-        await mixin_session.delete(obj)
-        await mixin_session.commit()
-
-        updates = [e for e in _test_events if e["event"] == "update"]
-        deletes = [e for e in _test_events if e["event"] == "delete"]
-        assert updates == []
-        assert len(deletes) == 1
-
-
-class TestPolymorphism:
-    """Event dispatch with STI (Single Table Inheritance)."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _poly_events.clear()
-        yield
-        _poly_events.clear()
-
-    @pytest.mark.anyio
-    async def test_create_fires_once_for_subclass(self, mixin_session):
-        """CREATE fires exactly once for a STI subclass instance."""
-        dog = PolyDog(name="Rex")
-        mixin_session.add(dog)
-        await mixin_session.commit()
-
-        assert len(_poly_events) == 1
-        assert _poly_events[0]["event"] == "create"
-        assert _poly_events[0]["type"] == "PolyDog"
-
-    @pytest.mark.anyio
-    async def test_delete_fires_for_subclass(self, mixin_session):
-        """DELETE fires for a STI subclass instance."""
-        dog = PolyDog(name="Rex")
-        mixin_session.add(dog)
-        await mixin_session.commit()
-
-        _poly_events.clear()
-
-        await mixin_session.delete(dog)
-        await mixin_session.commit()
-
-        assert len(_poly_events) == 1
-        assert _poly_events[0]["event"] == "delete"
-        assert _poly_events[0]["type"] == "PolyDog"
-
-    @pytest.mark.anyio
-    async def test_transient_subclass_fires_no_events(self, mixin_session):
-        """Create + delete of a STI subclass in one transaction fires no events."""
-        dog = PolyDog(name="Rex")
-        mixin_session.add(dog)
-        await mixin_session.flush()
-        await mixin_session.delete(dog)
-        await mixin_session.commit()
-
-        assert _poly_events == []
-
-
-class TestWatchAll:
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        yield
-        _test_events.clear()
-
-    @pytest.mark.anyio
-    async def test_watch_all_fires_for_any_field(self, mixin_session):
-        """Model without __watched_fields__ fires UPDATE for any changed field."""
-        obj = WatchAllModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        obj.other = "changed"
-        await mixin_session.commit()
-
-        changes_events = [e for e in _test_events if e["event"] == "update"]
-        assert len(changes_events) == 1
-        assert "other" in changes_events[0]["changes"]
-
-    @pytest.mark.anyio
-    async def test_watch_all_captures_multiple_fields(self, mixin_session):
-        """Model without __watched_fields__ captures all fields changed in a single commit."""
-        obj = WatchAllModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        obj.status = "updated"
-        obj.other = "changed"
-        await mixin_session.commit()
-
-        changes_events = [e for e in _test_events if e["event"] == "update"]
-        assert len(changes_events) == 1
-        assert "status" in changes_events[0]["changes"]
-        assert "other" in changes_events[0]["changes"]
-
-
-class TestSyncCallbacks:
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _sync_events.clear()
-        yield
-        _sync_events.clear()
-
-    @pytest.mark.anyio
-    async def test_sync_create_fires(self, mixin_session):
-        """Sync CREATE handler is called after INSERT commit."""
-        obj = SyncCallbackModel(status="active")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        creates = [e for e in _sync_events if e["event"] == "create"]
-        assert len(creates) == 1
-        assert isinstance(creates[0]["obj_id"], uuid.UUID)
-
-    @pytest.mark.anyio
-    async def test_sync_delete_fires(self, mixin_session):
-        """Sync DELETE handler is called after DELETE commit."""
-        obj = SyncCallbackModel(status="active")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _sync_events.clear()
-
-        await mixin_session.delete(obj)
-        await mixin_session.commit()
-
-        deletes = [e for e in _sync_events if e["event"] == "delete"]
-        assert len(deletes) == 1
-
-    @pytest.mark.anyio
-    async def test_sync_update_fires(self, mixin_session):
-        """Sync UPDATE handler is called after UPDATE commit with correct changes."""
-        obj = SyncCallbackModel(status="initial")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _sync_events.clear()
-
-        obj.status = "updated"
-        await mixin_session.commit()
-
-        updates = [e for e in _sync_events if e["event"] == "update"]
-        assert len(updates) == 1
-        assert updates[0]["changes"]["status"] == {"old": "initial", "new": "updated"}
-
-
-class TestFutureCallbacks:
-    """Callbacks returning a non-coroutine awaitable (asyncio.Task / Future)."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _future_events.clear()
-        yield
-        _future_events.clear()
-
-    @pytest.mark.anyio
-    async def test_task_callback_is_awaited(self, mixin_session):
-        """CREATE handler returning an asyncio.Task is awaited and its work completes."""
-        obj = FutureCallbackModel(name="test")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        assert _future_events == ["created"]
-
-
-class TestAttributeAccessInCallbacks:
-    """Verify that object attributes are accessible inside every callback type.
-
-    Uses expire_on_commit=True (the SQLAlchemy default) so the tests would fail
-    without the refresh/snapshot-restore logic in EventSession.commit().
-    """
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _attr_access_events.clear()
-        yield
-        _attr_access_events.clear()
-
-    @pytest.mark.anyio
-    async def test_create_pk_and_field_accessible(self, mixin_session_expire):
-        """id (server default) and regular fields are readable inside CREATE handler."""
-        obj = AttrAccessModel(name="hello")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "create"]
-        assert len(events) == 1
-        assert isinstance(events[0]["id"], uuid.UUID)
-        assert events[0]["name"] == "hello"
-
-    @pytest.mark.anyio
-    async def test_delete_pk_and_field_accessible(self, mixin_session_expire):
-        """id and regular fields are readable inside DELETE handler."""
-        obj = AttrAccessModel(name="to-delete")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        _attr_access_events.clear()
-
-        await mixin_session_expire.delete(obj)
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "delete"]
-        assert len(events) == 1
-        assert isinstance(events[0]["id"], uuid.UUID)
-        assert events[0]["name"] == "to-delete"
-
-    @pytest.mark.anyio
-    async def test_update_pk_and_updated_field_accessible(self, mixin_session_expire):
-        """id and the new field value are readable inside UPDATE handler."""
-        obj = AttrAccessModel(name="original")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        _attr_access_events.clear()
-
-        obj.name = "updated"
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "update"]
-        assert len(events) == 1
-        assert isinstance(events[0]["id"], uuid.UUID)
-        assert events[0]["name"] == "updated"
-
-    @pytest.mark.anyio
-    async def test_nullable_column_none_accessible_in_create(
-        self, mixin_session_expire
-    ):
-        """Nullable column left as None is accessible in CREATE handler without greenlet error."""
-        obj = AttrAccessModel(name="no-url")  # callback_url not set → None
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "create"]
-        assert len(events) == 1
-        assert events[0]["callback_url"] is None
-
-    @pytest.mark.anyio
-    async def test_nullable_column_with_value_accessible_in_create(
-        self, mixin_session_expire
-    ):
-        """Nullable column set to a value is accessible in CREATE handler without greenlet error."""
-        obj = AttrAccessModel(name="with-url", callback_url="https://example.com/hook")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "create"]
-        assert len(events) == 1
-        assert events[0]["callback_url"] == "https://example.com/hook"
-
-    @pytest.mark.anyio
-    async def test_nullable_column_accessible_after_update_to_none(
-        self, mixin_session_expire
-    ):
-        """Nullable column updated to None is accessible in UPDATE handler without greenlet error."""
-        obj = AttrAccessModel(name="x", callback_url="https://example.com/hook")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        _attr_access_events.clear()
-
-        obj.callback_url = None
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "update"]
-        assert len(events) == 1
-        assert events[0]["callback_url"] is None
-
-    @pytest.mark.anyio
-    async def test_snapshot_on_loaded_object_captures_nullable_column(
-        self, mixin_session_expire
-    ):
-        """_snapshot_column_attrs on a loaded (non-expired) object captures
-        nullable columns correctly — used for delete snapshots at flush time."""
-        obj = AttrAccessModel(name="original", callback_url="https://example.com/hook")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.flush()
-
-        # Object is loaded (just flushed) — snapshot should capture everything.
-        snapshot = _snapshot_column_attrs(obj)
-        assert snapshot["callback_url"] == "https://example.com/hook"
-        assert snapshot["name"] == "original"
-
-
-class TestListensFor:
-    """Test the listens_for decorator for external handler registration."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _listener_events.clear()
-        yield
-        _listener_events.clear()
-        # Clean up registered handlers for ListenerModel.
-        for key in list(_EVENT_HANDLERS):
-            if key[0] is ListenerModel:
-                del _EVENT_HANDLERS[key]
-        _invalidate_caches()
-
-    @pytest.mark.anyio
-    async def test_create_handler_fires(self, mixin_session):
-        """Registered CREATE handler is called after INSERT commit."""
-
-        @listens_for(ListenerModel, [ModelEvent.CREATE])
-        async def _on_create(obj, event_type, changes):
-            _listener_events.append({"event": "create", "id": obj.id})
-
-        obj = ListenerModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        creates = [e for e in _listener_events if e["event"] == "create"]
-        assert len(creates) == 1
-        assert isinstance(creates[0]["id"], uuid.UUID)
-
-    @pytest.mark.anyio
-    async def test_delete_handler_fires(self, mixin_session):
-        """Registered DELETE handler is called after DELETE commit."""
-
-        @listens_for(ListenerModel, [ModelEvent.DELETE])
-        async def _on_delete(obj, event_type, changes):
-            _listener_events.append({"event": "delete", "id": obj.id})
-
-        obj = ListenerModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-        saved_id = obj.id
-
-        await mixin_session.delete(obj)
-        await mixin_session.commit()
-
-        deletes = [e for e in _listener_events if e["event"] == "delete"]
-        assert len(deletes) == 1
-        assert deletes[0]["id"] == saved_id
-
-    @pytest.mark.anyio
-    async def test_update_handler_receives_changes(self, mixin_session):
-        """Registered UPDATE handler receives the object and changes dict."""
-
-        @listens_for(ListenerModel, [ModelEvent.UPDATE])
-        async def _on_update(obj, event_type, changes):
-            _listener_events.append(
-                {"event": "update", "id": obj.id, "changes": changes}
-            )
-
-        obj = ListenerModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        obj.status = "updated"
-        await mixin_session.commit()
-
-        updates = [e for e in _listener_events if e["event"] == "update"]
-        assert len(updates) == 1
-        assert updates[0]["changes"]["status"] == {
-            "old": "initial",
-            "new": "updated",
-        }
-
-    @pytest.mark.anyio
-    async def test_default_all_event_types(self, mixin_session):
-        """listens_for defaults to all event types when none specified."""
-
-        @listens_for(ListenerModel)
-        async def _on_any(obj, event_type, changes):
-            _listener_events.append({"event": "any"})
-
-        obj = ListenerModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        obj.status = "updated"
-        await mixin_session.commit()
-
-        await mixin_session.delete(obj)
-        await mixin_session.commit()
-
-        assert len(_listener_events) == 3
-
-    @pytest.mark.anyio
-    async def test_multiple_handlers_all_fire(self, mixin_session):
-        """Multiple handlers registered for the same event all fire."""
-
-        @listens_for(ListenerModel, [ModelEvent.CREATE])
-        async def _handler_a(obj, event_type, changes):
-            _listener_events.append({"handler": "a"})
-
-        @listens_for(ListenerModel, [ModelEvent.CREATE])
-        async def _handler_b(obj, event_type, changes):
-            _listener_events.append({"handler": "b"})
-
-        obj = ListenerModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        handlers = [e["handler"] for e in _listener_events]
-        assert "a" in handlers
-        assert "b" in handlers
-
-    @pytest.mark.anyio
-    async def test_sync_handler_works(self, mixin_session):
-        """Sync (non-async) registered handler is called."""
-
-        @listens_for(ListenerModel, [ModelEvent.CREATE])
-        def _on_create(obj, event_type, changes):
-            _listener_events.append({"event": "create", "id": obj.id})
-
-        obj = ListenerModel(status="active", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        assert len(_listener_events) == 1
-
-    @pytest.mark.anyio
-    async def test_multiple_event_types(self, mixin_session):
-        """listens_for accepts multiple event types and registers for all of them."""
-
-        @listens_for(ListenerModel, [ModelEvent.CREATE, ModelEvent.UPDATE])
-        async def _on_change(obj, event_type, changes):
-            _listener_events.append({"event": "change", "id": obj.id})
-
-        obj = ListenerModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        obj.status = "updated"
-        await mixin_session.commit()
-
-        assert len(_listener_events) == 2
-        assert all(e["event"] == "change" for e in _listener_events)
-
-
-class TestEventSessionWithTransaction:
-    """Verify callbacks fire correctly when using transaction / lock_tables."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        yield
-        _test_events.clear()
-
-    @pytest.mark.anyio
-    async def test_callbacks_fire_after_outer_commit_not_savepoint(self, mixin_session):
-        """transaction creates a savepoint; callbacks fire only on outer commit."""
-        from fastapi_toolsets.db import transaction
-
-        # Open the outer transaction first, so transaction() nests a savepoint
-        # instead of running a top-level block that commits on its own.
-        await mixin_session.connection()
-
-        async with transaction(mixin_session):
-            obj = WatchedModel(status="active", other="x")
-            mixin_session.add(obj)
-
-        # Still inside the session's outer transaction: the savepoint was
-        # released, but nothing is durably committed yet.
-        assert _test_events == []
-
-        await mixin_session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-    @pytest.mark.anyio
-    async def test_nested_transactions_accumulate_events(self, mixin_session):
-        """Multiple transaction blocks accumulate events for a single commit."""
-        from fastapi_toolsets.db import transaction
-
-        # Open the outer transaction so both blocks nest savepoints.
-        await mixin_session.connection()
-
-        async with transaction(mixin_session):
-            obj1 = WatchedModel(status="first", other="x")
-            mixin_session.add(obj1)
-
-        async with transaction(mixin_session):
-            obj2 = WatchedModel(status="second", other="y")
-            mixin_session.add(obj2)
-
-        assert _test_events == []
-
-        await mixin_session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 2
-
-    @pytest.mark.anyio
-    async def test_savepoint_rollback_suppresses_events(self, mixin_session):
-        """Objects from a rolled-back savepoint don't fire callbacks."""
-        from fastapi_toolsets.db import transaction
-
-        survivor = WatchedModel(status="kept", other="x")
-        mixin_session.add(survivor)
-        await mixin_session.flush()
-
-        try:
-            async with transaction(mixin_session):
-                doomed = WatchedModel(status="doomed", other="y")
-                mixin_session.add(doomed)
-                await mixin_session.flush()
-                raise ValueError("rollback this savepoint")
-        except ValueError:
-            pass
-
-        await mixin_session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-        assert creates[0]["obj_id"] == survivor.id
-
-    @pytest.mark.anyio
-    async def test_lock_tables_with_events(self, mixin_session_maker):
-        """Events fire correctly when lock_tables commits on context exit."""
-        from fastapi_toolsets.db import lock_tables
-
-        async with lock_tables(mixin_session_maker, [WatchedModel]) as session:
-            obj = WatchedModel(status="locked", other="x")
-            session.add(obj)
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-    @pytest.mark.anyio
-    async def test_update_inside_transaction(self, mixin_session):
-        """UPDATE events fire with correct changes after transaction commit."""
-        from fastapi_toolsets.db import transaction
-
-        obj = WatchedModel(status="initial", other="x")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-
-        _test_events.clear()
-
-        async with transaction(mixin_session):
-            obj.status = "updated"
-
-        await mixin_session.commit()
-
-        updates = [e for e in _test_events if e["event"] == "update"]
-        assert len(updates) == 1
-        assert updates[0]["changes"]["status"] == {
-            "old": "initial",
-            "new": "updated",
-        }
-
-
-class TestEventSessionInsideBeginBlock:
-    """Regression tests for commits made inside an ``async with session.begin()`` block."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        _attr_access_events.clear()
-        yield
-        _test_events.clear()
-        _attr_access_events.clear()
-
-    @pytest.mark.anyio
-    async def test_create_commit_inside_begin_block(self, mixin_session_maker, caplog):
-        """CREATE callbacks fire, and the reload doesn't raise, inside begin()."""
-        async with mixin_session_maker() as session:
-            with caplog.at_level(logging.ERROR):
-                async with session.begin():
-                    session.add(WatchedModel(status="active", other="x"))
-                    await session.commit()
-
-            # The session is still usable once the block exits.
-            assert (
-                await session.get(WatchedModel, _test_events[0]["obj_id"]) is not None
-            )
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-        assert "Can't operate on closed transaction" not in caplog.text
-
-    @pytest.mark.anyio
-    async def test_update_commit_inside_begin_block(self, mixin_session_maker, caplog):
-        """UPDATE callbacks report changes for a commit made inside begin()."""
-        async with mixin_session_maker() as session:
-            obj = WatchedModel(status="initial", other="x")
-            session.add(obj)
-            await session.commit()
-            obj_id = obj.id
-        _test_events.clear()
-
-        async with mixin_session_maker() as session:
-            with caplog.at_level(logging.ERROR):
-                async with session.begin():
-                    obj = await session.get(WatchedModel, obj_id)
-                    obj.status = "updated"
-                    await session.commit()
-
-        assert "Can't operate on closed transaction" not in caplog.text
-        updates = [e for e in _test_events if e["event"] == "update"]
-        assert len(updates) == 1
-        assert updates[0]["changes"]["status"] == {"old": "initial", "new": "updated"}
-
-    @pytest.mark.anyio
-    async def test_delete_commit_inside_begin_block(self, mixin_session_maker, caplog):
-        """DELETE callbacks fire for a commit made inside begin()."""
-        async with mixin_session_maker() as session:
-            obj = WatchedModel(status="doomed", other="x")
-            session.add(obj)
-            await session.commit()
-            obj_id = obj.id
-        _test_events.clear()
-
-        async with mixin_session_maker() as session:
-            with caplog.at_level(logging.ERROR):
-                async with session.begin():
-                    await session.delete(await session.get(WatchedModel, obj_id))
-                    await session.commit()
-
-        assert "Can't operate on closed transaction" not in caplog.text
-        deletes = [e for e in _test_events if e["event"] == "delete"]
-        assert len(deletes) == 1
-        assert deletes[0]["obj_id"] == obj_id
-
-    @pytest.mark.anyio
-    async def test_commit_inside_transaction_savepoint(
-        self, mixin_session_maker, caplog
-    ):
-        """A commit inside a savepoint block (``transaction``/``Database.begin``)."""
-        from fastapi_toolsets.db import transaction
-
-        async with mixin_session_maker() as session:
-            await session.connection()  # autobegin, as Database._open() does
-            with caplog.at_level(logging.ERROR):
-                async with transaction(session):  # nested -> savepoint
-                    session.add(WatchedModel(status="savepoint", other="x"))
-                    await session.commit()
-
-        assert "Can't operate on closed transaction" not in caplog.text
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-    @pytest.mark.anyio
-    async def test_expired_attributes_load_inside_begin_block(self):
-        """With expire_on_commit=True, callbacks can still read attributes."""
-        async with create_db_session(
-            DATABASE_URL, MixinBase, expire_on_commit=True
-        ) as session:
-            async with session.begin():
-                session.add(AttrAccessModel(name="test", callback_url=None))
-                await session.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "create"]
-        assert len(events) == 1
-        assert events[0]["name"] == "test"
-        assert events[0]["callback_url"] is None
-
-
-class TestEventSessionCommitByContextManager:
-    """Regression tests for commits driven by ``async with session.begin()``."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        yield
-        _test_events.clear()
-
-    @pytest.mark.anyio
-    async def test_begin_block_without_explicit_commit(self, mixin_session_maker):
-        """A top-level begin() block dispatches on exit."""
-        async with mixin_session_maker() as session:
-            async with session.begin():
-                session.add(WatchedModel(status="active", other="x"))
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-    @pytest.mark.anyio
-    async def test_transaction_helper_without_prior_io(self, mixin_session_maker):
-        """transaction() on a fresh session takes the begin() branch and dispatches."""
-        from fastapi_toolsets.db import transaction
-
-        async with mixin_session_maker() as session:
-            async with transaction(session):
-                session.add(WatchedModel(status="active", other="x"))
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-    @pytest.mark.anyio
-    async def test_update_in_begin_block(self, mixin_session_maker):
-        """UPDATE callbacks report changes for a begin() block."""
-        async with mixin_session_maker() as session:
-            obj = WatchedModel(status="initial", other="x")
-            session.add(obj)
-            await session.commit()
-            obj_id = obj.id
-        _test_events.clear()
-
-        async with mixin_session_maker() as session:
-            async with session.begin():
-                obj = await session.get(WatchedModel, obj_id)
-                obj.status = "updated"
-
-        updates = [e for e in _test_events if e["event"] == "update"]
-        assert len(updates) == 1
-        assert updates[0]["changes"]["status"] == {"old": "initial", "new": "updated"}
-
-    @pytest.mark.anyio
-    async def test_sessionmaker_begin_dispatches(self, mixin_session_maker):
-        """async_sessionmaker.begin() routes through the session's begin()."""
-        async with mixin_session_maker.begin() as session:
-            session.add(WatchedModel(status="active", other="x"))
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-    @pytest.mark.anyio
-    async def test_explicit_commit_inside_block_dispatches_once(
-        self, mixin_session_maker
-    ):
-        """An explicit commit inside the block must not dispatch twice on exit."""
-        async with mixin_session_maker() as session:
-            async with session.begin():
-                session.add(WatchedModel(status="active", other="x"))
-                await session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-    @pytest.mark.anyio
-    async def test_exception_in_block_dispatches_nothing(self, mixin_session_maker):
-        """A block that raises rolls back, so no callback fires."""
-        async with mixin_session_maker() as session:
-            with pytest.raises(RuntimeError):
-                async with session.begin():
-                    session.add(WatchedModel(status="active", other="x"))
-                    raise RuntimeError("boom")
-
-        assert _test_events == []
-
-    @pytest.mark.anyio
-    async def test_savepoint_alone_dispatches_nothing(self, mixin_session_maker):
-        """Releasing a savepoint is not a durable commit, so nothing dispatches."""
-        async with mixin_session_maker() as session:
-            await session.connection()
-            async with session.begin_nested():
-                session.add(WatchedModel(status="active", other="x"))
-
-            assert _test_events == []
-            await session.commit()
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-
-class TestCollectionSkippedForNonDispatchingSessions:
-    """The global flush listener must not collect for sessions that never dispatch."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        yield
-        _test_events.clear()
-
-    @pytest.mark.anyio
-    async def test_plain_session_collects_nothing(self, mixin_session_maker):
-        """A non-EventSession accumulates no pending state across commits."""
-        engine = mixin_session_maker.kw["bind"]
-        async with async_sessionmaker(engine, class_=AsyncSession)() as session:
-            for i in range(3):
-                session.add(WatchedModel(status=f"s{i}", other="x"))
-                await session.commit()
-
-            assert _watched_module._SESSION_CREATES not in session.info
-            assert _watched_module._SESSION_UPDATES not in session.info
-            assert _watched_module._SESSION_DELETES not in session.info
-
-        assert _test_events == []
-
-    @pytest.mark.anyio
-    async def test_plain_session_collects_nothing_for_update_and_delete(
-        self, mixin_session_maker
-    ):
-        """UPDATE and DELETE collection is skipped too, not just CREATE."""
-        engine = mixin_session_maker.kw["bind"]
-        async with async_sessionmaker(engine, class_=AsyncSession)() as session:
-            obj = WatchedModel(status="initial", other="x")
-            session.add(obj)
-            await session.commit()
-
-            obj.status = "updated"
-            await session.commit()
-
-            await session.delete(obj)
-            await session.commit()
-
-            assert not any(
-                key in session.info
-                for key in (
-                    _watched_module._SESSION_CREATES,
-                    _watched_module._SESSION_UPDATES,
-                    _watched_module._SESSION_DELETES,
-                    _watched_module._SESSION_PRELOADED,
-                )
-            )
-
-        assert _test_events == []
-
-    @pytest.mark.anyio
-    async def test_event_session_still_collects_before_commit(
-        self, mixin_session_maker
-    ):
-        """The guard must not skip a real EventSession: it collects on flush."""
-        async with mixin_session_maker() as session:
-            session.add(WatchedModel(status="active", other="x"))
-            await session.flush()
-
-            # Collected by the flush listener, still waiting for the commit.
-            assert len(session.info[_watched_module._SESSION_CREATES]) == 1
-            assert _test_events == []
-
-            await session.commit()
-
-            # Drained by the commit that dispatched it.
-            assert _watched_module._SESSION_CREATES not in session.info
-
-        creates = [e for e in _test_events if e["event"] == "create"]
-        assert len(creates) == 1
-
-
-class TestEventSessionWithNullableFields:
-    """Regression tests for nullable field access in callbacks (the original bug)."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _attr_access_events.clear()
-        yield
-        _attr_access_events.clear()
-
-    @pytest.mark.anyio
-    async def test_nullable_field_none_in_create(self, mixin_session_expire):
-        """Nullable field left as None is accessible in CREATE callback (expire_on_commit=True)."""
-        obj = AttrAccessModel(name="test")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "create"]
-        assert len(events) == 1
-        assert events[0]["callback_url"] is None
-        assert events[0]["name"] == "test"
-
-    @pytest.mark.anyio
-    async def test_nullable_field_set_in_create(self, mixin_session_expire):
-        """Nullable field with a value is accessible in CREATE callback (expire_on_commit=True)."""
-        obj = AttrAccessModel(name="test", callback_url="https://hook.example.com")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "create"]
-        assert len(events) == 1
-        assert events[0]["callback_url"] == "https://hook.example.com"
-
-    @pytest.mark.anyio
-    async def test_nullable_field_in_delete(self, mixin_session_expire):
-        """Nullable field is accessible in DELETE callback via snapshot restore."""
-        obj = AttrAccessModel(name="to-delete", callback_url="https://hook.example.com")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        _attr_access_events.clear()
-
-        await mixin_session_expire.delete(obj)
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "delete"]
-        assert len(events) == 1
-        assert events[0]["callback_url"] == "https://hook.example.com"
-        assert events[0]["name"] == "to-delete"
-
-    @pytest.mark.anyio
-    async def test_nullable_field_updated_to_none(self, mixin_session_expire):
-        """Nullable field changed to None is accessible in UPDATE callback."""
-        obj = AttrAccessModel(name="x", callback_url="https://hook.example.com")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        _attr_access_events.clear()
-
-        obj.callback_url = None
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "update"]
-        assert len(events) == 1
-        assert events[0]["callback_url"] is None
-
-    @pytest.mark.anyio
-    async def test_nullable_field_updated_from_none(self, mixin_session_expire):
-        """Nullable field changed from None to a value is accessible in UPDATE callback."""
-        obj = AttrAccessModel(name="x")
-        mixin_session_expire.add(obj)
-        await mixin_session_expire.commit()
-
-        _attr_access_events.clear()
-
-        obj.callback_url = "https://new-hook.example.com"
-        await mixin_session_expire.commit()
-
-        events = [e for e in _attr_access_events if e["event"] == "update"]
-        assert len(events) == 1
-        assert events[0]["callback_url"] == "https://new-hook.example.com"
-
-
-class TestEventSessionWithFastAPIDependency:
-    """Verify EventSession works when session comes from the Database dependency."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        yield
-        _test_events.clear()
-
-    @pytest.mark.anyio
-    async def test_create_event_fires_via_dependency(self):
-        """CREATE callback fires when session is provided by the Database dependency."""
-        from fastapi import Depends, FastAPI
-        from httpx import ASGITransport, AsyncClient
-        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-
-        from fastapi_toolsets.db import Database
-        from fastapi_toolsets.models import EventSession
-
-        engine = create_async_engine(DATABASE_URL, echo=False)
-
-        async with engine.begin() as conn:
-            await conn.run_sync(MixinBase.metadata.create_all)
-
-        db = Database(engine=engine, session_class=EventSession)
-        app = FastAPI()
-
-        @app.post("/watched")
-        async def create_watched(session: AsyncSession = Depends(db)):
-            obj = WatchedModel(status="from-api", other="x")
-            session.add(obj)
-            return {"id": str(obj.id)}
-
-        try:
-            transport = ASGITransport(app=app)
-            async with AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as client:
-                response = await client.post("/watched")
-
-            assert response.status_code == 200
-
-            creates = [e for e in _test_events if e["event"] == "create"]
-            assert len(creates) == 1
-        finally:
-            async with engine.begin() as conn:
-                await conn.run_sync(MixinBase.metadata.drop_all)
-            await engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_update_event_fires_via_dependency(self):
-        """UPDATE callback fires when session is provided by the Database dependency."""
-        from fastapi import Depends, FastAPI
-        from httpx import ASGITransport, AsyncClient
-        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-
-        from fastapi_toolsets.db import Database
-        from fastapi_toolsets.models import EventSession
-
-        engine = create_async_engine(DATABASE_URL, echo=False)
-
-        async with engine.begin() as conn:
-            await conn.run_sync(MixinBase.metadata.create_all)
-
-        db = Database(engine=engine, session_class=EventSession)
-        app = FastAPI()
-
-        # Pre-seed an object.
-        async with db.session() as seed_session:
-            obj = WatchedModel(status="initial", other="x")
-            seed_session.add(obj)
-            await seed_session.flush()
-            obj_id = obj.id
-
-        _test_events.clear()
-
-        @app.put("/watched/{item_id}")
-        async def update_watched(item_id: str, session: AsyncSession = Depends(db)):
-            from sqlalchemy import select
-
-            stmt = select(WatchedModel).where(WatchedModel.id == item_id)
-            result = await session.execute(stmt)
-            item = result.scalar_one()
-            item.status = "updated-via-api"
-            return {"ok": True}
-
-        try:
-            transport = ASGITransport(app=app)
-            async with AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as client:
-                response = await client.put(f"/watched/{obj_id}")
-
-            assert response.status_code == 200
-
-            updates = [e for e in _test_events if e["event"] == "update"]
-            assert len(updates) == 1
-            assert updates[0]["changes"]["status"]["new"] == "updated-via-api"
-        finally:
-            async with engine.begin() as conn:
-                await conn.run_sync(MixinBase.metadata.drop_all)
-            await engine.dispose()
-
-
-class TestDeferredFieldUpdates:
-    """A change whose previous value was never loaded must still fire UPDATE."""
-
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _deferred_events.clear()
-        yield
-        _deferred_events.clear()
-
-    @staticmethod
-    async def _reload_without_deferred(session, obj_id):
-        """Drop the identity map so the deferred column comes back unloaded."""
-        session.expunge_all()
-        return await session.get(DeferredFieldModel, obj_id)
-
-    @pytest.mark.anyio
-    async def test_deferred_change_fires_update_and_omits_old(self, mixin_session):
-        """A deferred column never loaded fires UPDATE with no ``old`` key."""
-        obj = DeferredFieldModel(name="n", payload="before")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-        obj_id = obj.id
-
-        obj = await self._reload_without_deferred(mixin_session, obj_id)
-        _deferred_events.clear()
-        obj.payload = "after"  # deferred, previous value never loaded
-        await mixin_session.commit()
-
-        assert len(_deferred_events) == 1
-        change = _deferred_events[0]["changes"]["payload"]
-        assert change["new"] == "after"
-        assert "old" not in change
-
-    @pytest.mark.anyio
-    async def test_deferred_change_reports_old_when_loaded(self, mixin_session):
-        """Loading the deferred column first makes ``old`` available as usual."""
-        obj = DeferredFieldModel(name="n", payload="before")
-        mixin_session.add(obj)
-        await mixin_session.commit()
-        obj_id = obj.id
-
-        obj = await self._reload_without_deferred(mixin_session, obj_id)
-        _deferred_events.clear()
-        await mixin_session.refresh(obj, ["payload"])
-        obj.payload = "after"
-        await mixin_session.commit()
-
-        assert len(_deferred_events) == 1
-        assert _deferred_events[0]["changes"]["payload"] == {
-            "old": "before",
-            "new": "after",
-        }
-
-    @pytest.mark.anyio
-    async def test_genuine_null_old_value_keeps_the_old_key(self, mixin_session):
-        """A previous value that was really NULL still reports ``old`` as None."""
-        obj = DeferredFieldModel(name="n", payload="p", nickname=None)
-        mixin_session.add(obj)
-        await mixin_session.commit()
-        obj_id = obj.id
-
-        obj = await self._reload_without_deferred(mixin_session, obj_id)
-        _deferred_events.clear()
-        obj.nickname = "set-now"
-        await mixin_session.commit()
-
-        assert len(_deferred_events) == 1
-        change = _deferred_events[0]["changes"]["nickname"]
-        assert change == {"old": None, "new": "set-now"}
-        assert "old" in change  # distinguishable from the deferred case
+        await session.flush()
+        await session.refresh(obj)
+
+        assert not created.nullable and not updated.nullable
+        assert created.server_default is not None and updated.server_default is not None
+        assert created.onupdate is None and updated.onupdate is not None
+        assert first_created.tzinfo is not None and first_updated.tzinfo is not None
+        assert obj.created_at == first_created
+        assert obj.updated_at >= first_updated
 
 
 class _StampedCreate(BaseModel):
@@ -2581,19 +403,17 @@ class _StampedUpdate(BaseModel):
     name: str | None = None
 
 
-StampedCrud = CrudFactory(FullMixinModel)
+StampedCrud = CrudFactory(StampedModel)
 
 
 class TestCrudWritesWithMixins:
     """Server-generated mixin columns and the post-write refresh."""
 
     @pytest.mark.anyio
-    async def test_create_returns_server_values_without_a_refresh(
-        self, mixin_session_maker
-    ):
+    async def test_create_returns_server_values_without_a_refresh(self, event_maker):
         """The INSERT returns the id and the timestamp, so nothing is re-read."""
-        async with mixin_session_maker() as session:
-            with capture_sql(mixin_session_maker.kw["bind"]) as statements:
+        async with event_maker() as session:
+            with capture_sql(event_maker.kw["bind"]) as statements:
                 obj = await StampedCrud.create(session, _StampedCreate(name="a"))
 
         assert selects(statements) == []
@@ -2601,14 +421,14 @@ class TestCrudWritesWithMixins:
         assert obj.updated_at is not None
 
     @pytest.mark.anyio
-    async def test_update_re_reads_an_onupdate_column(self, mixin_session_maker):
+    async def test_update_re_reads_an_onupdate_column(self, event_maker):
         """An UPDATE expires the ``onupdate`` column, which one refresh re-reads."""
-        async with mixin_session_maker() as session:
+        async with event_maker() as session:
             obj = await StampedCrud.create(session, _StampedCreate(name="a"))
             first = obj.updated_at
-            with capture_sql(mixin_session_maker.kw["bind"]) as statements:
+            with capture_sql(event_maker.kw["bind"]) as statements:
                 obj = await StampedCrud.update(
-                    session, _StampedUpdate(name="b"), [FullMixinModel.id == obj.id]
+                    session, _StampedUpdate(name="b"), [StampedModel.id == obj.id]
                 )
 
         assert len(selects(following(statements, "UPDATE"))) == 1
@@ -2616,53 +436,789 @@ class TestCrudWritesWithMixins:
         assert obj.updated_at > first
 
 
-class TestPostCommitReloadIsSkippedWhenCurrent:
+class TestWatchedFields:
+    """``__watched_fields__`` is read from the class, inherited and validated."""
+
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            (WatchedModel, ("status",)),
+            (PlainModel, None),
+            (Dog, ("status",)),
+            (Cat, ("other",)),
+        ],
+        ids=["declared", "absent", "inherited", "overridden"],
+    )
+    def test_the_watch_list_is_read_from_the_class(self, model, expected):
+        assert _get_watched_fields(model) == expected
+
+    def test_a_watch_list_that_is_not_a_tuple_of_strings_raises(self):
+        class Bad:
+            __watched_fields__ = ["status"]
+
+        with pytest.raises(TypeError, match="Bad.__watched_fields__ must be a tuple"):
+            _get_watched_fields(Bad)
+
+
+class TestCollectAndRollback:
+    """The flush and rollback listeners' bookkeeping, driven without a database."""
+
+    def test_upsert_changes_keeps_the_earliest_old_and_the_latest_new(self):
+        pending: dict[int, Any] = {}
+        obj = object()
+
+        _upsert_changes(pending, obj, {"status": {"old": "a", "new": "b"}})
+        _upsert_changes(
+            pending,
+            obj,
+            {"status": {"old": "b", "new": "c"}, "role": {"old": "u", "new": "admin"}},
+        )
+
+        assert pending == {
+            id(obj): (
+                obj,
+                {
+                    "status": {"old": "a", "new": "c"},
+                    "role": {"old": "u", "new": "admin"},
+                },
+            )
+        }
+
+    @pytest.mark.parametrize("watched", [False, True], ids=["unwatched", "watched"])
+    def test_collect_records_new_and_deleted_objects_that_have_handlers(self, watched):
+        new, gone = object(), object()
+        session = SimpleNamespace(new=[new], deleted=[gone], dirty=[], info={})
+        handlers = [lambda *a: None] if watched else []
+
+        with (
+            patch.object(_watched_module, "_get_handlers", return_value=handlers),
+            patch.object(
+                _watched_module, "_snapshot_column_attrs", return_value={"id": 1}
+            ),
+        ):
+            _collect(session)
+
+        if watched:
+            assert session.info[_SESSION_CREATES] == [new]
+            assert session.info[_SESSION_DELETES] == [(gone, {"id": 1})]
+            assert session.info[_SESSION_PRELOADED] == {id(new): set()}
+        else:
+            assert session.info == {}
+
+    @pytest.mark.parametrize("savepoint", [False, True], ids=["outer", "savepoint"])
+    def test_after_rollback_clears_pending_state_unless_a_transaction_remains(
+        self, savepoint
+    ):
+        info = {key: {} for key in _INFO_KEYS}
+        session = SimpleNamespace(info=dict(info), in_transaction=lambda: savepoint)
+        empty = SimpleNamespace(info={}, in_transaction=lambda: savepoint)
+
+        _after_rollback(session)
+        _after_rollback(empty)
+
+        assert session.info == (info if savepoint else {})
+        assert empty.info == {}
+
+
+class TestDispatch:
+    """Which events a commit dispatches, and with which changes."""
+
+    @pytest.mark.anyio
+    async def test_each_write_fires_its_own_event_once(self, session):
+        obj = WatchedModel(status="initial", other="x")
+        session.add(obj)
+        await session.commit()
+        obj.status = "updated"
+        await session.commit()
+        obj_id = obj.id
+        await session.delete(obj)
+        await session.commit()
+
+        assert _kinds() == ["create", "update", "delete"]
+        assert isinstance(_events[0]["obj_id"], uuid.UUID)
+        assert _events[1]["changes"] == {"status": {"old": "initial", "new": "updated"}}
+        assert _events[2]["obj_id"] == obj_id
+
+    @pytest.mark.anyio
+    async def test_changes_outside_the_watch_list_fire_nothing(self, session):
+        """An unwatched field, and a model without handlers, collect nothing."""
+        watched = await _committed(session, WatchedModel(status="a", other="x"))
+        plain = NonWatchedModel(value="x")
+        session.add(plain)
+        await session.flush()
+
+        watched.other = "changed"
+        plain.value = "y"
+        await session.commit()
+        await session.delete(plain)
+        await session.commit()
+
+        assert _events == []
+        assert not any(key in session.info for key in _INFO_KEYS)
+
+    @pytest.mark.anyio
+    async def test_a_model_without_a_watch_list_reports_every_changed_field(
+        self, session
+    ):
+        obj = await _committed(session, PlainModel(name="n", nickname="a"))
+
+        obj.name = "m"
+        obj.nickname = "b"
+        await session.commit()
+
+        assert _kinds() == ["update"]
+        assert _events[0]["changes"] == {
+            "name": {"old": "n", "new": "m"},
+            "nickname": {"old": "a", "new": "b"},
+        }
+
+    @pytest.mark.anyio
+    async def test_flushes_within_one_transaction_merge_into_one_update(self, session):
+        obj = await _committed(session, WatchedModel(status="initial", other="x"))
+
+        obj.status = "intermediate"
+        await session.flush()
+        obj.status = "final"
+        await session.commit()
+
+        assert _kinds() == ["update"]
+        assert _events[0]["changes"]["status"] == {"old": "initial", "new": "final"}
+
+    @pytest.mark.anyio
+    async def test_an_update_before_the_first_commit_is_part_of_the_create(
+        self, session
+    ):
+        obj = WatchedModel(status="initial", other="x")
+        session.add(obj)
+        await session.flush()
+        obj.status = "updated-before-commit"
+        await session.commit()
+
+        assert _kinds() == ["create"]
+
+    @pytest.mark.anyio
+    async def test_a_rollback_discards_the_pending_events(self, session):
+        obj = await _committed(session, WatchedModel(status="a", other="x"))
+
+        obj.status = "changed"
+        await session.flush()
+        await session.rollback()
+        await session.commit()
+
+        assert _events == []
+
+    @pytest.mark.anyio
+    async def test_an_object_created_and_deleted_in_one_transaction_fires_nothing(
+        self, session
+    ):
+        """CREATE still fires for the object that survives the transaction."""
+        survivor = WatchedModel(status="kept", other="x")
+        transient = WatchedModel(status="gone", other="y")
+        session.add_all([survivor, transient])
+        await session.flush()
+        await session.delete(transient)
+        await session.commit()
+
+        assert [(e["event"], e["obj_id"]) for e in _events] == [("create", survivor.id)]
+
+    @pytest.mark.anyio
+    async def test_an_object_updated_then_deleted_fires_only_delete(self, session):
+        """A new object committed alongside still fires CREATE."""
+        existing = await _committed(session, WatchedModel(status="old", other="x"))
+
+        existing.status = "changed"
+        await session.flush()
+        await session.delete(existing)
+        session.add(WatchedModel(status="new", other="y"))
+        await session.commit()
+
+        assert _kinds() == ["create", "delete"]
+
+
+class TestHandlerFailures:
+    """A failure in one handler, in the reload or in a snapshot is logged and isolated."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("event", ["create", "update", "delete"])
+    async def test_a_raising_handler_is_logged_and_the_others_still_run(
+        self, session, event
+    ):
+        obj = FlakyModel(name="x")
+        session.add(obj)
+        with patch.object(_watched_module._logger, "error") as mock_error:
+            if event != "create":
+                await session.commit()
+                mock_error.reset_mock()
+                _calls.clear()
+            if event == "update":
+                obj.name = "changed"
+            elif event == "delete":
+                await session.delete(obj)
+            await session.commit()
+
+        assert _calls == [f"first:{event}", f"raises:{event}", f"last:{event}"]
+        mock_error.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_a_failed_snapshot_restore_skips_only_that_object(self, session):
+        doomed = WatchedModel(status="a", other="x")
+        healthy = WatchedModel(status="b", other="y")
+        session.add_all([doomed, healthy])
+        await session.commit()
+        _events.clear()
+        await session.delete(doomed)
+        await session.delete(healthy)
+        real_set = _watched_module._sa_set_committed_value
+
+        def fail_for_doomed(obj: Any, key: str, value: Any) -> None:
+            if obj is doomed:
+                raise RuntimeError("snapshot restore intentionally failed")
+            real_set(obj, key, value)
+
+        with (
+            patch.object(_watched_module, "_sa_set_committed_value", fail_for_doomed),
+            patch.object(_watched_module._logger, "error") as mock_error,
+        ):
+            await session.commit()
+
+        assert [(e["event"], e["obj_id"]) for e in _events] == [("delete", healthy.id)]
+        mock_error.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_a_failed_reload_is_logged_and_create_still_fires(self, session):
+        obj = WatchedModel(status="active", other="x")
+        session.add(obj)
+        await session.flush()
+        session.sync_session.expire(obj, ["other"])  # leave something to re-read
+
+        async def failing_batch_reload(*args: Any) -> None:
+            raise RuntimeError("reload failed")
+
+        with (
+            patch.object(_watched_module, "_batch_reload", failing_batch_reload),
+            patch.object(_watched_module._logger, "error") as mock_error,
+        ):
+            await session.commit()
+
+        mock_error.assert_called_once()
+        assert _kinds() == ["create"]
+
+    @pytest.mark.anyio
+    async def test_a_row_deleted_before_the_reload_still_fires_create(self, session):
+        """Another transaction removes the row right after the commit (#341)."""
+        keep = WatchedModel(status="a", other="x")
+        doomed = WatchedModel(status="b", other="y")
+        session.add_all([keep, doomed])
+        await session.flush()
+        doomed_id = doomed.id
+        session.sync_session.expire(doomed, ["other"])  # leave something to re-read
+        real_batch_reload = _watched_module._batch_reload
+
+        async def racing_batch_reload(*args: Any) -> None:
+            async with async_sessionmaker(session.bind)() as other:
+                await other.delete(await other.get_one(WatchedModel, doomed_id))
+                await other.commit()
+            await real_batch_reload(*args)
+
+        with (
+            patch.object(_watched_module, "_batch_reload", racing_batch_reload),
+            patch.object(_watched_module._logger, "error") as mock_error,
+        ):
+            await session.commit()
+
+        mock_error.assert_not_called()
+        assert {e["obj_id"] for e in _of("create")} == {keep.id, doomed_id}
+
+
+class TestInheritance:
+    """Handlers and ``__watched_fields__`` of an STI root apply to its subclasses."""
+
+    @pytest.mark.anyio
+    async def test_a_subclass_dispatches_the_parent_handlers_once(self, session):
+        dog = Dog(status="s", other="o")
+        session.add(dog)
+        await session.commit()
+        await session.delete(dog)
+        await session.commit()
+        transient = Dog(status="s", other="o")
+        session.add(transient)
+        await session.flush()
+        await session.delete(transient)
+        await session.commit()
+
+        assert [(e["event"], type(e["obj"]).__name__) for e in _events] == [
+            ("create", "Dog"),
+            ("delete", "Dog"),
+        ]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("model", "field", "fires"),
+        [
+            (Dog, "status", True),
+            (Dog, "other", False),
+            (Cat, "other", True),
+            (Cat, "status", False),
+        ],
+        ids=[
+            "inherited-watched",
+            "inherited-ignored",
+            "overridden-watched",
+            "overridden-ignored",
+        ],
+    )
+    async def test_the_watch_list_is_inherited_unless_overridden(
+        self, session, model, field, fires
+    ):
+        obj = await _committed(session, model(status="s", other="o"))
+
+        setattr(obj, field, "changed")
+        await session.commit()
+
+        assert [list(e["changes"]) for e in _events] == ([[field]] if fires else [])
+
+
+class TestAttributeAccess:
+    """Columns are readable inside every callback, even when the commit expired them."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("nickname", [None, "nick"], ids=["null", "set"])
+    async def test_fields_are_readable_in_every_callback(self, session_any, nickname):
+        flipped = "nick" if nickname is None else None
+        obj = PlainModel(name="hello", nickname=nickname)
+        session_any.add(obj)
+        await session_any.commit()
+        obj.nickname = flipped
+        await session_any.commit()
+        await session_any.delete(obj)
+        await session_any.commit()
+
+        assert [(e["event"], e["fields"]) for e in _events] == [
+            ("create", {"name": "hello", "nickname": nickname}),
+            ("update", {"name": "hello", "nickname": flipped}),
+            ("delete", {"name": "hello", "nickname": flipped}),
+        ]
+        assert all(isinstance(e["obj_id"], uuid.UUID) for e in _events)
+
+    @pytest.mark.anyio
+    async def test_fields_are_readable_after_a_commit_inside_a_begin_block(
+        self, session_any
+    ):
+        async with session_any.begin():
+            session_any.add(PlainModel(name="test", nickname=None))
+            await session_any.commit()
+
+        assert [(e["event"], e["fields"]) for e in _events] == [
+            ("create", {"name": "test", "nickname": None})
+        ]
+
+
+@pytest.mark.usefixtures("listener_cleanup")
+class TestListensFor:
+    """Registration through the decorator: event lists, defaults, handler results."""
+
+    @pytest.mark.anyio
+    async def test_handlers_run_for_the_listed_events_or_all_by_default(self, session):
+        seen: list[str] = []
+
+        @listens_for(ListenerModel)
+        async def _on_any(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+            seen.append(f"any:{event_type.value}")
+
+        @listens_for(ListenerModel, [ModelEvent.CREATE, ModelEvent.UPDATE])
+        async def _on_write(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+            seen.append(f"write:{event_type.value}")
+
+        @listens_for(ListenerModel, [ModelEvent.UPDATE])
+        async def _on_update(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+            seen.append(f"update:{changes['status']['new']}")
+
+        obj = ListenerModel(status="initial", other="x")
+        session.add(obj)
+        await session.commit()
+        obj.status = "updated"
+        await session.commit()
+        await session.delete(obj)
+        await session.commit()
+
+        assert seen == [
+            "any:create",
+            "write:create",
+            "any:update",
+            "write:update",
+            "update:updated",
+            "any:delete",
+        ]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("kind", ["sync", "coroutine", "task"])
+    async def test_a_handler_may_return_nothing_or_any_awaitable(self, session, kind):
+        seen: list[str] = []
+
+        def _handler(obj: Any, event_type: ModelEvent, changes: Any) -> Any:
+            async def _work() -> None:
+                seen.append(event_type.value)
+
+            if kind == "sync":
+                seen.append(event_type.value)
+                return None
+            return _work() if kind == "coroutine" else asyncio.ensure_future(_work())
+
+        listens_for(ListenerModel, [ModelEvent.CREATE])(_handler)
+        session.add(ListenerModel(status="a", other="x"))
+        await session.commit()
+
+        assert seen == ["create"]
+
+    @pytest.mark.anyio
+    async def test_a_callback_write_is_left_for_the_caller_to_commit(self, session):
+        """A callback's ``session.add`` stays pending until the caller commits."""
+
+        @listens_for(ListenerModel, [ModelEvent.CREATE])
+        async def _on_create(obj: Any, event_type: ModelEvent, changes: Any) -> None:
+            if obj.status == "seed":
+                owner = object_session(obj)
+                assert owner is not None
+                owner.add(ListenerModel(status="from-callback", other="y"))
+
+        session.add(ListenerModel(status="seed", other="x"))
+        await session.commit()
+        pending = len(session.new)
+        await session.commit()
+
+        query = select(ListenerModel).where(ListenerModel.status == "from-callback")
+        assert pending == 1
+        assert len((await session.execute(query)).scalars().all()) == 1
+
+
+class TestTransactions:
+    """Savepoints, ``begin()`` blocks, ``lock_tables`` and the ``Database`` dependency."""
+
+    @pytest.mark.anyio
+    async def test_savepoints_dispatch_only_on_the_outer_commit(self, session):
+        """Released savepoints wait for the commit; a rolled-back one is dropped."""
+        existing = await _committed(session, WatchedModel(status="initial", other="x"))
+        await session.connection()  # autobegin, so the blocks nest savepoints
+
+        async with transaction(session):
+            session.add(WatchedModel(status="first", other="x"))
+        async with session.begin_nested():
+            existing.status = "updated"
+        with pytest.raises(ValueError, match="rollback"):
+            async with transaction(session):
+                session.add(WatchedModel(status="doomed", other="y"))
+                await session.flush()
+                raise ValueError("rollback this savepoint")
+        assert _events == []
+
+        await session.commit()
+
+        assert _kinds() == ["create", "update"]
+        assert _events[1]["changes"]["status"] == {"old": "initial", "new": "updated"}
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "enter", ["session.begin", "sessionmaker.begin", "transaction"]
+    )
+    async def test_a_top_level_block_dispatches_on_exit(self, event_maker, enter):
+        async with _block(event_maker, enter) as session:
+            session.add(WatchedModel(status="active", other="x"))
+
+        assert _kinds() == ["create"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "explicit_commit", [False, True], ids=["on-exit", "explicit-commit"]
+    )
+    @pytest.mark.parametrize("event", ["create", "update", "delete"])
+    async def test_a_begin_block_dispatches_each_write_once(
+        self, event_maker, caplog, event, explicit_commit
+    ):
+        """An explicit commit inside the block neither raises nor dispatches twice."""
+        obj_id = None if event == "create" else await _seed(event_maker)
+
+        async with event_maker() as session:
+            with caplog.at_level(logging.ERROR):
+                async with session.begin():
+                    if event == "create":
+                        session.add(WatchedModel(status="active", other="x"))
+                    elif event == "update":
+                        obj = await session.get_one(WatchedModel, obj_id)
+                        obj.status = "updated"
+                    else:
+                        await session.delete(
+                            await session.get_one(WatchedModel, obj_id)
+                        )
+                    if explicit_commit:
+                        await session.commit()
+            # The session is still usable once the block exits.
+            rows = (await session.execute(select(WatchedModel))).scalars().all()
+
+        assert _CLOSED_TRANSACTION not in caplog.text
+        assert len(rows) == (0 if event == "delete" else 1)
+        assert _kinds() == [event]
+        if event == "update":
+            assert _events[0]["changes"] == {
+                "status": {"old": "initial", "new": "updated"}
+            }
+
+    @pytest.mark.anyio
+    async def test_a_commit_inside_a_savepoint_block(self, event_maker, caplog):
+        async with event_maker() as session:
+            await session.connection()  # autobegin, as Database._open() does
+            with caplog.at_level(logging.ERROR):
+                async with transaction(session):  # nested -> savepoint
+                    session.add(WatchedModel(status="savepoint", other="x"))
+                    await session.commit()
+
+        assert _CLOSED_TRANSACTION not in caplog.text
+        assert _kinds() == ["create"]
+
+    @pytest.mark.anyio
+    async def test_a_block_that_raises_dispatches_nothing(self, event_maker):
+        async with event_maker() as session:
+            with pytest.raises(RuntimeError, match="boom"):
+                async with session.begin():
+                    session.add(WatchedModel(status="active", other="x"))
+                    raise RuntimeError("boom")
+
+        assert _events == []
+
+    @pytest.mark.anyio
+    async def test_lock_tables_dispatches_on_exit(self, event_maker):
+        async with lock_tables(event_maker, [WatchedModel]) as session:
+            session.add(WatchedModel(status="locked", other="x"))
+
+        assert _kinds() == ["create"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("event", ["create", "update"])
+    async def test_the_database_dependency_dispatches_after_the_request(
+        self, event_maker, event
+    ):
+        db = Database(engine=event_maker.kw["bind"], session_class=EventSession)
+        app = FastAPI()
+
+        @app.post("/watched")
+        async def create_watched(session: AsyncSession = Depends(db)) -> None:
+            session.add(WatchedModel(status="from-api", other="x"))
+
+        @app.put("/watched/{item_id}")
+        async def update_watched(
+            item_id: uuid.UUID, session: AsyncSession = Depends(db)
+        ) -> None:
+            obj = await session.get_one(WatchedModel, item_id)
+            obj.status = "updated-via-api"
+
+        async with db.session() as seed:  # commits the open transaction on exit
+            obj = WatchedModel(status="initial", other="x")
+            seed.add(obj)
+            await seed.flush()
+            obj_id = obj.id
+        _events.clear()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            if event == "create":
+                response = await client.post("/watched")
+            else:
+                response = await client.put(f"/watched/{obj_id}")
+
+        assert response.status_code == 200
+        assert _kinds() == [event]
+
+
+class TestEagerLoads:
+    """The post-commit reload keeps what was loaded and leaves the session clean."""
+
+    @pytest.mark.anyio
+    async def test_a_relation_loaded_before_the_commit_survives_it(self, session_any):
+        target = RelTarget(name="t")
+        session_any.add(target)
+        await session_any.flush()
+        owner = RelOwner(title="o", target_id=target.id)
+        session_any.add(owner)
+        await session_any.flush()
+        owner = await _load_with_target(session_any, owner.id)
+
+        await session_any.commit()
+
+        assert "target" not in sa_inspect(owner).unloaded
+        assert owner.target.name == "t"
+        assert _kinds() == ["create"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("via", ["commit", "begin"])
+    async def test_a_relation_survives_when_the_commit_itself_flushes(
+        self, session, via
+    ):
+        """The dirty object is only collected by the commit's own flush."""
+        owner_id = await _committed_owner(session)
+
+        if via == "commit":
+            owner = await _load_with_target(session, owner_id)
+            owner.title = "changed"
+            await session.commit()
+        else:
+            async with session.begin():
+                owner = await _load_with_target(session, owner_id)
+                owner.title = "changed"
+
+        assert "target" not in sa_inspect(owner).unloaded
+        assert _kinds() == ["update"]
+
+    @pytest.mark.anyio
+    async def test_only_what_was_loaded_is_restored(self, session_any):
+        """A relation assigned on create stays loaded; one never loaded stays unloaded."""
+        target = RelTarget(name="t")
+        session_any.add(target)
+        await session_any.flush()
+        assigned = RelOwner(title="a", target=target)
+        session_any.add(assigned)
+        await session_any.commit()
+        assigned_loaded = "target" not in sa_inspect(assigned).unloaded
+        by_id = RelOwner(title="b", target_id=target.id)
+        session_any.add(by_id)
+        await session_any.commit()
+
+        assert assigned_loaded
+        assert "target" in sa_inspect(by_id).unloaded
+        assert _kinds() == ["create", "create"]
+
+    @pytest.mark.anyio
+    async def test_the_commit_leaves_no_transaction_open(self, session_any):
+        """The reload's transaction is closed without expiring what it loaded."""
+        expire = session_any.sync_session.expire_on_commit
+        owner = RelOwner(title="o", target=RelTarget(name="t"))
+        session_any.add(owner)
+
+        await session_any.commit()
+
+        assert session_any.in_transaction() is False
+        assert "target" not in sa_inspect(owner).unloaded
+        assert session_any.sync_session.expire_on_commit is expire
+        async with session_any.begin():  # right after a commit, must not raise
+            owner.title = "changed"
+        assert _kinds() == ["create", "update"]
+
+
+class TestPostCommitReload:
     """The reload before dispatch only runs for objects the commit left stale."""
 
-    @pytest.fixture(autouse=True)
-    def clear_events(self):
-        _test_events.clear()
-        yield
-        _test_events.clear()
-
     @pytest.mark.anyio
-    async def test_no_reload_when_nothing_is_expired(self, mixin_session):
-        """expire_on_commit=False and RETURNING: the handler gets the object as is."""
+    async def test_reload_only_when_the_commit_expired_the_object(self, session_any):
+        """RETURNING keeps the object current; expiring it costs one SELECT."""
+        expire = session_any.sync_session.expire_on_commit
         obj = WatchedModel(status="active", other="x")
-        mixin_session.add(obj)
+        session_any.add(obj)
 
-        with capture_sql(mixin_session.bind) as statements:
-            await mixin_session.commit()
+        with capture_sql(session_any.bind) as statements:
+            await session_any.commit()
 
-        assert selects(statements) == []
-        assert mixin_session.in_transaction() is False
-        assert [e["obj_id"] for e in _test_events if e["event"] == "create"] == [obj.id]
-
-    @pytest.mark.anyio
-    async def test_reload_when_the_commit_expired_the_object(
-        self, mixin_session_expire
-    ):
-        """expire_on_commit=True: one SELECT re-populates the object first."""
-        obj = WatchedModel(status="active", other="x")
-        mixin_session_expire.add(obj)
-
-        with capture_sql(mixin_session_expire.bind) as statements:
-            await mixin_session_expire.commit()
-
-        assert len(selects(statements)) == 1
-        assert [e["obj_id"] for e in _test_events if e["event"] == "create"] == [obj.id]
+        assert len(selects(statements)) == (1 if expire else 0)
+        assert session_any.in_transaction() is False
+        assert [e["obj_id"] for e in _of("create")] == [obj.id]
 
     @pytest.mark.anyio
-    async def test_reload_when_an_onupdate_column_is_expired(self, mixin_session):
+    async def test_reload_when_an_onupdate_column_is_expired(self, session):
         """An UPDATE leaves the onupdate column expired, so it is re-read."""
         obj = WatchedStampedModel(status="new")
-        mixin_session.add(obj)
-        await mixin_session.commit()
+        session.add(obj)
+        await session.commit()
         obj.status = "done"
 
-        with capture_sql(mixin_session.bind) as statements:
-            await mixin_session.commit()
+        with capture_sql(session.bind) as statements:
+            await session.commit()
 
         assert len(selects(statements)) == 1
         assert obj.updated_at is not None
-        assert [e["event"] for e in _test_events] == ["create", "update"]
+        assert _kinds() == ["create", "update"]
+
+    @pytest.mark.anyio
+    async def test_a_failure_closing_the_reload_transaction_is_logged(self, session):
+        """The error is logged, ``expire_on_commit`` restored, and dispatch goes on."""
+        session.sync_session.expire_on_commit = True
+        real_commit = AsyncSession.commit
+        commits: list[int] = []
+
+        async def flaky_commit(self: Any) -> None:
+            commits.append(1)
+            if len(commits) == 2:  # the reload's own commit
+                raise RuntimeError("close failed")
+            await real_commit(self)
+
+        session.add(WatchedModel(status="active", other="x"))
+        with (
+            patch.object(AsyncSession, "commit", flaky_commit),
+            patch.object(_watched_module._logger, "error") as mock_error,
+        ):
+            await session.commit()
+
+        mock_error.assert_called_once_with(_RELOAD_TRANSACTION_ERROR_MSG, exc_info=ANY)
+        assert session.sync_session.expire_on_commit is True
+        assert _kinds() == ["create"]
+
+
+class TestNonDispatchingSessions:
+    """The flush listener collects for an ``EventSession`` only."""
+
+    @pytest.mark.anyio
+    async def test_a_plain_session_collects_nothing(self, event_maker):
+        maker = async_sessionmaker(event_maker.kw["bind"], class_=AsyncSession)
+        async with maker() as session:
+            obj = WatchedModel(status="initial", other="x")
+            session.add(obj)
+            await session.commit()
+            obj.status = "updated"
+            await session.commit()
+            await session.delete(obj)
+            await session.commit()
+
+            assert not any(key in session.info for key in _INFO_KEYS)
+
+        assert _events == []
+
+    @pytest.mark.anyio
+    async def test_an_event_session_collects_on_flush_and_drains_on_commit(
+        self, session
+    ):
+        session.add(WatchedModel(status="active", other="x"))
+        await session.flush()
+        collected = len(session.info[_SESSION_CREATES])
+        before_commit = list(_events)
+
+        await session.commit()
+
+        assert collected == 1 and before_commit == []
+        assert _SESSION_CREATES not in session.info
+        assert _kinds() == ["create"]
+
+
+class TestDeferredFields:
+    """A change whose previous value was never loaded still fires UPDATE."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("field", "load_first", "expected"),
+        [
+            ("payload", False, {"new": "after"}),
+            ("payload", True, {"old": "before", "new": "after"}),
+            ("nickname", False, {"old": None, "new": "after"}),
+        ],
+        ids=["deferred-unloaded", "deferred-loaded", "null-loaded"],
+    )
+    async def test_old_is_reported_only_when_it_was_loaded(
+        self, session, field, load_first, expected
+    ):
+        obj = await _committed(
+            session, DeferredFieldModel(name="n", payload="before", nickname=None)
+        )
+        session.expunge_all()  # the deferred column comes back unloaded
+        obj = await session.get_one(DeferredFieldModel, obj.id)
+        if load_first:
+            await session.refresh(obj, [field])
+
+        setattr(obj, field, "after")
+        await session.commit()
+
+        assert [e["changes"] for e in _events] == [{field: expected}]

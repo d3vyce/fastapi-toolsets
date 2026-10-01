@@ -294,14 +294,6 @@ class PostCreate(BaseModel):
     author_id: uuid.UUID
 
 
-class PostUpdate(BaseModel):
-    """Schema for updating a post."""
-
-    title: str | None = None
-    content: str | None = None
-    is_published: bool | None = None
-
-
 class PostM2MCreate(BaseModel):
     """Schema for creating a post with M2M tag IDs."""
 
@@ -409,13 +401,6 @@ class TransferCreate(BaseModel):
     receiver_id: uuid.UUID
 
 
-class TransferRead(PydanticBase):
-    """Schema for reading a transfer."""
-
-    id: uuid.UUID
-    amount: str
-
-
 OrderCrud = CrudFactory(Order)
 TransferCrud = CrudFactory(Transfer)
 ArticleCrud = CrudFactory(Article)
@@ -492,17 +477,6 @@ async def _session_with_tables(engine, *, expire_on_commit: bool):
 async def db_session(engine):
     """A session with ``expire_on_commit=False``, as the ``Database`` facade builds."""
     async with _session_with_tables(engine, expire_on_commit=False) as session:
-        yield session
-
-
-@pytest.fixture(scope="function")
-async def db_session_expire_on_commit(engine):
-    """A session with ``expire_on_commit=True``, the SQLAlchemy default.
-
-    Attributes read after commit are then expired and trigger an implicit
-    (sync) refresh, which fails under asyncio with MissingGreenlet.
-    """
-    async with _session_with_tables(engine, expire_on_commit=True) as session:
         yield session
 
 

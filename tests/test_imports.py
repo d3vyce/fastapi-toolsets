@@ -1,7 +1,11 @@
-"""Tests for optional dependency import guards."""
+"""Tests for the optional-dependency import guards."""
 
+import builtins
+import contextlib
 import importlib
 import sys
+from collections.abc import Iterator
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -9,202 +13,82 @@ import pytest
 from fastapi_toolsets._imports import require_extra
 
 
-class TestRequireExtra:
-    """Tests for the require_extra helper."""
+def _under(key: str, module_path: str) -> bool:
+    return key == module_path or key.startswith(module_path + ".")
 
-    def test_raises_import_error(self):
-        """require_extra raises ImportError."""
-        with pytest.raises(ImportError):
-            require_extra(package="some_pkg", extra="some_extra")
 
-    def test_error_message_contains_package_name(self):
-        """Error message mentions the missing package."""
-        with pytest.raises(ImportError, match="'prometheus_client'"):
-            require_extra(package="prometheus_client", extra="metrics")
+@contextlib.contextmanager
+def _without_package(module_path: str, blocked: str) -> Iterator[None]:
+    """Re-import *module_path* from scratch while imports of *blocked* fail.
 
-    def test_error_message_contains_install_instruction(self):
-        """Error message contains the pip install command."""
+    The evicted modules are put back in ``sys.modules`` on exit, so the rest
+    of the suite keeps the real objects.
+    """
+    saved = {k: sys.modules.pop(k) for k in list(sys.modules) if _under(k, module_path)}
+    original_import = builtins.__import__
+
+    def blocking_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if _under(name, blocked):
+            raise ImportError(f"Mocked: No module named '{name}'")
+        return original_import(name, *args, **kwargs)
+
+    try:
+        with patch("builtins.__import__", side_effect=blocking_import):
+            yield
+    finally:
+        for key in [k for k in sys.modules if _under(k, module_path)]:
+            del sys.modules[key]
+        sys.modules.update(saved)
+        parent, _, child = module_path.rpartition(".")
+        if module_path in saved:
+            setattr(sys.modules[parent], child, saved[module_path])
+
+
+class TestImportGuards:
+    """Missing extras fail with an install hint; present ones export everything."""
+
+    def test_require_extra_names_the_package_and_the_extra(self):
         with pytest.raises(
-            ImportError, match=r"pip install fastapi-toolsets\[metrics\]"
+            ImportError,
+            match=r"'prometheus_client' is required.*pip install fastapi-toolsets\[metrics\]",
         ):
             require_extra(package="prometheus_client", extra="metrics")
 
-
-def _reload_without_package(module_path: str, blocked_packages: list[str]):
-    """Reload a module while blocking specific package imports.
-
-    Removes the target module and its parents from sys.modules so they
-    get re-imported, and patches builtins.__import__ to raise ImportError
-    for *blocked_packages*.
-    """
-    # Remove cached modules so they get re-imported
-    to_remove = [
-        key
-        for key in sys.modules
-        if key == module_path or key.startswith(module_path + ".")
-    ]
-    saved = {}
-    for key in to_remove:
-        saved[key] = sys.modules.pop(key)
-
-    # Also remove parent package to force re-execution of __init__.py
-    parts = module_path.rsplit(".", 1)
-    if len(parts) == 2:
-        parent = parts[0]
-        parent_keys = [
-            key for key in sys.modules if key == parent or key.startswith(parent + ".")
-        ]
-        for key in parent_keys:
-            if key not in saved:
-                saved[key] = sys.modules.pop(key)
-
-    original_import = (
-        __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+    @pytest.mark.parametrize(
+        ("module", "blocked", "match"),
+        [
+            ("fastapi_toolsets.pytest", "pytest", r"'pytest' is required.*\[pytest\]"),
+            ("fastapi_toolsets.pytest", "httpx", r"'httpx' is required.*\[pytest\]"),
+            ("fastapi_toolsets.cli.app", "typer", r"'typer' is required.*\[cli\]"),
+        ],
+        ids=["pytest-without-pytest", "pytest-without-httpx", "cli-without-typer"],
     )
+    def test_importing_a_guarded_module_names_the_missing_extra(
+        self, module, blocked, match
+    ):
+        with _without_package(module, blocked):
+            with pytest.raises(ImportError, match=match):
+                importlib.import_module(module)
 
-    def blocking_import(name, *args, **kwargs):
-        for blocked in blocked_packages:
-            if name == blocked or name.startswith(blocked + "."):
-                raise ImportError(f"Mocked: No module named '{name}'")
-        return original_import(name, *args, **kwargs)
+    def test_metrics_registry_survives_a_missing_prometheus_client(self):
+        """Only ``init_metrics`` becomes a stub; the registry stays importable."""
+        with _without_package("fastapi_toolsets.metrics", "prometheus_client"):
+            mod = importlib.import_module("fastapi_toolsets.metrics")
 
-    return saved, blocking_import
+            assert callable(mod.Metric) and callable(mod.MetricsRegistry)
+            with pytest.raises(ImportError, match=r"prometheus_client.*\[metrics\]"):
+                mod.init_metrics(None, None)  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
 
-
-class TestMetricsImportGuard:
-    """Tests for metrics module import guard when prometheus_client is missing."""
-
-    def test_registry_imports_without_prometheus(self):
-        """Metric and MetricsRegistry are importable without prometheus_client."""
-        saved, blocking_import = _reload_without_package(
-            "fastapi_toolsets.metrics", ["prometheus_client"]
-        )
-        try:
-            with patch("builtins.__import__", side_effect=blocking_import):
-                mod = importlib.import_module("fastapi_toolsets.metrics")
-                # Registry types should be available (they're stdlib-only)
-                assert hasattr(mod, "Metric")
-                assert hasattr(mod, "MetricsRegistry")
-        finally:
-            # Restore original modules
-            for key in list(sys.modules):
-                if key.startswith("fastapi_toolsets.metrics"):
-                    sys.modules.pop(key, None)
-            sys.modules.update(saved)
-
-    def test_init_metrics_stub_raises_without_prometheus(self):
-        """init_metrics raises ImportError when prometheus_client is missing."""
-        saved, blocking_import = _reload_without_package(
-            "fastapi_toolsets.metrics", ["prometheus_client"]
-        )
-        try:
-            with patch("builtins.__import__", side_effect=blocking_import):
-                mod = importlib.import_module("fastapi_toolsets.metrics")
-                with pytest.raises(ImportError, match="prometheus_client"):
-                    mod.init_metrics(None, None)  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
-        finally:
-            for key in list(sys.modules):
-                if key.startswith("fastapi_toolsets.metrics"):
-                    sys.modules.pop(key, None)
-            sys.modules.update(saved)
-
-    def test_init_metrics_works_with_prometheus(self):
-        """init_metrics is the real function when prometheus_client is available."""
-        from fastapi_toolsets.metrics import init_metrics
-
-        # Should be the real function, not a stub
-        assert init_metrics.__module__ == "fastapi_toolsets.metrics.handler"
-
-
-class TestPytestImportGuard:
-    """Tests for pytest module import guard when dependencies are missing."""
-
-    def test_import_raises_without_pytest_package(self):
-        """Importing fastapi_toolsets.pytest raises when pytest is missing."""
-        saved, blocking_import = _reload_without_package(
-            "fastapi_toolsets.pytest", ["pytest"]
-        )
-        try:
-            with patch("builtins.__import__", side_effect=blocking_import):
-                with pytest.raises(ImportError, match="pytest"):
-                    importlib.import_module("fastapi_toolsets.pytest")
-        finally:
-            for key in list(sys.modules):
-                if key.startswith("fastapi_toolsets.pytest"):
-                    sys.modules.pop(key, None)
-            sys.modules.update(saved)
-
-    def test_import_raises_without_httpx(self):
-        """Importing fastapi_toolsets.pytest raises when httpx is missing."""
-        saved, blocking_import = _reload_without_package(
-            "fastapi_toolsets.pytest", ["httpx"]
-        )
-        try:
-            with patch("builtins.__import__", side_effect=blocking_import):
-                with pytest.raises(ImportError, match="httpx"):
-                    importlib.import_module("fastapi_toolsets.pytest")
-        finally:
-            for key in list(sys.modules):
-                if key.startswith("fastapi_toolsets.pytest"):
-                    sys.modules.pop(key, None)
-            sys.modules.update(saved)
-
-    def test_all_exports_available_with_deps(self):
-        """All expected exports are available when deps are installed."""
-        from fastapi_toolsets.pytest import (
-            cleanup_tables,
-            create_async_client,
-            create_db_session,
-            create_worker_database,
-            register_fixtures,
-            worker_database_url,
-        )
-
-        assert callable(register_fixtures)
-        assert callable(create_async_client)
-        assert callable(create_db_session)
-        assert callable(create_worker_database)
-        assert callable(worker_database_url)
-        assert callable(cleanup_tables)
-
-
-class TestCliImportGuard:
-    """Tests for CLI module import guard when typer is missing."""
+        restored = importlib.import_module("fastapi_toolsets.metrics")
+        assert restored.init_metrics.__module__ == "fastapi_toolsets.metrics.handler"
 
     @pytest.mark.parametrize(
-        "expected_match",
-        [
-            "typer",
-            r"pip install fastapi-toolsets\[cli\]",
-        ],
+        "module",
+        ["fastapi_toolsets.pytest", "fastapi_toolsets.cli", "fastapi_toolsets.metrics"],
+        ids=["pytest", "cli", "metrics"],
     )
-    def test_import_raises_without_typer(self, expected_match):
-        """Importing cli.app raises when typer is missing, with an informative error message."""
-        saved, blocking_import = _reload_without_package(
-            "fastapi_toolsets.cli.app", ["typer"]
-        )
-        # Also remove cli.config since it imports typer too
-        config_keys = [
-            k for k in sys.modules if k.startswith("fastapi_toolsets.cli.config")
-        ]
-        for key in config_keys:
-            if key not in saved:
-                saved[key] = sys.modules.pop(key)
+    def test_exports_resolve_when_the_extra_is_installed(self, module):
+        mod = importlib.import_module(module)
 
-        try:
-            with patch("builtins.__import__", side_effect=blocking_import):
-                with pytest.raises(ImportError, match=expected_match):
-                    importlib.import_module("fastapi_toolsets.cli.app")
-        finally:
-            for key in list(sys.modules):
-                if key.startswith(
-                    ("fastapi_toolsets.cli.app", "fastapi_toolsets.cli.config")
-                ):
-                    sys.modules.pop(key, None)
-            sys.modules.update(saved)
-
-    def test_async_command_imports_without_typer(self):
-        """async_command is importable without typer (stdlib only)."""
-        from fastapi_toolsets.cli import async_command
-
-        assert callable(async_command)
+        assert mod.__all__
+        assert all(callable(getattr(mod, name)) for name in mod.__all__)
