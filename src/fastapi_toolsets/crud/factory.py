@@ -282,9 +282,15 @@ class AsyncCrud(Generic[ModelType]):
         *,
         loaded: Collection[str],
     ) -> ModelType:
-        """Reload *instance* after a write, keeping the *loaded* relationships."""
+        """Reload *instance* after a write, keeping the *loaded* relationships.
+
+        Without options, the row is only re-read when the commit expired the
+        instance or a server-generated column was not returned by the write.
+        """
         if not cls.default_load_options:
-            await session.refresh(instance)
+            state = instance_state(instance)
+            if state.expired or state.expired_attributes:
+                await session.refresh(instance)
             return cast(ModelType, instance)
         session.expire(instance)
         identity = instance_state(instance).identity
