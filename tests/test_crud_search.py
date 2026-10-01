@@ -613,6 +613,13 @@ PostCursorFacetCrud = CrudFactory(
 PostTagSiblingFacetCrud = CrudFactory(
     Post, facet_fields=[(Post.tags, Tag.name), (Post.tags, Tag.id)]
 )
+PostSharedFacetCrud = CrudFactory(
+    Post,
+    searchable_fields=[Post.title],
+    facet_fields=[Post.is_published, (Post.tags, Tag.name), (Post.tags, Tag.id)],
+    cursor_column=Post.id,
+)
+PermissionFacetCrud = CrudFactory(Permission, facet_fields=[Permission.action])
 
 
 _POST_COUNT = 10
@@ -3339,3 +3346,120 @@ class TestPaginateParamsSchema:
         )
         result = await RoleCursorCrud.paginate(db_session, **params, schema=RoleRead)
         assert isinstance(result.pagination, CursorPagination)
+
+
+class TestSharedAggregates:
+    """The total and the facets of a filtered page come from one statement."""
+
+    @pytest.mark.anyio
+    async def test_total_and_facets_share_one_filtered_scan(
+        self, engine, db_session: AsyncSession
+    ):
+        """With a search, one CTE of matching keys feeds the total and every facet."""
+        await _seed_posts_with_tags(db_session)
+
+        with capture_sql(engine) as statements:
+            result = await PostSharedFacetCrud.offset_paginate(
+                db_session,
+                search="post0",
+                filter_by={"is_published": "false"},
+                schema=_PostTitle,
+            )
+
+        aggregates = [sql for sql in statements if "array_agg" in sql]
+        assert len(aggregates) == 1
+        sql = aggregates[0]
+        assert sql.startswith("WITH")
+        assert "count(" in sql
+        # The id and title conditions, once, not once per aggregate.
+        assert sql.count("ILIKE") == 2
+        assert result.pagination.total_count == _POST_COUNT
+        assert result.filter_attributes is not None
+        assert result.filter_attributes["is_published"] == [False]
+        assert len(result.filter_attributes["tags__name"]) == 3 * _POST_COUNT
+
+    @pytest.mark.anyio
+    async def test_facet_filter_still_narrows_a_sibling_facet(
+        self, db_session: AsyncSession
+    ):
+        """On the shared path, a filter_by on a to-many facet keeps its join."""
+        await _seed_posts_with_tags(db_session)
+        tag = (
+            await db_session.execute(select(Tag).where(Tag.name == "shared-0-0"))
+        ).scalar_one()
+
+        result = await PostSharedFacetCrud.offset_paginate(
+            db_session, search="post", filter_by={"tags__id": tag.id}, schema=_PostTitle
+        )
+
+        assert result.pagination.total_count == 1
+        assert result.filter_attributes is not None
+        assert result.filter_attributes["tags__name"] == ["shared-0-0"]
+        assert result.filter_attributes["is_published"] == [False]
+
+    @pytest.mark.anyio
+    async def test_unfiltered_aggregates_read_the_table_directly(
+        self, engine, db_session: AsyncSession
+    ):
+        """Without filters there is nothing to share, so no CTE is built."""
+        await _seed_posts_with_tags(db_session)
+
+        with capture_sql(engine) as statements:
+            result = await PostSharedFacetCrud.offset_paginate(
+                db_session, schema=_PostTitle
+            )
+
+        aggregates = [sql for sql in statements if "array_agg" in sql]
+        assert len(aggregates) == 1
+        assert "count(" in aggregates[0]
+        assert "WITH" not in aggregates[0]
+        assert result.pagination.total_count == _POST_COUNT
+
+    @pytest.mark.anyio
+    async def test_cursor_facets_share_the_filtered_scan(
+        self, engine, db_session: AsyncSession
+    ):
+        """cursor_paginate has no total, so the CTE only feeds the facets."""
+        await _seed_posts_with_tags(db_session)
+
+        with capture_sql(engine) as statements:
+            result = await PostSharedFacetCrud.cursor_paginate(
+                db_session, search="post0", schema=_PostTitle
+            )
+
+        aggregates = [sql for sql in statements if "array_agg" in sql]
+        assert len(aggregates) == 1
+        assert aggregates[0].startswith("WITH")
+        assert "count(" not in aggregates[0]
+        assert result.filter_attributes is not None
+        assert len(result.filter_attributes["tags__name"]) == 3 * _POST_COUNT
+
+    @pytest.mark.anyio
+    async def test_raw_join_keys_are_distinct_whole_composite_keys(
+        self, engine, db_session: AsyncSession
+    ):
+        """A raw join can repeat rows, so the CTE selects distinct composite keys."""
+        db_session.add_all(
+            [
+                Permission(subject="users", action="read"),
+                Permission(subject="users", action="write"),
+                Permission(subject="posts", action="read"),
+            ]
+        )
+        db_session.add_all([Role(name="viewer"), Role(name="editor")])
+        await db_session.flush()
+
+        with capture_sql(engine) as statements:
+            result = await PermissionFacetCrud.offset_paginate(
+                db_session,
+                joins=[(Role, Role.name.isnot(None))],
+                schema=_PermissionRead,
+            )
+
+        aggregates = [sql for sql in statements if "array_agg" in sql]
+        assert len(aggregates) == 1
+        assert "SELECT DISTINCT permissions.subject" in aggregates[0]
+        # Every aggregate reads the CTE, nothing goes back to the table.
+        assert aggregates[0].count("FROM permissions") == 1
+        assert result.pagination.total_count == 3
+        assert result.filter_attributes == {"action": ["read", "write"]}
