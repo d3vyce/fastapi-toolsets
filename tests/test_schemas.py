@@ -1,4 +1,6 @@
-"""Tests for fastapi_toolsets.schemas module."""
+"""Tests for the response envelopes and the pagination schemas."""
+
+from typing import TypeVar, get_args
 
 import pytest
 from pydantic import ValidationError
@@ -12,32 +14,36 @@ from fastapi_toolsets.schemas import (
     OffsetPagination,
     PaginatedResponse,
     PaginationType,
+    PydanticBase,
     Response,
     ResponseStatus,
 )
 
+T = TypeVar("T")
 
-class TestResponseStatus:
-    """Tests for ResponseStatus enum."""
-
-    def test_success_value(self):
-        """SUCCESS has correct value."""
-        assert ResponseStatus.SUCCESS.value == "SUCCESS"
-
-    def test_fail_value(self):
-        """FAIL has correct value."""
-        assert ResponseStatus.FAIL.value == "FAIL"
-
-    def test_is_string_enum(self):
-        """ResponseStatus is a string enum."""
-        assert isinstance(ResponseStatus.SUCCESS, str)
+_OFFSET = OffsetPagination(total_count=30, items_per_page=10, page=1, has_more=True)
+_CURSOR = CursorPagination(
+    next_cursor="tok_next", prev_cursor="tok_prev", items_per_page=10, has_more=True
+)
 
 
-class TestApiError:
-    """Tests for ApiError schema."""
+class _OrmObject:
+    """Attribute-only object, as an ORM row would be."""
 
-    def test_create_api_error(self):
-        """Create ApiError with all fields."""
+    id = 1
+    name = "test"
+
+
+class TestEnvelopes:
+    """``ApiError``, ``Response`` and ``ErrorResponse``."""
+
+    def test_status_and_pagination_type_are_string_enums(self):
+        assert [m.value for m in ResponseStatus] == ["SUCCESS", "FAIL"]
+        assert [m.value for m in PaginationType] == ["offset", "cursor"]
+        members = (*ResponseStatus, *PaginationType)
+        assert all(isinstance(m, str) and m == m.value for m in members)
+
+    def test_api_error_requires_the_core_fields_and_defaults_data(self):
         error = ApiError(
             code=404,
             msg="Not Found",
@@ -45,634 +51,172 @@ class TestApiError:
             err_code="RES-404",
         )
 
-        assert error.code == 404
-        assert error.msg == "Not Found"
-        assert error.desc == "The resource was not found."
-        assert error.err_code == "RES-404"
-
-    def test_data_defaults_to_none(self):
-        """ApiError data field defaults to None."""
-        error = ApiError(
-            code=404,
-            msg="Not Found",
-            desc="The resource was not found.",
-            err_code="RES-404",
-        )
-        assert error.data is None
-
-    def test_create_with_data(self):
-        """ApiError can be created with a data payload."""
-        error = ApiError(
-            code=422,
-            msg="Validation Error",
-            desc="2 validation error(s) detected",
-            err_code="VAL-422",
-            data={
-                "errors": [{"field": "name", "message": "required", "type": "missing"}]
-            },
-        )
-        assert error.data == {
-            "errors": [{"field": "name", "message": "required", "type": "missing"}]
+        assert error.model_dump() == {
+            "code": 404,
+            "msg": "Not Found",
+            "desc": "The resource was not found.",
+            "err_code": "RES-404",
+            "data": None,
         }
-
-    def test_requires_all_fields(self):
-        """ApiError requires all fields."""
+        assert error.model_copy(update={"data": {"errors": []}}).data == {"errors": []}
         with pytest.raises(ValidationError):
-            ApiError(code=404, msg="Not Found")  # type: ignore
+            ApiError(code=404, msg="Not Found")  # type: ignore[call-arg]  # ty:ignore[missing-argument]
 
+    @pytest.mark.parametrize(
+        "data",
+        [None, {"id": 1, "name": "test"}, ["a", "b", "c"], _OrmObject()],
+        ids=["none", "dict", "list", "orm-object"],
+    )
+    def test_response_wraps_any_payload_with_success_defaults(self, data):
+        response = Response(data=data)
 
-class TestResponse:
-    """Tests for Response schema."""
+        assert response.data == data
+        assert response.status is ResponseStatus.SUCCESS
+        assert response.model_dump() == {
+            "status": "SUCCESS",
+            "message": "Success",
+            "error_code": None,
+            "data": data,
+        }
+        assert Response(data=data, message="Operation completed").message == (
+            "Operation completed"
+        )
 
-    def test_create_with_data(self):
-        """Create Response with data."""
-        response = Response(data={"id": 1, "name": "test"})
+    def test_error_response_defaults_to_fail(self):
+        empty = ErrorResponse()
+        assert (empty.status, empty.description, empty.data) == (
+            ResponseStatus.FAIL,
+            None,
+            None,
+        )
 
-        assert response.data == {"id": 1, "name": "test"}
-        assert response.status == ResponseStatus.SUCCESS
-        assert response.message == "Success"
-        assert response.error_code is None
-
-    def test_create_with_custom_message(self):
-        """Create Response with custom message."""
-        response = Response(data="result", message="Operation completed")
-
-        assert response.message == "Operation completed"
-
-    def test_create_with_none_data(self):
-        """Create Response with None data."""
-        response = Response[dict](data=None)
-
-        assert response.data is None
-        assert response.status == ResponseStatus.SUCCESS
-
-    def test_generic_type_hint(self):
-        """Response supports generic type hints."""
-        response: Response[list[str]] = Response(data=["a", "b", "c"])
-
-        assert response.data == ["a", "b", "c"]
-
-    def test_serialization(self):
-        """Response serializes correctly."""
-        response = Response(data={"key": "value"}, message="Test")
-        data = response.model_dump()
-
-        assert data["status"] == "SUCCESS"
-        assert data["message"] == "Test"
-        assert data["data"] == {"key": "value"}
-        assert data["error_code"] is None
-
-
-class TestErrorResponse:
-    """Tests for ErrorResponse schema."""
-
-    def test_default_values(self):
-        """ErrorResponse has correct defaults."""
-        response = ErrorResponse()
-
-        assert response.status == ResponseStatus.FAIL
-        assert response.data is None
-
-    def test_with_description(self):
-        """ErrorResponse with description."""
         response = ErrorResponse(
             message="Bad Request",
             description="The request was invalid.",
             error_code="BAD-400",
+            data={"field": "id"},
         )
-
-        assert response.message == "Bad Request"
-        assert response.description == "The request was invalid."
-        assert response.error_code == "BAD-400"
-
-    def test_serialization(self):
-        """ErrorResponse serializes correctly."""
-        response = ErrorResponse(
-            message="Error",
-            description="Details",
-            error_code="ERR-500",
-        )
-        data = response.model_dump()
-
-        assert data["status"] == "FAIL"
-        assert data["description"] == "Details"
+        assert response.model_dump() == {
+            "status": "FAIL",
+            "message": "Bad Request",
+            "error_code": "BAD-400",
+            "description": "The request was invalid.",
+            "data": {"field": "id"},
+        }
 
 
-class TestOffsetPagination:
-    """Tests for OffsetPagination schema (canonical name for offset-based pagination)."""
+class TestPaginationMetadata:
+    """The offset and cursor pagination blocks."""
 
-    def test_create_pagination(self):
-        """Create OffsetPagination with all fields."""
+    @pytest.mark.parametrize(
+        ("total_count", "items_per_page", "pages"),
+        [(42, 10, 5), (40, 10, 4), (0, 10, 0), (100, 0, 0), (None, 20, None)],
+        ids=["rounded-up", "exact", "no-items", "zero-per-page", "unknown-total"],
+    )
+    def test_offset_pagination_computes_pages(self, total_count, items_per_page, pages):
         pagination = OffsetPagination(
-            total_count=100,
-            items_per_page=10,
-            page=1,
-            has_more=True,
-        )
-
-        assert pagination.total_count == 100
-        assert pagination.items_per_page == 10
-        assert pagination.page == 1
-        assert pagination.has_more is True
-
-    def test_last_page_has_more_false(self):
-        """Last page has has_more=False."""
-        pagination = OffsetPagination(
-            total_count=25,
-            items_per_page=10,
-            page=3,
-            has_more=False,
-        )
-
-        assert pagination.has_more is False
-
-    def test_serialization(self):
-        """OffsetPagination serializes correctly."""
-        pagination = OffsetPagination(
-            total_count=50,
-            items_per_page=20,
-            page=2,
-            has_more=True,
-        )
-        data = pagination.model_dump()
-
-        assert data["total_count"] == 50
-        assert data["items_per_page"] == 20
-        assert data["page"] == 2
-        assert data["has_more"] is True
-
-    def test_total_count_can_be_none(self):
-        """total_count accepts None (include_total=False mode)."""
-        pagination = OffsetPagination(
-            total_count=None,
-            items_per_page=20,
-            page=1,
-            has_more=True,
-        )
-        assert pagination.total_count is None
-
-    def test_serialization_with_none_total_count(self):
-        """OffsetPagination serializes total_count=None correctly."""
-        pagination = OffsetPagination(
-            total_count=None,
-            items_per_page=20,
+            total_count=total_count,
+            items_per_page=items_per_page,
             page=1,
             has_more=False,
         )
-        data = pagination.model_dump()
-        assert data["total_count"] is None
 
-    def test_pages_computed(self):
-        """pages is ceil(total_count / items_per_page)."""
-        pagination = OffsetPagination(
-            total_count=42,
-            items_per_page=10,
-            page=1,
-            has_more=True,
+        assert pagination.pages == pages
+        assert pagination.model_dump() == {
+            "total_count": total_count,
+            "items_per_page": items_per_page,
+            "page": 1,
+            "has_more": False,
+            "pages": pages,
+        }
+
+    def test_cursor_pagination_defaults_prev_cursor_to_none(self):
+        first = CursorPagination(next_cursor="n1", items_per_page=20, has_more=True)
+        last = CursorPagination(
+            next_cursor=None, prev_cursor="p1", items_per_page=20, has_more=False
         )
-        assert pagination.pages == 5
 
-    def test_pages_exact_division(self):
-        """pages is exact when total_count is evenly divisible."""
-        pagination = OffsetPagination(
-            total_count=40,
-            items_per_page=10,
-            page=1,
-            has_more=False,
-        )
-        assert pagination.pages == 4
-
-    def test_pages_zero_total(self):
-        """pages is 0 when total_count is 0."""
-        pagination = OffsetPagination(
-            total_count=0,
-            items_per_page=10,
-            page=1,
-            has_more=False,
-        )
-        assert pagination.pages == 0
-
-    def test_pages_zero_items_per_page(self):
-        """pages is 0 when items_per_page is 0."""
-        pagination = OffsetPagination(
-            total_count=100,
-            items_per_page=0,
-            page=1,
-            has_more=False,
-        )
-        assert pagination.pages == 0
-
-    def test_pages_none_when_total_count_none(self):
-        """pages is None when total_count is None (include_total=False)."""
-        pagination = OffsetPagination(
-            total_count=None,
-            items_per_page=20,
-            page=1,
-            has_more=True,
-        )
-        assert pagination.pages is None
-
-    def test_pages_in_serialization(self):
-        """pages appears in model_dump output."""
-        pagination = OffsetPagination(
-            total_count=25,
-            items_per_page=10,
-            page=1,
-            has_more=True,
-        )
-        data = pagination.model_dump()
-        assert data["pages"] == 3
-
-
-class TestCursorPagination:
-    """Tests for CursorPagination schema."""
-
-    def test_create_with_next_cursor(self):
-        """CursorPagination with a next cursor indicates more pages."""
-        pagination = CursorPagination(
-            next_cursor="eyJ2YWx1ZSI6ICIxMjMifQ==",
-            items_per_page=20,
-            has_more=True,
-        )
-        assert pagination.next_cursor == "eyJ2YWx1ZSI6ICIxMjMifQ=="
-        assert pagination.prev_cursor is None
-        assert pagination.items_per_page == 20
-        assert pagination.has_more is True
-
-    def test_create_last_page(self):
-        """CursorPagination for the last page has next_cursor=None and has_more=False."""
-        pagination = CursorPagination(
-            next_cursor=None,
-            items_per_page=20,
-            has_more=False,
-        )
-        assert pagination.next_cursor is None
-        assert pagination.has_more is False
-
-    def test_prev_cursor_defaults_to_none(self):
-        """prev_cursor defaults to None."""
-        pagination = CursorPagination(
-            next_cursor=None, items_per_page=10, has_more=False
-        )
-        assert pagination.prev_cursor is None
-
-    def test_prev_cursor_can_be_set(self):
-        """prev_cursor can be explicitly set."""
-        pagination = CursorPagination(
-            next_cursor="next123",
-            prev_cursor="prev456",
-            items_per_page=10,
-            has_more=True,
-        )
-        assert pagination.prev_cursor == "prev456"
-
-    def test_serialization(self):
-        """CursorPagination serializes correctly."""
-        pagination = CursorPagination(
-            next_cursor="abc123",
-            prev_cursor="xyz789",
-            items_per_page=20,
-            has_more=True,
-        )
-        data = pagination.model_dump()
-        assert data["next_cursor"] == "abc123"
-        assert data["prev_cursor"] == "xyz789"
-        assert data["items_per_page"] == 20
-        assert data["has_more"] is True
+        assert first.model_dump() == {
+            "next_cursor": "n1",
+            "prev_cursor": None,
+            "items_per_page": 20,
+            "has_more": True,
+        }
+        assert last.model_dump() == {
+            "next_cursor": None,
+            "prev_cursor": "p1",
+            "items_per_page": 20,
+            "has_more": False,
+        }
 
 
 class TestPaginatedResponse:
-    """Tests for PaginatedResponse schema."""
+    """The generic list envelope and its offset / cursor specialisations."""
 
-    def test_create_paginated_response(self):
-        """Create PaginatedResponse with data and pagination."""
-        pagination = OffsetPagination(
-            total_count=30,
-            items_per_page=10,
-            page=1,
-            has_more=True,
-        )
+    @pytest.mark.parametrize("pagination", [_OFFSET, _CURSOR], ids=["offset", "cursor"])
+    def test_accepts_either_pagination_kind(self, pagination):
         response = PaginatedResponse(
-            data=[{"id": 1}, {"id": 2}],
-            pagination=pagination,
+            data=[{"id": 1}, {"id": 2}], pagination=pagination, message="Page 1"
         )
 
-        assert isinstance(response.pagination, OffsetPagination)
-        assert len(response.data) == 2
-        assert response.pagination.total_count == 30
-        assert response.status == ResponseStatus.SUCCESS
+        assert isinstance(response.pagination, type(pagination))
+        assert response.model_dump() == {
+            "status": "SUCCESS",
+            "message": "Page 1",
+            "error_code": None,
+            "data": [{"id": 1}, {"id": 2}],
+            "pagination": pagination.model_dump(),
+            "pagination_type": None,
+            "filter_attributes": None,
+            "search_columns": None,
+            "order_columns": None,
+        }
 
-    def test_with_custom_message(self):
-        """PaginatedResponse with custom message."""
-        pagination = OffsetPagination(
-            total_count=5,
-            items_per_page=10,
-            page=1,
-            has_more=False,
-        )
-        response = PaginatedResponse(
-            data=[1, 2, 3, 4, 5],
-            pagination=pagination,
-            message="Found 5 items",
-        )
+    def test_subscripting_builds_a_cached_discriminated_union(self):
+        class Row(PydanticBase):
+            id: int
 
-        assert response.message == "Found 5 items"
+        alias = PaginatedResponse[Row]
 
-    def test_empty_data(self):
-        """PaginatedResponse with empty data."""
-        pagination = OffsetPagination(
-            total_count=0,
-            items_per_page=10,
-            page=1,
-            has_more=False,
-        )
-        response = PaginatedResponse(
-            data=[],
-            pagination=pagination,
-        )
+        union, discriminator = get_args(alias)
+        assert set(get_args(union)) == {
+            CursorPaginatedResponse[Row],
+            OffsetPaginatedResponse[Row],
+        }
+        assert discriminator.discriminator == "pagination_type"
+        assert PaginatedResponse[Row] is alias
+        assert not hasattr(PaginatedResponse[T], "__metadata__")
 
-        assert isinstance(response.pagination, OffsetPagination)
-        assert response.data == []
-        assert response.pagination.total_count == 0
-
-    def test_class_getitem_with_concrete_type_returns_discriminated_union(self):
-        """PaginatedResponse[T] with a concrete type returns a discriminated Annotated union."""
-        import typing
-
-        alias = PaginatedResponse[dict]
-        args = typing.get_args(alias)
-        # args[0] is the Union, args[1] is the FieldInfo discriminator
-        union_args = typing.get_args(args[0])
-        assert CursorPaginatedResponse[dict] in union_args
-        assert OffsetPaginatedResponse[dict] in union_args
-
-    def test_class_getitem_is_cached(self):
-        """Repeated subscripting with the same type returns the identical cached object."""
-        assert PaginatedResponse[dict] is PaginatedResponse[dict]
-
-    def test_class_getitem_with_typevar_returns_generic(self):
-        """PaginatedResponse[TypeVar] falls through to Pydantic generic parametrisation."""
-        from typing import TypeVar
-
-        T = TypeVar("T")
-        alias = PaginatedResponse[T]
-        # Should be a generic alias, not an Annotated union
-        assert not hasattr(alias, "__metadata__")
-
-    def test_generic_type_hint(self):
-        """PaginatedResponse supports generic type hints."""
-        pagination = OffsetPagination(
-            total_count=1,
-            items_per_page=10,
-            page=1,
-            has_more=False,
-        )
-        response: PaginatedResponse[dict] = PaginatedResponse(
-            data=[{"id": 1, "name": "test"}],
-            pagination=pagination,
-        )
-
-        assert response.data[0]["id"] == 1
-
-    def test_serialization(self):
-        """PaginatedResponse serializes correctly."""
-        pagination = OffsetPagination(
-            total_count=100,
-            items_per_page=10,
-            page=5,
-            has_more=True,
-        )
-        response = PaginatedResponse(
-            data=["item1", "item2"],
-            pagination=pagination,
-            message="Page 5",
-        )
-        data = response.model_dump()
-
-        assert data["status"] == "SUCCESS"
-        assert data["message"] == "Page 5"
-        assert data["data"] == ["item1", "item2"]
-        assert data["pagination"]["page"] == 5
-
-    def test_pagination_field_accepts_offset_pagination(self):
-        """PaginatedResponse.pagination accepts OffsetPagination."""
-        response = PaginatedResponse(
-            data=[1, 2],
-            pagination=OffsetPagination(
-                total_count=2, items_per_page=10, page=1, has_more=False
-            ),
-        )
-        assert isinstance(response.pagination, OffsetPagination)
-
-    def test_pagination_field_accepts_cursor_pagination(self):
-        """PaginatedResponse.pagination accepts CursorPagination."""
-        response = PaginatedResponse(
-            data=[1, 2],
-            pagination=CursorPagination(
-                next_cursor=None, items_per_page=10, has_more=False
-            ),
-        )
-        assert isinstance(response.pagination, CursorPagination)
-
-
-class TestPaginationType:
-    """Tests for PaginationType enum."""
-
-    def test_offset_value(self):
-        """OFFSET has string value 'offset'."""
-        assert PaginationType.OFFSET == "offset"
-        assert PaginationType.OFFSET.value == "offset"
-
-    def test_cursor_value(self):
-        """CURSOR has string value 'cursor'."""
-        assert PaginationType.CURSOR == "cursor"
-        assert PaginationType.CURSOR.value == "cursor"
-
-    def test_is_string_enum(self):
-        """PaginationType is a string enum."""
-        assert isinstance(PaginationType.OFFSET, str)
-        assert isinstance(PaginationType.CURSOR, str)
-
-    def test_members(self):
-        """PaginationType has exactly two members."""
-        assert set(PaginationType) == {PaginationType.OFFSET, PaginationType.CURSOR}
-
-
-class TestOffsetPaginatedResponse:
-    """Tests for OffsetPaginatedResponse schema."""
-
-    def test_pagination_type_is_offset(self):
-        """pagination_type is always PaginationType.OFFSET."""
-        response = OffsetPaginatedResponse(
-            data=[],
-            pagination=OffsetPagination(
-                total_count=0, items_per_page=10, page=1, has_more=False
-            ),
-        )
-        assert response.pagination_type is PaginationType.OFFSET
-
-    def test_pagination_type_serializes_to_string(self):
-        """pagination_type serializes to 'offset' in JSON mode."""
-        response = OffsetPaginatedResponse(
-            data=[],
-            pagination=OffsetPagination(
-                total_count=0, items_per_page=10, page=1, has_more=False
-            ),
-        )
-        assert response.model_dump(mode="json")["pagination_type"] == "offset"
-
-    def test_pagination_field_is_typed(self):
-        """pagination field is OffsetPagination, not the union."""
-        response = OffsetPaginatedResponse(
+    @pytest.mark.parametrize(
+        ("cls", "pagination", "kind"),
+        [
+            (OffsetPaginatedResponse, _OFFSET, PaginationType.OFFSET),
+            (CursorPaginatedResponse, _CURSOR, PaginationType.CURSOR),
+        ],
+        ids=["offset", "cursor"],
+    )
+    def test_typed_subclasses_pin_the_discriminator(self, cls, pagination, kind):
+        response = cls(
             data=[{"id": 1}],
-            pagination=OffsetPagination(
-                total_count=10, items_per_page=5, page=2, has_more=True
-            ),
-        )
-        assert isinstance(response.pagination, OffsetPagination)
-        assert response.pagination.total_count == 10
-        assert response.pagination.page == 2
-
-    def test_is_subclass_of_paginated_response(self):
-        """OffsetPaginatedResponse IS a PaginatedResponse."""
-        response = OffsetPaginatedResponse(
-            data=[],
-            pagination=OffsetPagination(
-                total_count=0, items_per_page=10, page=1, has_more=False
-            ),
-        )
-        assert isinstance(response, PaginatedResponse)
-
-    def test_pagination_type_default_cannot_be_overridden_to_cursor(self):
-        """pagination_type rejects values other than OFFSET."""
-        with pytest.raises(ValidationError):
-            OffsetPaginatedResponse(
-                data=[],
-                pagination=OffsetPagination(
-                    total_count=0, items_per_page=10, page=1, has_more=False
-                ),
-                pagination_type=PaginationType.CURSOR,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
-            )
-
-    def test_filter_attributes_defaults_to_none(self):
-        """filter_attributes defaults to None."""
-        response = OffsetPaginatedResponse(
-            data=[],
-            pagination=OffsetPagination(
-                total_count=0, items_per_page=10, page=1, has_more=False
-            ),
-        )
-        assert response.filter_attributes is None
-
-    def test_full_serialization(self):
-        """Full JSON serialization includes all expected fields."""
-        response = OffsetPaginatedResponse(
-            data=[{"id": 1}],
-            pagination=OffsetPagination(
-                total_count=1, items_per_page=10, page=1, has_more=False
-            ),
+            pagination=pagination,
             filter_attributes={"status": ["active"]},
         )
-        data = response.model_dump(mode="json")
 
-        assert data["pagination_type"] == "offset"
-        assert data["status"] == "SUCCESS"
-        assert data["data"] == [{"id": 1}]
-        assert data["pagination"]["total_count"] == 1
-        assert data["filter_attributes"] == {"status": ["active"]}
-
-
-class TestCursorPaginatedResponse:
-    """Tests for CursorPaginatedResponse schema."""
-
-    def test_pagination_type_is_cursor(self):
-        """pagination_type is always PaginationType.CURSOR."""
-        response = CursorPaginatedResponse(
-            data=[],
-            pagination=CursorPagination(
-                next_cursor=None, items_per_page=10, has_more=False
-            ),
-        )
-        assert response.pagination_type is PaginationType.CURSOR
-
-    def test_pagination_type_serializes_to_string(self):
-        """pagination_type serializes to 'cursor' in JSON mode."""
-        response = CursorPaginatedResponse(
-            data=[],
-            pagination=CursorPagination(
-                next_cursor=None, items_per_page=10, has_more=False
-            ),
-        )
-        assert response.model_dump(mode="json")["pagination_type"] == "cursor"
-
-    def test_pagination_field_is_typed(self):
-        """pagination field is CursorPagination, not the union."""
-        response = CursorPaginatedResponse(
-            data=[{"id": 1}],
-            pagination=CursorPagination(
-                next_cursor="abc123",
-                prev_cursor=None,
-                items_per_page=20,
-                has_more=True,
-            ),
-        )
-        assert isinstance(response.pagination, CursorPagination)
-        assert response.pagination.next_cursor == "abc123"
-        assert response.pagination.has_more is True
-
-    def test_is_subclass_of_paginated_response(self):
-        """CursorPaginatedResponse IS a PaginatedResponse."""
-        response = CursorPaginatedResponse(
-            data=[],
-            pagination=CursorPagination(
-                next_cursor=None, items_per_page=10, has_more=False
-            ),
-        )
         assert isinstance(response, PaginatedResponse)
-
-    def test_pagination_type_default_cannot_be_overridden_to_offset(self):
-        """pagination_type rejects values other than CURSOR."""
-        with pytest.raises(ValidationError):
-            CursorPaginatedResponse(
-                data=[],
-                pagination=CursorPagination(
-                    next_cursor=None, items_per_page=10, has_more=False
-                ),
-                pagination_type=PaginationType.OFFSET,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
-            )
-
-    def test_full_serialization(self):
-        """Full JSON serialization includes all expected fields."""
-        response = CursorPaginatedResponse(
-            data=[{"id": 1}],
-            pagination=CursorPagination(
-                next_cursor="tok_next",
-                prev_cursor="tok_prev",
-                items_per_page=10,
-                has_more=True,
-            ),
+        assert response.pagination == pagination
+        assert response.pagination_type is kind
+        dumped = response.model_dump(mode="json")
+        assert dumped["pagination_type"] == kind.value
+        assert dumped["pagination"] == pagination.model_dump(mode="json")
+        assert (dumped["status"], dumped["filter_attributes"]) == (
+            "SUCCESS",
+            {"status": ["active"]},
         )
-        data = response.model_dump(mode="json")
 
-        assert data["pagination_type"] == "cursor"
-        assert data["status"] == "SUCCESS"
-        assert data["pagination"]["next_cursor"] == "tok_next"
-        assert data["pagination"]["prev_cursor"] == "tok_prev"
-
-
-class TestFromAttributes:
-    """Tests for from_attributes config (ORM mode)."""
-
-    def test_response_from_orm_object(self):
-        """Response can accept ORM-like objects."""
-
-        class FakeOrmObject:
-            def __init__(self):
-                self.id = 1
-                self.name = "test"
-
-        obj = FakeOrmObject()
-        response = Response(data=obj)
-
-        assert response.data.id == 1  # type: ignore
-        assert response.data.name == "test"  # type: ignore
+        other = (
+            PaginationType.CURSOR
+            if kind is PaginationType.OFFSET
+            else PaginationType.OFFSET
+        )
+        with pytest.raises(ValidationError):
+            cls(data=[], pagination=pagination, pagination_type=other)

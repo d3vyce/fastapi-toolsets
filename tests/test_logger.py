@@ -1,3 +1,5 @@
+"""Tests for ``configure_logging`` and ``get_logger``."""
+
 import logging
 import sys
 
@@ -25,94 +27,60 @@ def _reset_loggers():
 
 
 class TestConfigureLogging:
-    def test_sets_up_handler_and_format(self):
-        logger = configure_logging()
+    """One stdout handler, shared with the uvicorn loggers."""
 
-        assert len(logger.handlers) == 1
-        handler = logger.handlers[0]
+    @pytest.mark.parametrize(
+        ("kwargs", "level", "fmt", "name"),
+        [
+            ({}, logging.INFO, DEFAULT_FORMAT, None),
+            ({"level": "DEBUG"}, logging.DEBUG, DEFAULT_FORMAT, None),
+            ({"level": logging.WARNING}, logging.WARNING, DEFAULT_FORMAT, None),
+            (
+                {"fmt": "%(levelname)s: %(message)s"},
+                logging.INFO,
+                "%(levelname)s: %(message)s",
+                None,
+            ),
+            ({"logger_name": "myapp"}, logging.INFO, DEFAULT_FORMAT, "myapp"),
+        ],
+        ids=["defaults", "level-name", "level-int", "custom-format", "named-logger"],
+    )
+    def test_applies_level_format_and_target_to_app_and_uvicorn_loggers(
+        self, kwargs, level, fmt, name
+    ):
+        logger = configure_logging(**kwargs)
+
+        assert logger is logging.getLogger(name)
+        assert logger.level == level
+        (handler,) = logger.handlers
         assert isinstance(handler, logging.StreamHandler)
         assert handler.stream is sys.stdout
-        assert handler.formatter is not None
-        assert handler.formatter._fmt == DEFAULT_FORMAT
+        assert handler.formatter is not None and handler.formatter._fmt == fmt
+        for uvicorn_name in UVICORN_LOGGERS:
+            uvicorn_logger = logging.getLogger(uvicorn_name)
+            assert uvicorn_logger.handlers == [handler]
+            assert uvicorn_logger.level == level
 
-    def test_default_level_is_info(self):
-        logger = configure_logging()
-
-        assert logger.level == logging.INFO
-
-    def test_custom_level_string(self):
-        logger = configure_logging(level="DEBUG")
-
-        assert logger.level == logging.DEBUG
-
-    def test_custom_level_int(self):
-        logger = configure_logging(level=logging.WARNING)
-
-        assert logger.level == logging.WARNING
-
-    def test_custom_format(self):
-        custom_fmt = "%(levelname)s: %(message)s"
-        logger = configure_logging(fmt=custom_fmt)
-
-        handler = logger.handlers[0]
-        assert handler.formatter is not None
-        assert handler.formatter._fmt == custom_fmt
-
-    def test_named_logger(self):
-        logger = configure_logging(logger_name="myapp")
-
-        assert logger.name == "myapp"
-        assert len(logger.handlers) == 1
-
-    def test_default_configures_root_logger(self):
-        logger = configure_logging()
-
-        assert logger is logging.getLogger()
-
-    def test_idempotent_no_duplicate_handlers(self):
+    def test_reconfiguring_replaces_the_handler_instead_of_stacking(self):
+        first = configure_logging().handlers[0]
         configure_logging()
-        configure_logging()
+
         logger = configure_logging()
 
-        assert len(logger.handlers) == 1
-
-    def test_configures_uvicorn_loggers(self):
-        configure_logging(level="DEBUG")
-
-        for name in UVICORN_LOGGERS:
-            uv_logger = logging.getLogger(name)
-            assert len(uv_logger.handlers) == 1
-            assert uv_logger.level == logging.DEBUG
-            handler = uv_logger.handlers[0]
-            assert handler.formatter is not None
-            assert handler.formatter._fmt == DEFAULT_FORMAT
-
-    def test_returns_configured_logger(self):
-        logger = configure_logging(logger_name="test.return")
-
-        assert isinstance(logger, logging.Logger)
-        assert logger.name == "test.return"
+        assert len(logger.handlers) == 1 and logger.handlers[0] is not first
+        assert all(len(logging.getLogger(n).handlers) == 1 for n in UVICORN_LOGGERS)
 
 
 class TestGetLogger:
-    def test_returns_named_logger(self):
-        logger = get_logger("myapp.services")
+    """``get_logger`` resolves the name from its argument or the caller."""
 
-        assert isinstance(logger, logging.Logger)
-        assert logger.name == "myapp.services"
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [((), __name__), ((None,), "root"), (("myapp.services",), "myapp.services")],
+        ids=["caller-module", "root", "explicit-name"],
+    )
+    def test_resolves_the_logger_name(self, args, expected):
+        logger = get_logger(*args)
 
-    def test_returns_root_logger_when_none(self):
-        logger = get_logger(None)
-
-        assert logger is logging.getLogger()
-
-    def test_defaults_to_caller_module_name(self):
-        logger = get_logger()
-
-        assert logger.name == __name__
-
-    def test_same_name_returns_same_logger(self):
-        a = get_logger("myapp")
-        b = get_logger("myapp")
-
-        assert a is b
+        assert isinstance(logger, logging.Logger) and logger.name == expected
+        assert get_logger(*args) is logger

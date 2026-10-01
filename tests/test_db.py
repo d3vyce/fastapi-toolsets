@@ -1,8 +1,10 @@
-"""Tests for fastapi_toolsets.db module (v5 ``Database`` facade)."""
+"""Tests for ``fastapi_toolsets.db``: the ``Database`` facade, locks, M2M, watching."""
 
 import asyncio
 import uuid
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
+from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,6 +19,7 @@ from sqlalchemy import (
     String,
     Table,
     Uuid,
+    event,
     select,
     text,
 )
@@ -25,16 +28,11 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
+    AsyncTransaction,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-    relationship,
-    selectinload,
-)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from starlette.requests import Request
 
 from fastapi_toolsets.db import (
@@ -55,7 +53,7 @@ from fastapi_toolsets.exceptions import (
     NotFoundError,
     PoolExhaustedError,
 )
-from fastapi_toolsets.pytest import create_db_session
+from fastapi_toolsets.pytest import create_async_client
 
 from .conftest import (
     DATABASE_URL,
@@ -67,114 +65,114 @@ from .conftest import (
     Tag,
     User,
     UserCrud,
+    created_tables,
+    database_exists,
+    drop_database,
+    post_tags,
+    raises_if,
 )
 
 
 def _make_request() -> Request:
-    """Minimal ASGI HTTP request for exercising the Database dependency directly."""
+    """Minimal ASGI HTTP request for driving the dependency by hand."""
     return Request({"type": "http", "headers": []})
 
 
-class TestDatabaseConstruction:
-    """Construction contract: provide exactly one of url / engine."""
+async def _role_exists(session_maker: async_sessionmaker, name: str) -> bool:
+    async with session_maker() as session:
+        return await RoleCrud.first(session, [Role.name == name]) is not None
 
-    def test_requires_url_or_engine(self):
-        """Neither url nor engine raises TypeError."""
+
+async def _granted_locks(session_maker: async_sessionmaker, mode: str) -> int:
+    """Granted locks of PostgreSQL *mode* on ``roles``, seen from another session."""
+    async with session_maker() as observer:
+        result = await observer.execute(
+            text(
+                "SELECT count(*) FROM pg_locks l "
+                "JOIN pg_class c ON c.oid = l.relation "
+                "WHERE c.relname = 'roles' AND l.mode = :mode AND l.granted"
+            ),
+            {"mode": mode},
+        )
+        return result.scalar_one()
+
+
+def _dependency(db: Database) -> AbstractAsyncContextManager[AsyncSession]:
+    """``Depends(db)`` driven by hand, teardown included."""
+    return asynccontextmanager(db)(_make_request())
+
+
+def _lock_tables(db: Database) -> AbstractAsyncContextManager[AsyncSession]:
+    return db.lock_tables([Role, User])
+
+
+class TestConstruction:
+    """``Database`` takes exactly one of url / engine and owns only what it builds."""
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda engine: Database(),
+            lambda engine: Database(DATABASE_URL, engine=engine),
+            lambda engine: Database(engine=engine, pool_size=5),
+            lambda engine: Database(
+                engine=engine, connect_args={"server_settings": {}}
+            ),
+        ],
+        ids=[
+            "neither",
+            "both",
+            "engine-options-with-engine",
+            "connect-args-with-engine",
+        ],
+    )
+    @pytest.mark.anyio
+    async def test_rejects_ambiguous_arguments(self, engine, build):
         with pytest.raises(TypeError):
-            Database()
+            build(engine)
 
-    @pytest.mark.anyio
-    async def test_both_url_and_engine_raises(self, engine):
-        """Both url and engine raises TypeError."""
-        with pytest.raises(TypeError):
-            Database(DATABASE_URL, engine=engine)
-
-    @pytest.mark.anyio
-    async def test_engine_options_with_engine_raises(self, engine):
-        """engine_options are rejected in engine= mode."""
-        with pytest.raises(TypeError):
-            Database(engine=engine, pool_size=5)
-
-    @pytest.mark.anyio
-    async def test_connect_args_with_engine_raises(self, engine):
-        """connect_args are rejected in engine= mode."""
-        with pytest.raises(TypeError):
-            Database(engine=engine, connect_args={"server_settings": {}})
-
-    @pytest.mark.anyio
-    async def test_accepts_postgres_dsn(self):
-        """A Pydantic PostgresDsn is coerced to a string URL."""
-        dsn = PostgresDsn(DATABASE_URL)
-        db = Database(dsn)
-        try:
-            assert db._owns_engine is True
-            assert str(db.engine.url) == str(create_async_engine(DATABASE_URL).url)
-        finally:
-            await db.engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_connect_args_forwarded_to_engine(self):
-        """connect_args are forwarded to create_async_engine in URL mode."""
+    @pytest.mark.parametrize(
+        "url", [DATABASE_URL, PostgresDsn(DATABASE_URL)], ids=["str", "dsn"]
+    )
+    def test_url_mode_builds_and_owns_the_engine(self, url):
+        """The URL reaches ``create_async_engine`` as a string, with connect_args."""
         connect_args = {"server_settings": {"application_name": "ft_test"}}
         with patch("fastapi_toolsets.db.core.create_async_engine") as mocked:
             mocked.return_value = MagicMock()
-            Database(DATABASE_URL, connect_args=connect_args)
-        _, kwargs = mocked.call_args
-        assert kwargs["connect_args"] == connect_args
+            db = Database(url, connect_args=connect_args)
+
+        (passed_url,), kwargs = mocked.call_args.args, mocked.call_args.kwargs
+        assert isinstance(passed_url, str)
+        assert make_url(passed_url) == make_url(DATABASE_URL)
+        assert kwargs == {"connect_args": connect_args}
+        assert db.engine is mocked.return_value
 
     @pytest.mark.anyio
-    async def test_url_mode_owns_engine(self):
-        """URL mode builds and owns the engine."""
-        db = Database(DATABASE_URL)
-        try:
-            assert db._owns_engine is True
-            assert db.engine is not None
-        finally:
-            await db.engine.dispose()
+    async def test_engine_mode_borrows_the_engine(self, engine):
+        """A borrowed engine is used as is; each instance keeps its own session."""
+        a, b = Database(engine=engine), Database(engine=engine)
+        request = _make_request()
 
-    @pytest.mark.anyio
-    async def test_engine_mode_borrows_engine(self, engine):
-        """engine= mode reuses the given engine and does not own it."""
-        db = Database(engine=engine)
-        assert db._owns_engine is False
-        assert db.engine is engine
+        assert a.engine is engine
+        async with (
+            asynccontextmanager(a)(request) as first,
+            asynccontextmanager(b)(request) as second,
+        ):
+            assert first is not second
 
+    @pytest.mark.parametrize("owned", [True, False], ids=["owned", "borrowed"])
     @pytest.mark.anyio
-    async def test_distinct_instances_use_distinct_state_attrs(self, engine):
-        """Two Database instances never share a request-state attribute."""
-        a = Database(engine=engine)
-        b = Database(engine=engine)
-        assert a._state_attr != b._state_attr
-
-    @pytest.mark.anyio
-    async def test_lifespan_disposes_owned_engine(self):
-        """The lifespan disposes the engine it built (URL mode)."""
-        db = Database(DATABASE_URL)
+    async def test_lifespan_disposes_only_an_owned_engine(self, engine, owned):
+        db = Database(DATABASE_URL) if owned else Database(engine=engine)
         # ``AsyncEngine.dispose`` is read-only on the instance, so patch the class.
         with patch.object(AsyncEngine, "dispose", new=AsyncMock()) as disposed:
             async with db.lifespan(None):
-                pass
-            disposed.assert_awaited_once()
+                disposed.assert_not_awaited()
+            assert disposed.await_count == (1 if owned else 0)
         await db.engine.dispose()
 
     @pytest.mark.anyio
-    async def test_lifespan_skips_borrowed_engine(self):
-        """The lifespan leaves a borrowed engine untouched (engine= mode)."""
-        eng = create_async_engine(DATABASE_URL, echo=False)
-        db = Database(engine=eng)
-        with patch.object(AsyncEngine, "dispose", new=AsyncMock()) as disposed:
-            async with db.lifespan(None):
-                pass
-            disposed.assert_not_awaited()
-        await eng.dispose()
-
-
-class TestLifespanComposition:
-    """``install`` composes engine disposal around the app's own lifespan."""
-
-    @pytest.mark.anyio
-    async def test_install_composes_user_lifespan(self):
-        """A user-defined lifespan runs, and the engine is disposed after it."""
+    async def test_install_disposes_after_the_apps_own_lifespan(self):
         events: list[str] = []
 
         @asynccontextmanager
@@ -191,27 +189,12 @@ class TestLifespanComposition:
             async with app.router.lifespan_context(app):
                 assert events == ["startup"]
                 disposed.assert_not_awaited()
-            # User shutdown runs, then the engine is disposed.
             assert events == ["startup", "shutdown"]
             disposed.assert_awaited_once()
         await db.engine.dispose()
 
     @pytest.mark.anyio
-    async def test_install_disposes_without_user_lifespan(self):
-        """``install`` disposes the engine even when the app has no custom lifespan."""
-        db = Database(DATABASE_URL)
-        app = FastAPI()
-        db.install(app)
-
-        with patch.object(AsyncEngine, "dispose", new=AsyncMock()) as disposed:
-            async with app.router.lifespan_context(app):
-                disposed.assert_not_awaited()
-            disposed.assert_awaited_once()
-        await db.engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_disposal_is_idempotent(self):
-        """Combining ``lifespan=db.lifespan`` with ``install`` disposes only once."""
+    async def test_lifespan_and_install_together_dispose_once(self):
         db = Database(DATABASE_URL)
         app = FastAPI(lifespan=db.lifespan)
         db.install(app)
@@ -222,377 +205,174 @@ class TestLifespanComposition:
             disposed.assert_awaited_once()
         await db.engine.dispose()
 
-    @pytest.mark.anyio
-    async def test_install_skips_disposal_for_borrowed_engine(self, engine):
-        """``install`` never disposes an engine it does not own."""
-        db = Database(engine=engine)
-        app = FastAPI()
-        db.install(app)
 
-        with patch.object(AsyncEngine, "dispose", new=AsyncMock()) as disposed:
-            async with app.router.lifespan_context(app):
-                pass
-            disposed.assert_not_awaited()
-
-
-class TestDatabaseDependency:
-    """Tests for the FastAPI dependency (``Depends(db)`` / ``db.__call__``)."""
+class TestSessionLifecycle:
+    """What ``Depends(db)``, ``session()``, ``begin()`` and ``lock_tables()`` commit."""
 
     @pytest.mark.anyio
-    async def test_yields_session(self, engine):
-        """Dependency yields a valid session."""
-        db = Database(engine=engine)
-        async for session in db(_make_request()):
-            assert isinstance(session, AsyncSession)
-            break
-
-    @pytest.mark.anyio
-    async def test_auto_commits_transaction(self, engine, session_maker):
-        """Without middleware, the dependency commits an open transaction on exit."""
-        db = Database(engine=engine)
-
-        async for session in db(_make_request()):
-            role = Role(name="test_role_dep")
-            session.add(role)
-            await session.flush()
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "test_role_dep"])
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_in_transaction_on_yield(self, engine):
-        """Session is already in a transaction when the endpoint body starts."""
-        db = Database(engine=engine)
-        async for session in db(_make_request()):
-            assert session.in_transaction()
-            break
-
-    @pytest.mark.anyio
-    async def test_no_commit_when_not_in_transaction(self, engine):
-        """Dependency skips commit if the session left its transaction on exit."""
-        db = Database(engine=engine)
-        async for session in db(_make_request()):
-            await session.commit()
-            assert not session.in_transaction()
-            # The post-yield path must not call commit again (no error).
-
-    @pytest.mark.anyio
-    async def test_stashes_session_on_request_state(self, engine):
-        """Dependency exposes the session on request.state for the commit middleware."""
-        db = Database(engine=engine)
-        request = _make_request()
-        async for session in db(request):
-            assert getattr(request.state, db._state_attr) is session
-            break
-
-    @pytest.mark.anyio
-    async def test_second_resolution_borrows_session(self, engine):
-        """A second ``Depends(db)`` in one request reuses the stashed session."""
+    async def test_dependency_yields_one_session_per_request(self, engine):
+        """The session is in a transaction and stashed on the request; a second
+        resolution borrows it and must not close what it borrowed (1c806cc)."""
         db = Database(engine=engine)
         request = _make_request()
 
         owner_gen = db(request)
         owner = await anext(owner_gen)
+        assert isinstance(owner, AsyncSession) and owner.in_transaction()
         borrower_gen = db(request)
         assert await anext(borrower_gen) is owner
 
         with pytest.raises(StopAsyncIteration):  # teardown runs borrower-first
             await anext(borrower_gen)
-        assert owner.in_transaction()  # the borrower must not close what it borrowed
-
+        assert owner.in_transaction()
         with pytest.raises(StopAsyncIteration):
             await anext(owner_gen)
 
+    @pytest.mark.parametrize(
+        "open_session",
+        [_dependency, Database.session, Database.begin, _lock_tables],
+        ids=["dependency", "session", "begin", "lock_tables"],
+    )
     @pytest.mark.anyio
-    async def test_commits_when_middleware_did_not_run(self, engine, session_maker):
-        """``install()`` is per-``Database``, but the commit is per-request."""
+    async def test_commits_pending_work_on_clean_exit(
+        self, engine, session_maker, open_session
+    ):
+        """``install()`` is per-``Database`` but the commit is per-request: the
+        dependency commits itself when no middleware ran for the request."""
         db = Database(engine=engine)
         db.install(FastAPI())
 
-        async for session in db(_make_request()):
-            role = Role(name="mw_never_ran")
-            session.add(role)
-            await session.flush()
+        async with open_session(db) as session:
+            session.add(Role(name="committed"))
 
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "mw_never_ran"])
-            assert result is not None
+        assert await _role_exists(session_maker, "committed")
 
-
-class TestDatabaseSession:
-    """Tests for ``db.session()`` (sessions outside request handlers)."""
-
+    @pytest.mark.parametrize(
+        "open_session", [_dependency, Database.session], ids=["dependency", "session"]
+    )
     @pytest.mark.anyio
-    async def test_context_manager_yields_session(self, engine):
-        """Context manager yields a valid session."""
-        db = Database(engine=engine)
-        async with db.session() as session:
-            assert isinstance(session, AsyncSession)
-
-    @pytest.mark.anyio
-    async def test_context_manager_commits(self, engine, session_maker):
-        """Context manager commits on exit."""
+    async def test_skips_the_commit_when_the_block_already_committed(
+        self, engine, session_maker, open_session
+    ):
         db = Database(engine=engine)
 
-        async with db.session() as session:
-            role = Role(name="context_role")
-            session.add(role)
-            await session.flush()
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "context_role"])
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_no_commit_when_not_in_transaction(self, engine):
-        """Context skips commit if the session left its transaction on exit."""
-        db = Database(engine=engine)
-        async with db.session() as session:
+        async with open_session(db) as session:
+            session.add(Role(name="self_committed"))
             await session.commit()
             assert not session.in_transaction()
 
+        assert await _role_exists(session_maker, "self_committed")
+
+    @pytest.mark.parametrize(
+        "open_session",
+        [_dependency, Database.session, Database.begin, _lock_tables],
+        ids=["dependency", "session", "begin", "lock_tables"],
+    )
     @pytest.mark.anyio
-    async def test_pool_exhausted_raises_pool_exhausted_error(self):
-        """PoolExhaustedError is raised when the pool is exhausted on session entry."""
+    async def test_rolls_back_on_error(self, engine, session_maker, open_session):
+        db = Database(engine=engine)
+
+        with pytest.raises(ValueError, match="boom"):
+            async with open_session(db) as session:
+                session.add(Role(name="ghost"))
+                await session.flush()
+                raise ValueError("boom")
+
+        assert not await _role_exists(session_maker, "ghost")
+
+    @pytest.mark.parametrize(
+        "open_session",
+        [_dependency, Database.session, _lock_tables],
+        ids=["dependency", "session", "lock_tables"],
+    )
+    @pytest.mark.anyio
+    async def test_pool_exhaustion_raises_pool_exhausted_error(self, open_session):
+        """Connections are acquired eagerly, so an exhausted pool fails on entry;
+        the dedicated lock session needs a second connection, so it fails too."""
         db = Database(DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1)
         try:
             async with db.session():  # checks out the single available connection
                 with pytest.raises(PoolExhaustedError):
-                    async with db.session():
-                        pass
+                    async with open_session(db):
+                        pass  # pragma: no cover
         finally:
             await db.engine.dispose()
-
-
-class TestDatabaseBegin:
-    """Tests for ``db.begin()`` (open a session already in a transaction)."""
-
-    @pytest.mark.anyio
-    async def test_commits_on_success(self, engine, session_maker):
-        """The block commits when it exits cleanly."""
-        db = Database(engine=engine)
-        async with db.begin() as session:
-            session.add(Role(name="begin_role"))
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "begin_role"])
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_rolls_back_on_exception(self, engine, session_maker):
-        """The block rolls back on exception."""
-        db = Database(engine=engine)
-        with pytest.raises(ValueError):
-            async with db.begin() as session:
-                session.add(Role(name="begin_rollback_role"))
-                await session.flush()
-                raise ValueError("Simulated error")
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "begin_rollback_role"])
-            assert result is None
 
 
 class TestTransaction:
-    """Tests for the ``transaction`` context manager (savepoint-aware primitive)."""
+    """``transaction()`` is a top-level transaction, or a savepoint inside one."""
 
+    @pytest.mark.parametrize("fail", [False, True], ids=["commit", "rollback"])
     @pytest.mark.anyio
-    async def test_starts_transaction(self, db_session: AsyncSession):
-        """transaction starts a new transaction."""
-        async with transaction(db_session):
-            role = Role(name="tx_role")
-            db_session.add(role)
-
-        result = await RoleCrud.first(db_session, [Role.name == "tx_role"])
-        assert result is not None
-
-    @pytest.mark.anyio
-    async def test_nested_transaction_uses_savepoint(self, db_session: AsyncSession):
-        """Nested transactions use savepoints."""
-        async with transaction(db_session):
-            role1 = Role(name="outer_role")
-            db_session.add(role1)
-            await db_session.flush()
-
+    async def test_top_level_block_commits_or_rolls_back(self, db_session, fail):
+        with raises_if(ValueError, fail):
             async with transaction(db_session):
-                role2 = Role(name="inner_role")
-                db_session.add(role2)
-
-        results = await RoleCrud.get_multi(db_session)
-        names = {r.name for r in results}
-        assert "outer_role" in names
-        assert "inner_role" in names
-
-    @pytest.mark.anyio
-    async def test_rollback_on_exception(self, db_session: AsyncSession):
-        """Transaction rolls back on exception."""
-        try:
-            async with transaction(db_session):
-                role = Role(name="rollback_role")
-                db_session.add(role)
+                db_session.add(Role(name="tx_role"))
                 await db_session.flush()
-                raise ValueError("Simulated error")
-        except ValueError:
-            pass
+                if fail:
+                    raise ValueError("boom")
 
-        result = await RoleCrud.first(db_session, [Role.name == "rollback_role"])
-        assert result is None
+        found = await RoleCrud.first(db_session, [Role.name == "tx_role"])
+        assert (found is None) is fail
 
     @pytest.mark.anyio
-    async def test_nested_rollback_preserves_outer(self, db_session: AsyncSession):
-        """Nested rollback preserves outer transaction."""
+    async def test_nested_block_is_a_savepoint(self, db_session):
+        """An inner failure loses only its own work; the outer block commits the rest."""
         async with transaction(db_session):
-            role1 = Role(name="preserved_role")
-            db_session.add(role1)
+            db_session.add(Role(name="outer"))
             await db_session.flush()
 
-            try:
+            with pytest.raises(ValueError, match="boom"):
                 async with transaction(db_session):
-                    role2 = Role(name="rolled_back_role")
-                    db_session.add(role2)
+                    db_session.add(Role(name="rolled_back"))
                     await db_session.flush()
-                    raise ValueError("Inner error")
-            except ValueError:
-                pass
+                    raise ValueError("boom")
 
-        outer = await RoleCrud.first(db_session, [Role.name == "preserved_role"])
-        inner = await RoleCrud.first(db_session, [Role.name == "rolled_back_role"])
-        assert outer is not None
-        assert inner is None
+            async with transaction(db_session):
+                db_session.add(Role(name="inner"))
+
+        names = {role.name for role in await RoleCrud.get_multi(db_session)}
+        assert names == {"outer", "inner"}
 
 
-class TestLockMode:
-    """Tests for LockMode enum."""
-
-    def test_lock_modes_exist(self):
-        """All expected lock modes are defined."""
-        assert LockMode.ACCESS_SHARE == "ACCESS SHARE"
-        assert LockMode.ROW_SHARE == "ROW SHARE"
-        assert LockMode.ROW_EXCLUSIVE == "ROW EXCLUSIVE"
-        assert LockMode.SHARE_UPDATE_EXCLUSIVE == "SHARE UPDATE EXCLUSIVE"
-        assert LockMode.SHARE == "SHARE"
-        assert LockMode.SHARE_ROW_EXCLUSIVE == "SHARE ROW EXCLUSIVE"
-        assert LockMode.EXCLUSIVE == "EXCLUSIVE"
-        assert LockMode.ACCESS_EXCLUSIVE == "ACCESS EXCLUSIVE"
-
-    def test_lock_mode_is_string(self):
-        """Lock modes are string enums."""
-        assert isinstance(LockMode.EXCLUSIVE, str)
-        assert LockMode.EXCLUSIVE.value == "EXCLUSIVE"
+_PG_LOCK_NAMES = {
+    LockMode.ACCESS_SHARE: "AccessShareLock",
+    LockMode.ROW_SHARE: "RowShareLock",
+    LockMode.ROW_EXCLUSIVE: "RowExclusiveLock",
+    LockMode.SHARE_UPDATE_EXCLUSIVE: "ShareUpdateExclusiveLock",
+    LockMode.SHARE: "ShareLock",
+    LockMode.SHARE_ROW_EXCLUSIVE: "ShareRowExclusiveLock",
+    LockMode.EXCLUSIVE: "ExclusiveLock",
+    LockMode.ACCESS_EXCLUSIVE: "AccessExclusiveLock",
+}
 
 
 class TestLockTables:
-    """Tests for ``db.lock_tables`` (PostgreSQL-specific)."""
+    """Table locks on a dedicated session (committed at exit) or the caller's own."""
 
+    @pytest.mark.parametrize("mode", list(LockMode), ids=[m.name for m in LockMode])
     @pytest.mark.anyio
-    async def test_lock_single_table(self, engine, session_maker):
-        """Lock a single table; changes inside are committed on context exit."""
-        db = Database(engine=engine)
-        async with db.lock_tables([Role]) as session:
-            role = Role(name="locked_role")
-            session.add(role)
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "locked_role"])
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_lock_multiple_tables(self, engine, session_maker):
-        """Lock multiple tables."""
-        db = Database(engine=engine)
-        async with db.lock_tables([Role, User]) as session:
-            role = Role(name="multi_lock_role")
-            session.add(role)
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "multi_lock_role"])
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_lock_with_custom_mode(self, engine, session_maker):
-        """Lock with custom lock mode."""
-        db = Database(engine=engine)
-        async with db.lock_tables([Role], mode=LockMode.EXCLUSIVE) as session:
-            role = Role(name="exclusive_lock_role")
-            session.add(role)
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "exclusive_lock_role"])
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_lock_rollback_on_exception(self, engine, session_maker):
-        """Lock context rolls back on exception."""
-        db = Database(engine=engine)
-        with pytest.raises(ValueError):
-            async with db.lock_tables([Role]) as session:
-                role = Role(name="lock_rollback_role")
-                session.add(role)
-                await session.flush()
-                raise ValueError("Simulated error")
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "lock_rollback_role"])
-            assert result is None
-
-
-class TestLockTablesOnCallerSession:
-    """Tests for ``lock_tables(session=...)``, the single-connection path."""
-
-    @staticmethod
-    async def _granted_locks(session_maker, mode: str) -> int:
-        """Count granted locks of *mode* on ``roles``, seen from another session."""
-        async with session_maker() as observer:
-            result = await observer.execute(
-                text(
-                    "SELECT count(*) FROM pg_locks l "
-                    "JOIN pg_class c ON c.oid = l.relation "
-                    "WHERE c.relname = 'roles' AND l.mode = :mode AND l.granted"
-                ),
-                {"mode": mode},
-            )
-            return result.scalar_one()
-
-    @pytest.mark.anyio
-    async def test_block_writes_through_the_locked_session(self, engine, session_maker):
-        """The block may write through the session holding the lock (TOOLS-11)."""
-        db = Database(engine=engine)
-        async with db.session() as session:
-            async with db.lock_tables(
-                [Role], session=session, mode=LockMode.EXCLUSIVE
-            ) as locked:
-                assert locked is session
-                session.add(Role(name="caller_lock_role"))
-                await session.flush()
-            await session.commit()
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "caller_lock_role"])
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_completes_with_a_single_connection(self, session_maker):
-        """A locking request completes on a pool of one connection."""
-        db = Database(DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1)
-        try:
-            async with db.session() as session:
-                async with db.lock_tables([Role], session=session):
-                    session.add(Role(name="single_conn_role"))
-                    await session.flush()
-                await session.commit()
-        finally:
-            await db.engine.dispose()
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(verify, [Role.name == "single_conn_role"])
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_timeout_leaves_the_callers_transaction_usable(
-        self, engine, session_maker
+    async def test_holds_the_lock_for_the_block_and_commits_it(
+        self, engine, session_maker, mode
     ):
-        """LockTimeoutError aborts only the savepoint, so the caller can commit."""
+        """Every ``LockMode`` is its PostgreSQL lock, released by the commit at exit."""
+        db = Database(engine=engine)
+        pg_mode = _PG_LOCK_NAMES[mode]
+
+        async with db.lock_tables([Role, User], mode=mode) as session:
+            assert await _granted_locks(session_maker, pg_mode) == 1
+            session.add(Role(name="locked_role"))
+
+        assert await _granted_locks(session_maker, pg_mode) == 0
+        assert await _role_exists(session_maker, "locked_role")
+
+    @pytest.mark.parametrize("on_caller", [False, True], ids=["dedicated", "caller"])
+    @pytest.mark.anyio
+    async def test_lock_timeout_leaves_the_callers_transaction_usable(
+        self, engine, session_maker, on_caller
+    ):
+        """``LockTimeoutError`` aborts at most the lock's savepoint, so the caller's
+        pending work survives and commits."""
         db = Database(engine=engine)
         async with db.session() as session:
             # Pending work on another table, so the caller does not itself
@@ -602,273 +382,186 @@ class TestLockTablesOnCallerSession:
 
             async with db.lock_tables([Role], mode=LockMode.EXCLUSIVE):
                 with pytest.raises(LockTimeoutError):
-                    async with db.lock_tables([Role], session=session, timeout="100ms"):
+                    async with db.lock_tables(
+                        [Role], session=session if on_caller else None, timeout="100ms"
+                    ):
                         pass  # pragma: no cover
 
             assert (await session.execute(select(1))).scalar_one() == 1
             await session.commit()
 
         async with session_maker() as verify:
-            result = await verify.execute(
+            found = await verify.execute(
                 select(Tag).where(Tag.name == "survives_lock_timeout")
             )
-            assert result.scalar_one_or_none() is not None
+            assert found.scalar_one_or_none() is not None
+
+    @pytest.mark.parametrize("both", [True, False], ids=["both", "neither"])
+    def test_requires_exactly_one_of_session_maker_or_session(self, both):
+        maker, session = (
+            (async_sessionmaker(), AsyncSession()) if both else (None, None)
+        )
+
+        with pytest.raises(TypeError, match="exactly one"):
+            lock_tables(maker, [Role], session=session)
 
     @pytest.mark.anyio
-    async def test_sets_lock_timeout_on_the_callers_session(
+    async def test_caller_session_locks_and_writes_on_one_connection(
+        self, session_maker
+    ):
+        """The block writes through the session holding the lock, so a locking
+        request completes on a pool of one connection (TOOLS-11)."""
+        db = Database(DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1)
+        try:
+            async with db.session() as session:
+                async with db.lock_tables(
+                    [Role], session=session, mode=LockMode.EXCLUSIVE
+                ) as locked:
+                    assert locked is session
+                    session.add(Role(name="caller_lock_role"))
+                    await session.flush()
+                await session.commit()
+        finally:
+            await db.engine.dispose()
+
+        assert await _role_exists(session_maker, "caller_lock_role")
+
+    @pytest.mark.anyio
+    async def test_caller_session_keeps_the_timeout_and_the_lock_until_it_ends(
         self, engine, session_maker
     ):
-        """The caller's own session carries lock_timeout."""
-        # Opening the savepoint flushes pending ORM changes, and that flush can
-        # block on a table lock just like the LOCK itself, so the timeout has
-        # to be in effect by then.
+        """``lock_timeout`` is set before the savepoint flushes pending changes (that
+        flush can block on the table just like the LOCK), and the lock outlives
+        the block until the caller's transaction ends."""
         db = Database(engine=engine)
         async with db.session() as session:
             session.add(Role(name="flushed_by_table_lock"))
 
-            async with db.lock_tables([Role], session=session, timeout="250ms"):
-                timeout = (
-                    await session.execute(text("SHOW lock_timeout"))
-                ).scalar_one()
-                assert timeout == "250ms"
+            async with db.lock_tables(
+                [Role], session=session, mode=LockMode.EXCLUSIVE, timeout="250ms"
+            ):
+                timeout = await session.execute(text("SHOW lock_timeout"))
+                assert timeout.scalar_one() == "250ms"
                 assert not session.new  # flushed when the savepoint opened
-
-            await session.commit()
-
-        async with session_maker() as verify:
-            result = await RoleCrud.first(
-                verify, [Role.name == "flushed_by_table_lock"]
-            )
-            assert result is not None
-
-    @pytest.mark.anyio
-    async def test_lock_is_held_until_the_callers_transaction_ends(
-        self, engine, session_maker
-    ):
-        """The lock outlives the block and is released at commit."""
-        db = Database(engine=engine)
-        async with db.session() as session:
-            async with db.lock_tables([Role], session=session, mode=LockMode.EXCLUSIVE):
-                assert await self._granted_locks(session_maker, "ExclusiveLock") == 1
+                assert await _granted_locks(session_maker, "ExclusiveLock") == 1
 
             # Block exited, savepoint released, but the lock is still held.
-            assert await self._granted_locks(session_maker, "ExclusiveLock") == 1
+            assert await _granted_locks(session_maker, "ExclusiveLock") == 1
             await session.commit()
 
-        assert await self._granted_locks(session_maker, "ExclusiveLock") == 0
+        assert await _granted_locks(session_maker, "ExclusiveLock") == 0
+        assert await _role_exists(session_maker, "flushed_by_table_lock")
 
     @pytest.mark.anyio
-    async def test_other_errors_propagate_unchanged(self, engine, session_maker):
-        """A failed flush stays itself, not a LockTimeoutError."""
-        db = Database(engine=engine)
-        async with db.session() as session:
-            session.add(Role(name="duplicate_under_lock"))
-            await session.commit()
+    async def test_caller_session_other_errors_propagate_unchanged(self, db_session):
+        """A failed flush stays an IntegrityError, not a LockTimeoutError."""
+        db_session.add(Role(name="duplicate_under_lock"))
+        await db_session.commit()
 
-        async with db.session() as session:
-            session.add(Role(name="duplicate_under_lock"))  # violates unique
-            with pytest.raises(IntegrityError):
-                async with db.lock_tables([Role], session=session):
-                    pass  # pragma: no cover
-            await session.rollback()
-
-    @pytest.mark.anyio
-    async def test_requires_exactly_one_of_session_maker_or_session(
-        self, db_session, session_maker
-    ):
-        """Passing both or neither is a TypeError."""
-        with pytest.raises(TypeError):
-            lock_tables(session_maker, [Role], session=db_session)
-
-        with pytest.raises(TypeError):
-            lock_tables(None, [Role])
+        db_session.add(Role(name="duplicate_under_lock"))  # violates unique
+        with pytest.raises(IntegrityError):
+            async with lock_tables(None, [Role], session=db_session):
+                pass  # pragma: no cover
+        await db_session.rollback()
 
 
 class TestAdvisoryLock:
-    """Tests for advisory_lock context manager (PostgreSQL-specific)."""
+    """Session-level locks (released at block exit) and ``xact`` ones (at tx end)."""
 
+    @pytest.mark.parametrize("key", [1001, (7, 42)], ids=["int", "pair"])
+    @pytest.mark.parametrize("xact", [False, True], ids=["session", "xact"])
     @pytest.mark.anyio
-    async def test_blocking_exclusive_acquires(self, db_session: AsyncSession):
-        """Blocking exclusive lock acquires and yields True."""
-        async with advisory_lock(db_session, 1001) as acquired:
-            assert acquired is True
+    async def test_exclusive_lock_turns_away_a_nowait_contender(
+        self, session_maker, key, xact
+    ):
+        async with session_maker() as holder, session_maker() as contender:
+            async with holder.begin(), contender.begin():
+                async with advisory_lock(holder, key, xact=xact) as acquired:
+                    assert acquired is True
+                    async with advisory_lock(
+                        contender, key, xact=xact, nowait=True
+                    ) as taken:
+                        assert taken is False
 
+    @pytest.mark.parametrize("xact", [False, True], ids=["session", "xact"])
     @pytest.mark.anyio
-    async def test_nowait_returns_true_when_free(self, db_session: AsyncSession):
-        """nowait=True yields True when the lock is available."""
-        async with advisory_lock(db_session, 1002, nowait=True) as acquired:
-            assert acquired is True
-
-    @pytest.mark.anyio
-    async def test_nowait_returns_false_when_contended(self, session_maker):
-        """nowait=True yields False when another session holds the lock."""
-        async with session_maker() as holder:
-            async with holder.begin():
-                async with advisory_lock(holder, 1003):
-                    async with session_maker() as contender:
-                        async with contender.begin():
-                            async with advisory_lock(
-                                contender, 1003, nowait=True
-                            ) as acquired:
-                                assert acquired is False
-
-    @pytest.mark.anyio
-    async def test_shared_allows_concurrent_readers(self, session_maker):
-        """Two shared locks on the same key are both acquired."""
+    async def test_shared_lock_admits_concurrent_holders(self, session_maker, xact):
         async with session_maker() as s1, session_maker() as s2:
             async with s1.begin(), s2.begin():
-                async with advisory_lock(s1, 1004, shared=True) as a1:
-                    async with advisory_lock(s2, 1004, shared=True, nowait=True) as a2:
-                        assert a1 is True
-                        assert a2 is True
+                async with advisory_lock(s1, 1004, shared=True, xact=xact) as a1:
+                    async with advisory_lock(
+                        s2, 1004, shared=True, xact=xact, nowait=True
+                    ) as a2:
+                        assert (a1, a2) == (True, True)
+
+    @pytest.mark.parametrize("xact", [False, True], ids=["session", "xact"])
+    @pytest.mark.anyio
+    async def test_timeout_raises_lock_timeout_error(self, session_maker, xact):
+        async with session_maker() as holder, session_maker() as contender:
+            async with holder.begin(), contender.begin():
+                async with advisory_lock(holder, 1006, xact=xact):
+                    with pytest.raises(LockTimeoutError):
+                        async with advisory_lock(
+                            contender, 1006, xact=xact, timeout="10ms"
+                        ):
+                            pass  # pragma: no cover
 
     @pytest.mark.anyio
-    async def test_acquire_does_not_flush_pending(self, db_session: AsyncSession):
-        """Acquiring the lock must not autoflush the caller's pending ORM changes.
+    async def test_session_lock_is_released_at_block_exit(self, session_maker):
+        """Released even though the holder's transaction is still open."""
+        async with session_maker() as holder, session_maker() as contender:
+            async with holder.begin(), contender.begin():
+                async with advisory_lock(holder, 1005):
+                    pass
 
-        Guards the SQLAlchemy 2.1 behavior where raw ``text()`` autoflushes too;
-        the helper wraps lock SQL in ``no_autoflush`` to preserve v4 semantics.
-        """
+                async with advisory_lock(contender, 1005, nowait=True) as taken:
+                    assert taken is True
+
+    @pytest.mark.parametrize(
+        "end", [AsyncSession.commit, AsyncSession.rollback], ids=["commit", "rollback"]
+    )
+    @pytest.mark.anyio
+    async def test_xact_lock_is_held_until_the_transaction_ends(
+        self, session_maker, end
+    ):
+        async with session_maker() as holder, session_maker() as contender:
+            async with advisory_lock(holder, 3001, xact=True):
+                pass
+
+            # Block exited, but the holder's transaction still has the lock.
+            async with contender.begin():
+                async with advisory_lock(
+                    contender, 3001, xact=True, nowait=True
+                ) as taken:
+                    assert taken is False
+
+            await end(holder)
+
+            async with contender.begin():
+                async with advisory_lock(
+                    contender, 3001, xact=True, nowait=True
+                ) as taken:
+                    assert taken is True
+
+    @pytest.mark.anyio
+    async def test_acquire_does_not_flush_pending_changes(self, db_session):
+        """Lock SQL runs under ``no_autoflush``: SQLAlchemy 2.1 autoflushes on raw
+        ``text()`` too, which would flush the caller's pending ORM changes."""
         role = Role(name="not_flushed_by_lock")
         db_session.add(role)
 
         async with advisory_lock(db_session, 2001):
-            # The pending INSERT must still be unflushed inside the lock.
             assert role in db_session.new
 
     @pytest.mark.anyio
-    async def test_tuple_key(self, db_session: AsyncSession):
-        """(int, int) key variant acquires the lock."""
-        async with advisory_lock(db_session, (7, 42)) as acquired:
-            assert acquired is True
-
-    @pytest.mark.anyio
-    async def test_tuple_key_nowait_contended(self, session_maker):
-        """Tuple key nowait returns False when contended."""
-        async with session_maker() as holder:
-            async with holder.begin():
-                async with advisory_lock(holder, (7, 99)):
-                    async with session_maker() as contender:
-                        async with contender.begin():
-                            async with advisory_lock(
-                                contender, (7, 99), nowait=True
-                            ) as acquired:
-                                assert acquired is False
-
-    @pytest.mark.anyio
-    async def test_lock_released_at_context_exit(self, session_maker):
-        """Lock is released when the context exits, even while the transaction is still open."""
-        async with session_maker() as s1:
-            async with s1.begin():
-                async with advisory_lock(s1, 1005):
-                    pass  # lock released here — transaction still active
-
-                async with session_maker() as s2:
-                    async with s2.begin():
-                        async with advisory_lock(s2, 1005, nowait=True) as acquired:
-                            assert (
-                                acquired is True
-                            )  # s1 still in transaction but lock is free
-
-    @pytest.mark.anyio
-    async def test_timeout_raises_when_contended(self, session_maker):
-        """timeout= raises LockTimeoutError when the lock cannot be acquired."""
-        async with session_maker() as holder:
-            async with holder.begin():
-                async with advisory_lock(holder, 1006):
-                    async with session_maker() as contender:
-                        async with contender.begin():
-                            with pytest.raises(LockTimeoutError):
-                                async with advisory_lock(
-                                    contender, 1006, timeout="10ms"
-                                ):
-                                    pass
-
-
-class TestAdvisoryLockXact:
-    """Tests for ``advisory_lock(xact=True)``, released by the transaction."""
-
-    @pytest.mark.anyio
-    async def test_held_after_the_block_until_commit(self, session_maker):
-        """The lock outlives the block and is released by the commit."""
-        async with session_maker() as holder:
-            await holder.execute(text("SELECT 1"))  # autobegin
-            async with advisory_lock(holder, 3001, xact=True) as acquired:
-                assert acquired is True
-
-            # Block exited, but the transaction still holds the lock.
-            async with session_maker() as contender:
-                async with contender.begin():
-                    async with advisory_lock(
-                        contender, 3001, xact=True, nowait=True
-                    ) as taken:
-                        assert taken is False
-
-            await holder.commit()
-
-        async with session_maker() as after:
-            async with after.begin():
-                async with advisory_lock(after, 3001, xact=True, nowait=True) as taken:
-                    assert taken is True
-
-    @pytest.mark.anyio
-    async def test_released_by_rollback(self, session_maker):
-        """A rollback releases the lock just as a commit does."""
-        async with session_maker() as holder:
-            async with advisory_lock(holder, 3002, xact=True):
-                pass
-            await holder.rollback()
-
-            async with session_maker() as contender:
-                async with contender.begin():
-                    async with advisory_lock(
-                        contender, 3002, xact=True, nowait=True
-                    ) as taken:
-                        assert taken is True
-
-    @pytest.mark.anyio
-    async def test_shared_allows_concurrent_readers(self, session_maker):
-        """Two shared transaction-level locks on the same key are both acquired."""
-        async with session_maker() as s1, session_maker() as s2:
-            async with s1.begin(), s2.begin():
-                async with advisory_lock(s1, 3003, shared=True, xact=True) as a1:
-                    async with advisory_lock(
-                        s2, 3003, shared=True, xact=True, nowait=True
-                    ) as a2:
-                        assert a1 is True
-                        assert a2 is True
-
-    @pytest.mark.anyio
-    async def test_timeout_raises_when_contended(self, session_maker):
-        """timeout= raises LockTimeoutError for a transaction-level lock too."""
-        async with session_maker() as holder:
-            async with holder.begin():
-                async with advisory_lock(holder, 3004, xact=True):
-                    async with session_maker() as contender:
-                        async with contender.begin():
-                            with pytest.raises(LockTimeoutError):
-                                async with advisory_lock(
-                                    contender, 3004, xact=True, timeout="10ms"
-                                ):
-                                    pass  # pragma: no cover
-
-    @pytest.mark.anyio
-    async def test_tuple_key(self, session_maker):
-        """(int, int) key variant works for a transaction-level lock."""
-        async with session_maker() as holder:
-            async with holder.begin():
-                async with advisory_lock(holder, (8, 42), xact=True) as acquired:
-                    assert acquired is True
-
-    @pytest.mark.anyio
-    async def test_check_then_insert_serializes(self, session_maker):
+    async def test_xact_lock_serializes_check_then_insert(self, session_maker):
         """The next waiter sees the previous holder's insert, the point of TOOLS-8.
 
         A session-level lock is released at block exit, before the request
-        session commits, so the second caller reads a stale "not present".
+        session commits, so the second caller would read a stale "not present".
         """
 
-        async def claim(session) -> bool:
+        async def claim(session: AsyncSession) -> bool:
             """Insert the role only if it is not there yet; True if inserted."""
             async with advisory_lock(session, 3005, xact=True):
                 existing = await RoleCrud.first(session, [Role.name == "claimed_once"])
@@ -884,216 +577,225 @@ class TestAdvisoryLockXact:
             # the row; without xact=True it would insert a duplicate.
             task = asyncio.create_task(claim(second))
             await asyncio.sleep(0.1)
-            assert not task.done()  # waiting on the lock first holds
+            assert not task.done()
             await first.commit()
             assert await task is False
             await second.rollback()
 
 
+class _Polls:
+    """Counts the SELECTs completed on an engine, to sequence changes between polls."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self.engine = engine
+        self.count = 0
+
+    def _record(self, conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("SELECT"):
+            self.count += 1
+
+    def __enter__(self) -> Self:
+        event.listen(self.engine.sync_engine, "after_cursor_execute", self._record)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        event.remove(self.engine.sync_engine, "after_cursor_execute", self._record)
+
+    async def next(self) -> None:
+        """Return once one more SELECT has completed."""
+        seen = self.count
+        while self.count <= seen:
+            await asyncio.sleep(0.01)
+
+
+_Change = Callable[[AsyncSession, _Polls], Awaitable[None]]
+
+
+@asynccontextmanager
+async def _changing_between_polls(
+    engine: AsyncEngine, change: _Change
+) -> AsyncIterator[None]:
+    """Run *change* in its own session once the watcher's first poll completed."""
+    with _Polls(engine) as polls:
+
+        async def _run() -> None:
+            await polls.next()
+            async with async_sessionmaker(engine, expire_on_commit=False)() as other:
+                await change(other, polls)
+
+        task = asyncio.create_task(_run())
+        try:
+            yield
+            await task
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@asynccontextmanager
+async def _connection_bound(
+    engine: AsyncEngine,
+) -> AsyncIterator[tuple[AsyncTransaction, AsyncSession]]:
+    """A session over a connection whose outer transaction the caller owns."""
+    async with engine.connect() as conn:
+        outer = await conn.begin()
+        session = AsyncSession(
+            bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False
+        )
+        yield outer, session
+        await outer.rollback()
+
+
+def _failing_second_get() -> Any:
+    """Patch ``AsyncSession.get`` so every call after the first errors in SQL."""
+    original = AsyncSession.get
+    calls = 0
+
+    async def failing_get(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            await self.execute(text("SELECT 1 / 0"))
+        return await original(self, *args, **kwargs)
+
+    return patch.object(AsyncSession, "get", failing_get)
+
+
 class TestWaitForRowChange:
-    """Tests for wait_for_row_change polling function."""
+    """Polling a row from a throwaway session bound to the caller's engine."""
 
+    @pytest.mark.parametrize(
+        ("columns", "expected"),
+        [
+            (None, ("watched", "new@test.com")),
+            (["username"], ("renamed", "new@test.com")),
+        ],
+        ids=["any-column", "named-columns"],
+    )
     @pytest.mark.anyio
-    async def test_detects_update(self, db_session: AsyncSession, engine):
-        """Returns updated instance when a column value changes."""
-        role = Role(name="watch_role")
-        db_session.add(role)
-        await db_session.commit()
-
-        async def update_later():
-            await asyncio.sleep(0.15)
-            factory = async_sessionmaker(engine, expire_on_commit=False)
-            async with factory() as other:
-                r = await other.get(Role, role.id)
-                assert r is not None
-                r.name = "updated_role"
-                await other.commit()
-
-        update_task = asyncio.create_task(update_later())
-        result = await wait_for_row_change(db_session, Role, role.id, interval=0.05)
-        await update_task
-
-        assert result.name == "updated_role"
-
-    @pytest.mark.anyio
-    async def test_watches_specific_columns(self, db_session: AsyncSession, engine):
-        """Only triggers on changes to specified columns."""
-        user = User(username="testuser", email="test@example.com")
+    async def test_returns_the_row_once_a_watched_column_changes(
+        self, db_session, engine, columns, expected
+    ):
+        """With ``columns``, a poll that sees only the email change keeps waiting."""
+        user = User(username="watched", email="old@test.com")
         db_session.add(user)
         await db_session.commit()
 
-        async def update_later():
-            factory = async_sessionmaker(engine, expire_on_commit=False)
-            # First: change email (not watched) — should not trigger
-            await asyncio.sleep(0.15)
-            async with factory() as other:
-                u = await other.get(User, user.id)
-                assert u is not None
-                u.email = "new@example.com"
-                await other.commit()
-            # Second: change username (watched) — should trigger
-            await asyncio.sleep(0.15)
-            async with factory() as other:
-                u = await other.get(User, user.id)
-                assert u is not None
-                u.username = "newuser"
+        async def change(other: AsyncSession, polls: _Polls) -> None:
+            same = await other.get_one(User, user.id)
+            same.email = "new@test.com"
+            await other.commit()
+            if columns:
+                await polls.next()
+                same.username = "renamed"
                 await other.commit()
 
-        update_task = asyncio.create_task(update_later())
-        result = await wait_for_row_change(
-            db_session, User, user.id, columns=["username"], interval=0.05
-        )
-        await update_task
+        async with _changing_between_polls(engine, change):
+            result = await wait_for_row_change(
+                db_session, User, user.id, columns=columns, interval=0.05
+            )
 
-        assert result.username == "newuser"
-        assert result.email == "new@example.com"
+        assert (result.username, result.email) == expected
 
     @pytest.mark.anyio
-    async def test_nonexistent_row_raises(self, db_session: AsyncSession):
-        """Raises NotFoundError when the row does not exist."""
-        fake_id = uuid.uuid4()
+    async def test_missing_row_raises_not_found(self, db_session, engine):
+        """A row deleted before the call is not found, even one the caller holds."""
+        role = Role(name="stale_role")
+        db_session.add(role)
+        await db_session.commit()
+        async with async_sessionmaker(engine)() as other:
+            await other.delete(await other.get_one(Role, role.id))
+            await other.commit()
+
         with pytest.raises(NotFoundError, match="not found"):
-            await wait_for_row_change(db_session, Role, fake_id, interval=0.05)
+            await wait_for_row_change(db_session, Role, role.id, interval=0.05)
+
+    @pytest.mark.anyio
+    async def test_row_deleted_while_polling_raises_not_found(self, db_session, engine):
+        role = Role(name="doomed_role")
+        db_session.add(role)
+        await db_session.commit()
+
+        async def delete(other: AsyncSession, polls: _Polls) -> None:
+            await other.delete(await other.get_one(Role, role.id))
+            await other.commit()
+
+        with pytest.raises(NotFoundError, match="was deleted"):
+            async with _changing_between_polls(engine, delete):
+                await wait_for_row_change(db_session, Role, role.id, interval=0.05)
 
     @pytest.mark.anyio
     async def test_unbound_session_raises_type_error(self):
-        """Raises TypeError when the session has no bind to open a watcher on."""
-        unbound = AsyncSession()
         with pytest.raises(TypeError, match="requires a session bound to an engine"):
-            await wait_for_row_change(unbound, Role, uuid.uuid4())
+            await wait_for_row_change(AsyncSession(), Role, uuid.uuid4())
 
     @pytest.mark.anyio
-    async def test_timeout_raises(self, db_session: AsyncSession):
-        """Raises TimeoutError when no change is detected within timeout."""
+    async def test_times_out_without_a_change(self, db_session):
         role = Role(name="timeout_role")
         db_session.add(role)
         await db_session.commit()
 
-        with pytest.raises(TimeoutError):
+        with pytest.raises(TimeoutError, match="No change detected"):
             await wait_for_row_change(
                 db_session, Role, role.id, interval=0.05, timeout=0.2
             )
 
     @pytest.mark.anyio
+    @pytest.mark.usefixtures("session_maker")
     async def test_detects_update_under_repeatable_read(self, engine):
-        """Detects external commits even when the watcher pins a snapshot."""
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        """Each poll is its own transaction, hence a fresh snapshot even when the
+        caller's engine pins one per transaction."""
         rr_engine = engine.execution_options(isolation_level="REPEATABLE READ")
         factory = async_sessionmaker(rr_engine, expire_on_commit=False)
-        try:
-            async with factory() as setup:
-                role = Role(name="rr_role")
-                setup.add(role)
-                await setup.commit()
-                role_id = role.id
+        async with factory() as setup:
+            role = Role(name="rr_role")
+            setup.add(role)
+            await setup.commit()
 
-            async def update_later():
-                await asyncio.sleep(0.15)
-                async with factory() as other:
-                    r = await other.get(Role, role_id)
-                    assert r is not None
-                    r.name = "rr_updated"
-                    await other.commit()
-
-            watcher = factory()
-            try:
-                # Pin a snapshot before the update lands.
-                await watcher.get(Role, role_id)
-                update_task = asyncio.create_task(update_later())
-                result = await wait_for_row_change(
-                    watcher, Role, role_id, interval=0.05, timeout=2.0
-                )
-                await update_task
-                assert result.name == "rr_updated"
-            finally:
-                await watcher.close()
-        finally:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.drop_all)
-
-    @pytest.mark.anyio
-    async def test_stale_then_deleted_instance_raises_not_found(
-        self, db_session: AsyncSession, engine
-    ):
-        """A stale expired instance in the identity map yields NotFoundError."""
-        role = Role(name="stale_role")
-        db_session.add(role)
-        await db_session.commit()
-        role_id = role.id
-
-        # db_session still holds `role`; delete it from another committed session.
-        factory = async_sessionmaker(engine, expire_on_commit=False)
-        async with factory() as other:
-            r = await other.get(Role, role_id)
-            await other.delete(r)
+        async def rename(other: AsyncSession, polls: _Polls) -> None:
+            (await other.get_one(Role, role.id)).name = "rr_updated"
             await other.commit()
 
-        with pytest.raises(NotFoundError):
-            await wait_for_row_change(
-                db_session, Role, role_id, interval=0.05, timeout=0.5
-            )
+        async with factory() as caller:
+            await caller.get(Role, role.id)  # pins a snapshot before the update
+            async with _changing_between_polls(rr_engine, rename):
+                result = await wait_for_row_change(
+                    caller, Role, role.id, interval=0.05, timeout=2.0
+                )
+
+        assert result.name == "rr_updated"
 
     @pytest.mark.anyio
-    async def test_deleted_row_raises(self, db_session: AsyncSession, engine):
-        """Raises NotFoundError when the row is deleted during polling."""
-        role = Role(name="delete_role")
-        db_session.add(role)
-        await db_session.commit()
-
-        async def delete_later():
-            await asyncio.sleep(0.15)
-            factory = async_sessionmaker(engine, expire_on_commit=False)
-            async with factory() as other:
-                r = await other.get(Role, role.id)
-                await other.delete(r)
-                await other.commit()
-
-        delete_task = asyncio.create_task(delete_later())
-        with pytest.raises(NotFoundError):
-            await wait_for_row_change(db_session, Role, role.id, interval=0.05)
-        await delete_task
-
-    @pytest.mark.anyio
-    async def test_does_not_disturb_ambient_transaction(
-        self, db_session: AsyncSession, engine
-    ):
-        """A read-only ambient transaction around the call survives untouched."""
+    async def test_does_not_disturb_the_ambient_transaction(self, db_session, engine):
+        """The caller's open transaction stays usable once the watch returns (#339)."""
         role = Role(name="ambient_role")
         db_session.add(role)
         await db_session.commit()
 
-        async def update_later():
-            await asyncio.sleep(0.15)
-            factory = async_sessionmaker(engine, expire_on_commit=False)
-            async with factory() as other:
-                r = await other.get(Role, role.id)
-                assert r is not None
-                r.name = "ambient_updated"
-                await other.commit()
+        async def rename(other: AsyncSession, polls: _Polls) -> None:
+            (await other.get_one(Role, role.id)).name = "ambient_updated"
+            await other.commit()
 
-        update_task = asyncio.create_task(update_later())
         async with transaction(db_session):
-            # A read before the watch, establishing an ambient transaction
-            # that must remain usable once wait_for_row_change returns.
-            await db_session.get(Role, role.id)
-            result = await wait_for_row_change(
-                db_session, Role, role.id, interval=0.05, timeout=2.0
-            )
-            await update_task
+            await db_session.get(Role, role.id)  # establishes the ambient transaction
+            async with _changing_between_polls(engine, rename):
+                result = await wait_for_row_change(
+                    db_session, Role, role.id, interval=0.05, timeout=2.0
+                )
             assert result.name == "ambient_updated"
-            # The ambient transaction must still be open and usable here.
             assert db_session.in_transaction()
-            other_role = Role(name="added_within_ambient_tx")
-            db_session.add(other_role)
+            db_session.add(Role(name="added_within_ambient_tx"))
 
-        # transaction() committed cleanly on exit; the write above landed.
-        check = await db_session.get(Role, other_role.id)
-        assert check is not None
+        assert await RoleCrud.first(
+            db_session, [Role.name == "added_within_ambient_tx"]
+        )
 
     @pytest.mark.anyio
-    async def test_releases_connection_between_polls(self, db_session: AsyncSession):
-        """The watcher returns its connection to the pool while it sleeps."""
+    async def test_holds_neither_a_connection_nor_a_table_lock_between_polls(
+        self, db_session, engine
+    ):
+        """Each poll ends its transaction, so while the watcher sleeps its connection
+        is back in the pool and the watched table is not locked (#423)."""
         role = Role(name="release_role")
         db_session.add(role)
         await db_session.commit()
@@ -1103,34 +805,12 @@ class TestWaitForRowChange:
         )
         caller = AsyncSession(bind=small)
         watch = asyncio.create_task(
-            wait_for_row_change(caller, Role, role.id, interval=0.5, timeout=1.2)
+            wait_for_row_change(caller, Role, role.id, interval=0.3, timeout=0.7)
         )
         try:
-            await asyncio.sleep(0.25)
-            async with small.connect() as conn:
+            await asyncio.sleep(0.15)
+            async with small.connect() as conn:  # the pool's only connection is free
                 assert (await conn.execute(text("SELECT 1"))).scalar_one() == 1
-            with pytest.raises(TimeoutError):
-                await watch
-        finally:
-            watch.cancel()
-            await asyncio.gather(watch, return_exceptions=True)
-            await caller.close()
-            await small.dispose()
-
-    @pytest.mark.anyio
-    async def test_does_not_hold_table_lock_between_polls(
-        self, db_session: AsyncSession, engine
-    ):
-        """The watcher holds no lock on the watched table while it sleeps."""
-        role = Role(name="lock_role")
-        db_session.add(role)
-        await db_session.commit()
-
-        watch = asyncio.create_task(
-            wait_for_row_change(db_session, Role, role.id, interval=0.5, timeout=1.2)
-        )
-        try:
-            await asyncio.sleep(0.25)
             async with engine.connect() as conn:
                 await conn.execute(
                     text(
@@ -1144,12 +824,13 @@ class TestWaitForRowChange:
         finally:
             watch.cancel()
             await asyncio.gather(watch, return_exceptions=True)
+            await caller.close()
+            await small.dispose()
 
     @pytest.mark.anyio
-    async def test_survives_idle_in_transaction_session_timeout(
-        self, db_session: AsyncSession
-    ):
-        """An idle_in_transaction_session_timeout shorter than interval is harmless."""
+    async def test_survives_idle_in_transaction_session_timeout(self, db_session):
+        """An ``idle_in_transaction_session_timeout`` shorter than the interval is
+        harmless, because no transaction stays open across the sleep (#423)."""
         role = Role(name="idle_timeout_role")
         db_session.add(role)
         await db_session.commit()
@@ -1162,365 +843,88 @@ class TestWaitForRowChange:
         )
         caller = AsyncSession(bind=strict)
 
-        async def update_later():
-            await asyncio.sleep(0.8)
-            factory = async_sessionmaker(strict, expire_on_commit=False)
-            async with factory() as other:
-                r = await other.get(Role, role.id)
-                assert r is not None
-                r.name = "idle_timeout_updated"
-                await other.commit()
+        async def rename(other: AsyncSession, polls: _Polls) -> None:
+            await asyncio.sleep(0.8)  # several idle timeouts' worth of polling
+            (await other.get_one(Role, role.id)).name = "idle_timeout_updated"
+            await other.commit()
 
-        update_task = asyncio.create_task(update_later())
         try:
-            result = await wait_for_row_change(
-                caller, Role, role.id, interval=0.5, timeout=3.0
-            )
+            async with _changing_between_polls(strict, rename):
+                result = await wait_for_row_change(
+                    caller, Role, role.id, interval=0.5, timeout=3.0
+                )
             assert result.name == "idle_timeout_updated"
         finally:
-            await asyncio.gather(update_task, return_exceptions=True)
             await caller.close()
             await strict.dispose()
 
+    @pytest.mark.parametrize(
+        ("poll_fails", "error"),
+        [(False, TimeoutError), (True, DBAPIError)],
+        ids=["timed-out", "failed-poll"],
+    )
     @pytest.mark.anyio
-    async def test_connection_bound_session_keeps_outer_transaction(self, engine):
-        """A session bound to a connection keeps its outer transaction intact."""
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        try:
-            async with engine.connect() as conn:
-                outer = await conn.begin()
-                session = AsyncSession(
-                    bind=conn,
-                    join_transaction_mode="create_savepoint",
-                    expire_on_commit=False,
-                )
-                role = Role(name="outer_tx_role")
-                session.add(role)
-                await session.commit()
+    @pytest.mark.usefixtures("session_maker")
+    async def test_connection_bound_caller_keeps_its_outer_transaction(
+        self, engine, poll_fails, error
+    ):
+        """Polls join the caller's connection through a savepoint, so neither the
+        polling nor a poll that errors rolls back the outer transaction (4341fd1)."""
+        async with _connection_bound(engine) as (outer, session):
+            role = Role(name="outer_tx_role")
+            session.add(role)
+            await session.commit()
 
-                with pytest.raises(TimeoutError):
+            with _failing_second_get() if poll_fails else nullcontext():
+                with pytest.raises(error):
                     await wait_for_row_change(
                         session, Role, role.id, interval=0.05, timeout=0.3
                     )
 
-                assert outer.is_active
-                assert await session.get(Role, role.id) is not None
-                await outer.rollback()
-        finally:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.drop_all)
+            assert outer.is_active
+            assert await session.get(Role, role.id) is not None
+
+
+class TestTestingHelpers:
+    """``create_database`` and ``cleanup_tables`` from ``db.testing``."""
 
     @pytest.mark.anyio
-    async def test_connection_bound_session_survives_failed_poll(self, engine):
-        """A poll failing inside its transaction leaves the outer one intact."""
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+    async def test_create_database_creates_it(self):
+        name = "ft_test_db_created_by_db_tests"
+        await drop_database(name)
         try:
-            async with engine.connect() as conn:
-                outer = await conn.begin()
-                session = AsyncSession(
-                    bind=conn,
-                    join_transaction_mode="create_savepoint",
-                    expire_on_commit=False,
-                )
-                role = Role(name="failed_poll_role")
-                session.add(role)
-                await session.commit()
+            await create_database(name, server_url=DATABASE_URL)
 
-                original_get = AsyncSession.get
-                calls = 0
-
-                async def failing_get(self, *args, **kwargs):
-                    nonlocal calls
-                    calls += 1
-                    if calls > 1:
-                        await self.execute(text("SELECT 1 / 0"))
-                    return await original_get(self, *args, **kwargs)
-
-                with patch.object(AsyncSession, "get", failing_get):
-                    with pytest.raises(DBAPIError):
-                        await wait_for_row_change(
-                            session, Role, role.id, interval=0.05, timeout=1.0
-                        )
-
-                assert outer.is_active
-                assert await session.get(Role, role.id) is not None
-                await outer.rollback()
+            assert await database_exists(name)
         finally:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.drop_all)
-
-
-class TestCreateDatabase:
-    """Tests for create_database."""
+            await drop_database(name)
 
     @pytest.mark.anyio
-    async def test_creates_database(self):
-        """Database is created by create_database."""
-        target_url = (
-            make_url(DATABASE_URL)
-            .set(database="test_create_db_general")
-            .render_as_string(hide_password=False)
+    async def test_cleanup_tables_truncates_every_table(self, db_session):
+        """Rows in every table go; a metadata without tables is a no-op."""
+        role = Role(name="cleanup_role")
+        db_session.add(role)
+        await db_session.flush()
+        db_session.add(
+            User(username="cleanup", email="cleanup@test.com", role_id=role.id)
         )
-        expected_db = make_url(target_url).database
-        assert expected_db is not None
+        await db_session.commit()
+        assert (await RoleCrud.count(db_session), await UserCrud.count(db_session)) == (
+            1,
+            1,
+        )
 
-        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-        try:
-            async with engine.connect() as conn:
-                await conn.execute(text(f"DROP DATABASE IF EXISTS {expected_db}"))
+        await cleanup_tables(db_session, Base)
 
-            await create_database(db_name=expected_db, server_url=DATABASE_URL)
-
-            async with engine.connect() as conn:
-                result = await conn.execute(
-                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                    {"name": expected_db},
-                )
-                assert result.scalar() == 1
-
-            # Cleanup
-            async with engine.connect() as conn:
-                await conn.execute(text(f"DROP DATABASE IF EXISTS {expected_db}"))
-        finally:
-            await engine.dispose()
-
-
-class TestCleanupTables:
-    """Tests for cleanup_tables helper."""
-
-    @pytest.mark.anyio
-    async def test_truncates_all_tables(self):
-        """All table rows are removed after cleanup_tables."""
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
-            role = Role(id=uuid.uuid4(), name="cleanup_role")
-            session.add(role)
-            await session.flush()
-
-            user = User(
-                id=uuid.uuid4(),
-                username="cleanup_user",
-                email="cleanup@test.com",
-                role_id=role.id,
-            )
-            session.add(user)
-            await session.commit()
-
-            # Verify rows exist
-            roles_count = await RoleCrud.count(session)
-            users_count = await UserCrud.count(session)
-            assert roles_count == 1
-            assert users_count == 1
-
-            await cleanup_tables(session, Base)
-
-            # Verify tables are empty
-            roles_count = await RoleCrud.count(session)
-            users_count = await UserCrud.count(session)
-            assert roles_count == 0
-            assert users_count == 0
-
-    @pytest.mark.anyio
-    async def test_noop_for_empty_metadata(self):
-        """cleanup_tables does not raise when metadata has no tables."""
+        assert (await RoleCrud.count(db_session), await UserCrud.count(db_session)) == (
+            0,
+            0,
+        )
 
         class EmptyBase(DeclarativeBase):
             pass
 
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
-            # Should not raise
-            await cleanup_tables(session, EmptyBase)
-
-
-class TestM2MAdd:
-    """Tests for m2m_add helper."""
-
-    @pytest.mark.anyio
-    async def test_adds_single_related(self, db_session: AsyncSession):
-        """Associates one related instance via the secondary table."""
-        user = User(username="m2m_author", email="m2m@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        post = Post(title="Post A", author_id=user.id)
-        tag = Tag(name="python")
-        db_session.add_all([post, tag])
-        await db_session.flush()
-
-        async with transaction(db_session):
-            await m2m_add(db_session, post, Post.tags, tag)
-
-        result = await db_session.execute(
-            select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
-        )
-        loaded = result.scalar_one()
-        assert len(loaded.tags) == 1
-        assert loaded.tags[0].id == tag.id
-
-    @pytest.mark.anyio
-    async def test_adds_multiple_related(self, db_session: AsyncSession):
-        """Associates multiple related instances in a single call."""
-        user = User(username="m2m_author2", email="m2m2@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        post = Post(title="Post B", author_id=user.id)
-        tag1 = Tag(name="web")
-        tag2 = Tag(name="api")
-        tag3 = Tag(name="async")
-        db_session.add_all([post, tag1, tag2, tag3])
-        await db_session.flush()
-
-        async with transaction(db_session):
-            await m2m_add(db_session, post, Post.tags, tag1, tag2, tag3)
-
-        result = await db_session.execute(
-            select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
-        )
-        loaded = result.scalar_one()
-        assert {t.id for t in loaded.tags} == {tag1.id, tag2.id, tag3.id}
-
-    @pytest.mark.anyio
-    async def test_noop_for_empty_related(self, db_session: AsyncSession):
-        """Calling with no related instances is a no-op."""
-        user = User(username="m2m_author3", email="m2m3@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        post = Post(title="Post C", author_id=user.id)
-        db_session.add(post)
-        await db_session.flush()
-
-        async with transaction(db_session):
-            await m2m_add(db_session, post, Post.tags)  # no related instances
-
-        result = await db_session.execute(
-            select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
-        )
-        loaded = result.scalar_one()
-        assert loaded.tags == []
-
-    @pytest.mark.anyio
-    async def test_ignore_conflicts_true(self, db_session: AsyncSession):
-        """Duplicate inserts are silently skipped when ignore_conflicts=True."""
-        user = User(username="m2m_author4", email="m2m4@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        post = Post(title="Post D", author_id=user.id)
-        tag = Tag(name="duplicate_tag")
-        db_session.add_all([post, tag])
-        await db_session.flush()
-
-        async with transaction(db_session):
-            await m2m_add(db_session, post, Post.tags, tag)
-
-        # Second call with ignore_conflicts=True must not raise
-        async with transaction(db_session):
-            await m2m_add(db_session, post, Post.tags, tag, ignore_conflicts=True)
-
-        result = await db_session.execute(
-            select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
-        )
-        loaded = result.scalar_one()
-        assert len(loaded.tags) == 1
-
-    @pytest.mark.anyio
-    async def test_ignore_conflicts_false_raises(self, db_session: AsyncSession):
-        """Duplicate inserts raise IntegrityError when ignore_conflicts=False (default)."""
-        user = User(username="m2m_author5", email="m2m5@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        post = Post(title="Post E", author_id=user.id)
-        tag = Tag(name="conflict_tag")
-        db_session.add_all([post, tag])
-        await db_session.flush()
-
-        async with transaction(db_session):
-            await m2m_add(db_session, post, Post.tags, tag)
-
-        with pytest.raises(IntegrityError):
-            async with transaction(db_session):
-                await m2m_add(db_session, post, Post.tags, tag)
-
-    @pytest.mark.anyio
-    async def test_non_m2m_raises_type_error(self, db_session: AsyncSession):
-        """Passing a non-M2M relationship attribute raises TypeError."""
-        user = User(username="m2m_author6", email="m2m6@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        role = Role(name="type_err_role")
-        db_session.add(role)
-        await db_session.flush()
-
-        with pytest.raises(TypeError, match="Many-to-Many"):
-            await m2m_add(db_session, user, User.role, role)
-
-    @pytest.mark.anyio
-    async def test_works_inside_lock_tables(self, session_maker):
-        """m2m_add works correctly inside a lock_tables context."""
-        async with lock_tables(session_maker, [Tag]) as session:
-            user = User(username="m2m_lock_author", email="m2m_lock@test.com")
-            session.add(user)
-            await session.flush()
-
-            tag = Tag(name="locked_tag")
-            session.add(tag)
-            await session.flush()
-
-            post = Post(title="Post Lock", author_id=user.id)
-            session.add(post)
-            await session.flush()
-
-            await m2m_add(session, post, Post.tags, tag)
-
-        async with session_maker() as verify:
-            result = await verify.execute(
-                select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
-            )
-            loaded = result.scalar_one()
-            assert len(loaded.tags) == 1
-            assert loaded.tags[0].name == "locked_tag"
-
-
-class TestDbErrors:
-    """Tests for structured error handling in db utilities."""
-
-    @pytest.mark.anyio
-    async def test_pool_exhausted_on_dependency_raises_pool_exhausted_error(self):
-        """PoolExhaustedError is raised when the pool is exhausted on the dependency."""
-        db = Database(DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1)
-        try:
-            async with db.session():  # check out the single available connection
-                with pytest.raises(PoolExhaustedError):
-                    async for _ in db(_make_request()):
-                        pass
-        finally:
-            await db.engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_pool_exhausted_on_lock_tables_raises_pool_exhausted_error(self):
-        """The dedicated-session path needs a second connection, so a pool of one is exhausted."""
-        db = Database(DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=0.1)
-        try:
-            async with db.session():  # check out the single available connection
-                with pytest.raises(PoolExhaustedError):
-                    async with db.lock_tables([Role]):
-                        pass
-        finally:
-            await db.engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_lock_timeout_raises_lock_timeout_error(self, engine, session_maker):
-        """LockTimeoutError is raised when a table lock cannot be acquired within timeout."""
-        db = Database(engine=engine)
-        async with db.lock_tables([Role]):
-            with pytest.raises(LockTimeoutError):
-                async with db.lock_tables([Role], timeout="100ms"):
-                    pass
+        await cleanup_tables(db_session, EmptyBase)
 
 
 class _LocalBase(DeclarativeBase):
@@ -1552,340 +956,196 @@ class _CompItem(_LocalBase):
     item_code: Mapped[str] = mapped_column(String(50), primary_key=True)
 
 
-class TestM2MRemove:
-    """Tests for m2m_remove helper."""
+async def _post_and_tags(session: AsyncSession, *names: str) -> tuple[Post, list[Tag]]:
+    """A flushed post and flushed tags named *names*, not yet associated."""
+    user = User(username="author", email="author@test.com")
+    session.add(user)
+    await session.flush()
+    post = Post(title="Post", author_id=user.id)
+    tags = [Tag(name=name) for name in names]
+    session.add_all([post, *tags])
+    await session.flush()
+    return post, tags
 
-    async def _setup(
-        self, session: AsyncSession, username: str, email: str, *tag_names: str
-    ):
-        """Create a user, post, and tags; associate all tags with the post."""
-        user = User(username=username, email=email)
-        session.add(user)
-        await session.flush()
 
-        post = Post(title=f"Post {username}", author_id=user.id)
-        tags = [Tag(name=n) for n in tag_names]
-        session.add(post)
-        session.add_all(tags)
-        await session.flush()
+async def _tag_ids(session: AsyncSession, post: Post) -> set[uuid.UUID]:
+    """The tag ids associated with *post*, read from the association table."""
+    rows = await session.execute(
+        select(post_tags.c.tag_id).where(post_tags.c.post_id == post.id)
+    )
+    return set(rows.scalars())
 
-        async with transaction(session):
-            await m2m_add(session, post, Post.tags, *tags)
 
-        return post, tags
+class TestM2M:
+    """``m2m_add`` / ``m2m_remove`` / ``m2m_set`` write the association table directly."""
 
-    async def _load_tags(self, session: AsyncSession, post: Post) -> list[Tag]:
-        result = await session.execute(
-            select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
-        )
-        return result.scalar_one().tags
-
+    @pytest.mark.parametrize("count", [0, 1, 3])
     @pytest.mark.anyio
-    async def test_removes_single(self, db_session: AsyncSession):
-        """Removes one association, leaving others intact."""
-        post, (tag1, tag2) = await self._setup(
-            db_session, "rm_author1", "rm1@test.com", "tag_rm_a", "tag_rm_b"
-        )
+    async def test_add_inserts_one_row_per_related(self, db_session, count):
+        post, tags = await _post_and_tags(db_session, *[f"t{i}" for i in range(count)])
 
         async with transaction(db_session):
-            await m2m_remove(db_session, post, Post.tags, tag1)
+            await m2m_add(db_session, post, Post.tags, *tags)
 
-        remaining = await self._load_tags(db_session, post)
-        assert len(remaining) == 1
-        assert remaining[0].id == tag2.id
+        assert await _tag_ids(db_session, post) == {tag.id for tag in tags}
 
+    @pytest.mark.parametrize(
+        "ignore_conflicts", [False, True], ids=["raises", "ignored"]
+    )
     @pytest.mark.anyio
-    async def test_removes_multiple(self, db_session: AsyncSession):
-        """Removes multiple associations in one call."""
-        post, (tag1, tag2, tag3) = await self._setup(
-            db_session, "rm_author2", "rm2@test.com", "tag_rm_c", "tag_rm_d", "tag_rm_e"
-        )
-
-        async with transaction(db_session):
-            await m2m_remove(db_session, post, Post.tags, tag1, tag3)
-
-        remaining = await self._load_tags(db_session, post)
-        assert len(remaining) == 1
-        assert remaining[0].id == tag2.id
-
-    @pytest.mark.anyio
-    async def test_noop_for_empty_related(self, db_session: AsyncSession):
-        """Calling with no related instances is a no-op."""
-        post, (tag,) = await self._setup(
-            db_session, "rm_author3", "rm3@test.com", "tag_rm_f"
-        )
-
-        async with transaction(db_session):
-            await m2m_remove(db_session, post, Post.tags)
-
-        remaining = await self._load_tags(db_session, post)
-        assert len(remaining) == 1
-
-    @pytest.mark.anyio
-    async def test_idempotent_for_missing_association(self, db_session: AsyncSession):
-        """Removing a non-existent association does not raise."""
-        post, (tag1,) = await self._setup(
-            db_session, "rm_author4", "rm4@test.com", "tag_rm_g"
-        )
-        tag2 = Tag(name="tag_rm_h")
-        db_session.add(tag2)
-        await db_session.flush()
-
-        # tag2 was never associated — should not raise
-        async with transaction(db_session):
-            await m2m_remove(db_session, post, Post.tags, tag2)
-
-        remaining = await self._load_tags(db_session, post)
-        assert len(remaining) == 1
-
-    @pytest.mark.anyio
-    async def test_non_m2m_raises_type_error(self, db_session: AsyncSession):
-        """Passing a non-M2M relationship attribute raises TypeError."""
-        user = User(username="rm_author5", email="rm5@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        role = Role(name="rm_type_err_role")
-        db_session.add(role)
-        await db_session.flush()
-
-        with pytest.raises(TypeError, match="Many-to-Many"):
-            await m2m_remove(db_session, user, User.role, role)
-
-    @pytest.mark.anyio
-    async def test_removes_composite_pk_related(self):
-        """Composite-PK branch: DELETE uses tuple IN when related side has multi-col PK."""
-        engine = create_async_engine(DATABASE_URL, echo=False)
-        async with engine.begin() as conn:
-            await conn.run_sync(_LocalBase.metadata.create_all)
-
-        session_factory = async_sessionmaker(engine, expire_on_commit=False)
-        try:
-            async with session_factory() as session:
-                owner = _CompOwner()
-                item1 = _CompItem(group_id="g1", item_code="c1")
-                item2 = _CompItem(group_id="g1", item_code="c2")
-                session.add_all([owner, item1, item2])
-                await session.flush()
-
-                async with transaction(session):
-                    await m2m_add(session, owner, _CompOwner.items, item1, item2)
-
-                async with transaction(session):
-                    await m2m_remove(session, owner, _CompOwner.items, item1)
-
-                await session.commit()
-
-            async with session_factory() as verify:
-                result = await verify.execute(
-                    select(_CompOwner)
-                    .where(_CompOwner.id == owner.id)
-                    .options(selectinload(_CompOwner.items))
-                )
-                loaded = result.scalar_one()
-                assert len(loaded.items) == 1
-                assert (loaded.items[0].group_id, loaded.items[0].item_code) == (
-                    "g1",
-                    "c2",
-                )
-        finally:
-            async with engine.begin() as conn:
-                await conn.run_sync(_LocalBase.metadata.drop_all)
-            await engine.dispose()
-
-
-class TestM2MSet:
-    """Tests for m2m_set helper."""
-
-    async def _load_tags(self, session: AsyncSession, post: Post) -> list[Tag]:
-        result = await session.execute(
-            select(Post).where(Post.id == post.id).options(selectinload(Post.tags))
-        )
-        return result.scalar_one().tags
-
-    @pytest.mark.anyio
-    async def test_replaces_existing_set(self, db_session: AsyncSession):
-        """Replaces the full association set atomically."""
-        user = User(username="set_author1", email="set1@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        post = Post(title="Post Set A", author_id=user.id)
-        tag1 = Tag(name="tag_set_a")
-        tag2 = Tag(name="tag_set_b")
-        tag3 = Tag(name="tag_set_c")
-        db_session.add_all([post, tag1, tag2, tag3])
-        await db_session.flush()
-
-        async with transaction(db_session):
-            await m2m_add(db_session, post, Post.tags, tag1, tag2)
-
-        async with transaction(db_session):
-            await m2m_set(db_session, post, Post.tags, tag3)
-
-        remaining = await self._load_tags(db_session, post)
-        assert len(remaining) == 1
-        assert remaining[0].id == tag3.id
-
-    @pytest.mark.anyio
-    async def test_clears_all_when_no_related(self, db_session: AsyncSession):
-        """Passing no related instances clears all associations."""
-        user = User(username="set_author2", email="set2@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        post = Post(title="Post Set B", author_id=user.id)
-        tag = Tag(name="tag_set_d")
-        db_session.add_all([post, tag])
-        await db_session.flush()
-
+    async def test_add_of_an_existing_association(self, db_session, ignore_conflicts):
+        post, (tag,) = await _post_and_tags(db_session, "dup")
         async with transaction(db_session):
             await m2m_add(db_session, post, Post.tags, tag)
 
-        async with transaction(db_session):
-            await m2m_set(db_session, post, Post.tags)
+        with raises_if(IntegrityError, not ignore_conflicts):
+            async with transaction(db_session):
+                await m2m_add(
+                    db_session, post, Post.tags, tag, ignore_conflicts=ignore_conflicts
+                )
 
-        remaining = await self._load_tags(db_session, post)
-        assert remaining == []
+        assert await _tag_ids(db_session, post) == {tag.id}
 
+    @pytest.mark.parametrize(
+        ("remove", "left"),
+        [((0,), (1, 2)), ((0, 2), (1,)), ((), (0, 1, 2)), ((3,), (0, 1, 2))],
+        ids=["one", "several", "none", "never-associated"],
+    )
     @pytest.mark.anyio
-    async def test_set_on_empty_then_populate(self, db_session: AsyncSession):
-        """m2m_set works on a post with no existing associations."""
-        user = User(username="set_author3", email="set3@test.com")
-        db_session.add(user)
-        await db_session.flush()
-
-        post = Post(title="Post Set C", author_id=user.id)
-        tag1 = Tag(name="tag_set_e")
-        tag2 = Tag(name="tag_set_f")
-        db_session.add_all([post, tag1, tag2])
-        await db_session.flush()
+    async def test_remove_deletes_only_the_given_associations(
+        self, db_session, remove, left
+    ):
+        post, tags = await _post_and_tags(db_session, "a", "b", "c", "d")
 
         async with transaction(db_session):
-            await m2m_set(db_session, post, Post.tags, tag1, tag2)
+            await m2m_add(db_session, post, Post.tags, *tags[:3])  # "d" stays apart
+            await m2m_remove(db_session, post, Post.tags, *[tags[i] for i in remove])
 
-        remaining = await self._load_tags(db_session, post)
-        assert {t.id for t in remaining} == {tag1.id, tag2.id}
+        assert await _tag_ids(db_session, post) == {tags[i].id for i in left}
 
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [((0, 1), (2,)), ((0,), ()), ((), (0, 1))],
+        ids=["replace", "clear", "from-empty"],
+    )
     @pytest.mark.anyio
-    async def test_non_m2m_raises_type_error(self, db_session: AsyncSession):
-        """Passing a non-M2M relationship attribute raises TypeError."""
-        user = User(username="set_author4", email="set4@test.com")
-        db_session.add(user)
-        await db_session.flush()
+    async def test_set_replaces_the_whole_association_set(
+        self, db_session, before, after
+    ):
+        post, tags = await _post_and_tags(db_session, "a", "b", "c")
 
-        role = Role(name="set_type_err_role")
-        db_session.add(role)
-        await db_session.flush()
+        async with transaction(db_session):
+            await m2m_add(db_session, post, Post.tags, *[tags[i] for i in before])
+            await m2m_set(db_session, post, Post.tags, *[tags[i] for i in after])
+
+        assert await _tag_ids(db_session, post) == {tags[i].id for i in after}
+
+    @pytest.mark.parametrize(
+        "helper", [m2m_add, m2m_remove, m2m_set], ids=["add", "remove", "set"]
+    )
+    @pytest.mark.anyio
+    async def test_non_m2m_relationship_raises_type_error(self, helper):
+        """Rejected before touching the database."""
+        user = User(username="u", email="u@test.com")
 
         with pytest.raises(TypeError, match="Many-to-Many"):
-            await m2m_set(db_session, user, User.role, role)
+            await helper(AsyncSession(), user, User.role, Role(name="r"))
+
+    @pytest.mark.anyio
+    async def test_remove_matches_a_composite_related_key_as_a_tuple(self, engine):
+        async with (
+            created_tables(engine, _LocalBase.metadata),
+            async_sessionmaker(engine, expire_on_commit=False)() as session,
+        ):
+            owner = _CompOwner()
+            item1 = _CompItem(group_id="g1", item_code="c1")
+            item2 = _CompItem(group_id="g1", item_code="c2")
+            session.add_all([owner, item1, item2])
+            await session.flush()
+
+            async with transaction(session):
+                await m2m_add(session, owner, _CompOwner.items, item1, item2)
+                await m2m_remove(session, owner, _CompOwner.items, item1)
+
+            rows = await session.execute(
+                select(_comp_assoc.c.item_group, _comp_assoc.c.item_code).where(
+                    _comp_assoc.c.owner_id == owner.id
+                )
+            )
+            assert rows.all() == [("g1", "c2")]
 
 
-STATE_ATTR = "test_db_session"
+_STATE_ATTR = "test_db_session"
 
 
 class _FakeSession:
     """Records commit() calls into a shared event log."""
 
-    def __init__(self, events: list[str], *, in_txn: bool = True) -> None:
+    def __init__(self, events: list[str], *, in_txn: bool) -> None:
         self.events = events
         self._in_txn = in_txn
-        self.commits = 0
 
     def in_transaction(self) -> bool:
         return self._in_txn
 
     async def commit(self) -> None:
         self.events.append("COMMIT")
-        self.commits += 1
         self._in_txn = False
 
 
-async def _drive(app, scope, events: list[str]) -> list[str]:
-    """Run an ASGI app, appending the response messages it emits to *events*
-    (shared with the fake session so commit/response ordering is captured)."""
-
-    async def receive():  # pragma: no cover - not exercised
-        return {"type": "http.disconnect"}
-
-    async def send(message) -> None:
-        events.append(message["type"])
-
-    await app(scope, receive, send)
-    return events
+async def _respond(scope, receive, send) -> None:
+    """An ASGI app sending a minimal response."""
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": b"ok"})
 
 
-class TestCommitOrdering:
-    """The commit must precede the forwarded response, and be skipped otherwise."""
+async def _receive():  # pragma: no cover - not exercised
+    return {"type": "http.disconnect"}
 
+
+async def _send(message) -> None:  # pragma: no cover - not exercised
+    return None
+
+
+class TestCommitMiddleware:
+    """``_CommitOnResponseMiddleware`` on fake sessions: ordering and pass-through."""
+
+    @pytest.mark.parametrize(
+        ("in_txn", "expected"),
+        [
+            (True, ["COMMIT", "http.response.start", "http.response.body"]),
+            (False, ["http.response.start", "http.response.body"]),
+            (None, ["http.response.start", "http.response.body"]),
+        ],
+        ids=["in-transaction", "already-committed", "no-session"],
+    )
     @pytest.mark.anyio
-    async def test_commits_before_response_start(self):
+    async def test_commits_before_the_response_starts(self, in_txn, expected):
+        """Commit and response messages land in *events* in the order they happen."""
         events: list[str] = []
-        session = _FakeSession(events)
+        state = (
+            {} if in_txn is None else {_STATE_ATTR: _FakeSession(events, in_txn=in_txn)}
+        )
 
-        async def inner(scope, receive, send):
-            await send({"type": "http.response.start", "status": 200, "headers": []})
-            await send({"type": "http.response.body", "body": b"ok"})
+        async def send(message) -> None:
+            events.append(message["type"])
 
-        app = _CommitOnResponseMiddleware(inner, state_attr=STATE_ATTR)
-        scope = {"type": "http", "state": {STATE_ATTR: session}}
+        app = _CommitOnResponseMiddleware(_respond, state_attr=_STATE_ATTR)
+        await app({"type": "http", "state": state}, _receive, send)
 
-        result = await _drive(app, scope, events)
-
-        assert session.commits == 1
-        assert result == ["COMMIT", "http.response.start", "http.response.body"]
-
-    @pytest.mark.anyio
-    async def test_no_commit_when_not_in_transaction(self):
-        events: list[str] = []
-        session = _FakeSession(events, in_txn=False)
-
-        async def inner(scope, receive, send):
-            await send({"type": "http.response.start", "status": 200, "headers": []})
-            await send({"type": "http.response.body", "body": b""})
-
-        app = _CommitOnResponseMiddleware(inner, state_attr=STATE_ATTR)
-        scope = {"type": "http", "state": {STATE_ATTR: session}}
-
-        result = await _drive(app, scope, events)
-
-        assert session.commits == 0
-        assert result == ["http.response.start", "http.response.body"]
-
-    @pytest.mark.anyio
-    async def test_no_session_is_noop(self):
-        events: list[str] = []
-
-        async def inner(scope, receive, send):
-            await send({"type": "http.response.start", "status": 200, "headers": []})
-            await send({"type": "http.response.body", "body": b""})
-
-        app = _CommitOnResponseMiddleware(inner, state_attr=STATE_ATTR)
-        scope = {"type": "http", "state": {}}
-
-        result = await _drive(app, scope, events)
-
-        assert result == ["http.response.start", "http.response.body"]
+        assert events == expected
 
     @pytest.mark.anyio
     async def test_non_http_scope_passes_through(self):
-        called = False
+        seen: list[dict] = []
 
-        async def inner(scope, receive, send):
-            nonlocal called
-            called = True
+        async def inner(scope, receive, send) -> None:
+            seen.append(scope)
 
-        async def receive():  # pragma: no cover - not exercised
-            return {"type": "lifespan.startup"}
+        app = _CommitOnResponseMiddleware(inner, state_attr=_STATE_ATTR)
+        await app({"type": "lifespan"}, _receive, _send)
 
-        async def send(message):  # pragma: no cover - not exercised
-            return None
-
-        app = _CommitOnResponseMiddleware(inner, state_attr=STATE_ATTR)
-        await app({"type": "lifespan"}, receive, send)
-
-        assert called is True
+        assert seen == [{"type": "lifespan"}]
 
 
 class _ProbeMiddleware:
@@ -1901,11 +1161,9 @@ class _ProbeMiddleware:
     async def __call__(self, scope, receive, send):
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                async with self.session_maker() as probe:
-                    row = (
-                        await probe.execute(select(Role).where(Role.name == self.name))
-                    ).scalar_one_or_none()
-                    self.result["visible_at_start"] = row is not None
+                self.result["visible_at_start"] = await _role_exists(
+                    self.session_maker, self.name
+                )
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
@@ -1945,9 +1203,9 @@ def _build_app(db: Database) -> FastAPI:
     ) -> dict:
         # Endpoint commits explicitly; the middleware must not double-commit or
         # error — it finds no open transaction and no-ops.
-        role = await RoleCrud.create(session, body)
+        await RoleCrud.create(session, body)
         await session.commit()
-        return {"id": str(role.id), "name": role.name}
+        return {"ok": True}
 
     async def _scoped_writer(
         body: RoleCreate, session: AsyncSession = Security(db, scopes=["roles:write"])
@@ -2019,144 +1277,89 @@ def _build_app(db: Database) -> FastAPI:
     return app
 
 
-async def _row_exists(session_maker, name: str) -> bool:
-    async with session_maker() as session:
-        row = (
-            await session.execute(select(Role).where(Role.name == name))
-        ).scalar_one_or_none()
-        return row is not None
-
-
 class TestCommitIntegration:
-    @pytest.mark.anyio
-    async def test_write_is_committed(self, engine, session_maker):
-        app = _build_app(Database(engine=engine))
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/roles", json={"name": "committed_role"})
+    """``Depends(db)`` plus the installed middleware, through real requests."""
 
-        assert resp.status_code == 200
-        assert await _row_exists(session_maker, "committed_role")
+    @pytest.fixture
+    def app(self, engine) -> FastAPI:
+        return _build_app(Database(engine=engine))
 
     @pytest.mark.anyio
-    async def test_visible_at_response_start(self, engine, session_maker):
-        """The write is visible to a separate session *before* the response is
-        sent — the read-after-write guarantee the middleware exists for."""
-        app = _build_app(Database(engine=engine))
+    async def test_write_is_visible_to_others_before_the_response_starts(
+        self, app, session_maker
+    ):
+        """The read-after-write guarantee the middleware exists for."""
         result: dict = {}
         app.add_middleware(
-            _ProbeMiddleware,
-            session_maker=session_maker,
-            name="probe_role",
-            result=result,
+            _ProbeMiddleware, session_maker=session_maker, name="probe", result=result
         )
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/roles", json={"name": "probe_role"})
+
+        async with create_async_client(app) as client:
+            resp = await client.post("/roles", json={"name": "probe"})
 
         assert resp.status_code == 200
-        assert result.get("visible_at_start") is True
+        assert result == {"visible_at_start": True}
+        assert await _role_exists(session_maker, "probe")
 
+    @pytest.mark.parametrize(
+        ("path", "names", "body"),
+        [
+            ("/roles-self-commit", ["r"], {"ok": True}),
+            ("/roles-two-cache-keys", ["r", "r_sub"], {"same_session": True}),
+            ("/roles-function-scope", ["r", "r_fn"], {"ok": True}),
+            ("/roles-function-scope-borrower", ["r", "r_fn"], {"ok": True}),
+        ],
+        ids=[
+            "endpoint-commits-itself",
+            "two-cache-keys-share-one-session",
+            "function-scoped-owner-commits-early",
+            "function-scoped-borrower-leaves-the-commit-to-the-middleware",
+        ],
+    )
     @pytest.mark.anyio
-    async def test_error_rolls_back(self, engine, session_maker):
-        app = _build_app(Database(engine=engine))
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/roles-then-boom", json={"name": "ghost_role"})
-
-        assert resp.status_code == 500
-        assert not await _row_exists(session_maker, "ghost_role")
-
-    @pytest.mark.anyio
-    async def test_explicit_commit_in_endpoint(self, engine, session_maker):
-        """An endpoint that commits itself works: the middleware no-ops (no
-        double commit / error) and the write is persisted."""
-        app = _build_app(Database(engine=engine))
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/roles-self-commit", json={"name": "self_commit"})
-
-        assert resp.status_code == 200
-        assert await _row_exists(session_maker, "self_commit")
-
-    @pytest.mark.anyio
-    async def test_streaming_response_coexists(self, engine, session_maker):
-        """A read-only streaming endpoint works alongside the middleware: the
-        commit fires at stream start, the pre-stream write is committed, and the
-        generator can keep reading via the request session."""
-        app = _build_app(Database(engine=engine))
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/roles-stream/streamed_role")
-
-        assert resp.status_code == 200
-        assert "data: streamed_role" in resp.text
-        # The write made before the stream began is durably committed.
-        assert await _row_exists(session_maker, "streamed_role")
-
-    @pytest.mark.anyio
-    async def test_two_cache_keys_share_one_session(self, engine, session_maker):
-        """Two resolutions of ``Depends(db)`` in one request must share a session."""
-        app = _build_app(Database(engine=engine))
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/roles-two-cache-keys", json={"name": "two_keys"})
-
-        assert resp.status_code == 200
-        assert resp.json()["same_session"] is True
-        assert await _row_exists(session_maker, "two_keys")
-        assert await _row_exists(session_maker, "two_keys_sub")
-
-    @pytest.mark.anyio
-    async def test_function_scope_commits_before_response(self, engine, session_maker):
-        """``scope="function"`` unwinds before response-start, so the dependency
-        commits on its way out instead of leaving it to the middleware."""
-        app = _build_app(Database(engine=engine))
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/roles-function-scope", json={"name": "fn_scope"})
-
-        assert resp.status_code == 200
-        assert await _row_exists(session_maker, "fn_scope")
-        assert await _row_exists(session_maker, "fn_scope_fn")
-
-    @pytest.mark.anyio
-    async def test_function_scope_borrower_leaves_commit_to_middleware(
-        self, engine, session_maker
+    async def test_successful_request_persists_every_write(
+        self, app, session_maker, path, names, body
     ):
-        """A function-scoped *borrower* unwinds early but owns nothing."""
-        app = _build_app(Database(engine=engine))
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post(
-                "/roles-function-scope-borrower", json={"name": "fn_borrow"}
-            )
+        """One session per request, whoever resolves it and whenever it unwinds."""
+        async with create_async_client(app) as client:
+            resp = await client.post(path, json={"name": "r"})
 
-        assert resp.status_code == 200
-        assert await _row_exists(session_maker, "fn_borrow")
-        assert await _row_exists(session_maker, "fn_borrow_fn")
+        assert (resp.status_code, resp.json()) == (200, body)
+        for name in names:
+            assert await _role_exists(session_maker, name)
 
+    @pytest.mark.parametrize(
+        ("path", "names"),
+        [
+            ("/roles-then-boom", ["r"]),
+            ("/two-roles", ["r"]),
+            ("/roles-function-scope?boom=true", ["r", "r_fn"]),
+        ],
+        ids=["exception", "second-write-conflicts", "function-scoped-dependency"],
+    )
     @pytest.mark.anyio
-    async def test_function_scope_error_rolls_back(self, engine, session_maker):
-        """The early commit must still not fire when the request fails."""
-        app = _build_app(Database(engine=engine))
+    async def test_failed_request_rolls_back_every_write(
+        self, app, session_maker, path, names
+    ):
+        """One transaction per request: an early commit must never fire on failure."""
         transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post(
-                "/roles-function-scope?boom=true", json={"name": "fn_ghost"}
-            )
 
-        assert resp.status_code == 500
-        assert not await _row_exists(session_maker, "fn_ghost")
-        assert not await _row_exists(session_maker, "fn_ghost_fn")
-
-    @pytest.mark.anyio
-    async def test_multi_write_atomicity(self, engine, session_maker):
-        """When the 2nd write fails, the 1st must roll back too (one txn)."""
-        app = _build_app(Database(engine=engine))
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/two-roles", json={"name": "dup_role"})
+            resp = await client.post(path, json={"name": "r"})
 
         assert resp.status_code >= 400
-        assert not await _row_exists(session_maker, "dup_role")
+        for name in names:
+            assert not await _role_exists(session_maker, name)
+
+    @pytest.mark.anyio
+    async def test_streaming_response_keeps_the_session_readable(
+        self, app, session_maker
+    ):
+        """The commit fires at stream start; the generator still reads through
+        the request session."""
+        async with create_async_client(app) as client:
+            resp = await client.get("/roles-stream/streamed")
+
+        assert resp.status_code == 200
+        assert "data: streamed" in resp.text
+        assert await _role_exists(session_maker, "streamed")

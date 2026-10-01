@@ -1,20 +1,21 @@
-"""Tests for fastapi_toolsets.pytest module."""
+"""Tests for ``fastapi_toolsets.pytest``: generated fixtures, clients and databases."""
 
 import uuid
-from typing import cast
+from collections.abc import Callable
+from typing import Any, cast
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from httpx import AsyncClient
-from sqlalchemy import ForeignKey, String, select, text
+from sqlalchemy import ForeignKey, String, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from fastapi_toolsets.db import transaction
+from fastapi_toolsets.db.testing import create_database
 from fastapi_toolsets.fixtures import Context, FixtureRegistry, LoadStrategy
 from fastapi_toolsets.fixtures.utils import (
-    _get_primary_key,
     _relationship_load_options,
     _reload_with_relationships,
 )
@@ -25,17 +26,22 @@ from fastapi_toolsets.pytest import (
     register_fixtures,
     worker_database_url,
 )
-from fastapi_toolsets.pytest.utils import _get_xdist_worker
+from fastapi_toolsets.pytest.utils import (
+    _override_layers,
+    _pop_overrides,
+    _push_overrides,
+)
 
 from .conftest import (
     DATABASE_URL,
     Base,
     IntRole,
-    Permission,
     Role,
     RoleCrud,
     User,
     UserCrud,
+    database_exists,
+    drop_database,
 )
 
 test_registry = FixtureRegistry()
@@ -46,6 +52,7 @@ ROLE_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000001001")
 USER_ADMIN_ID = uuid.UUID("00000000-0000-0000-0000-000000002000")
 USER_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000002001")
 USER_EXTRA_ID = uuid.UUID("00000000-0000-0000-0000-000000002002")
+ROLE_SKIP_ID = uuid.UUID("00000000-0000-0000-0000-000000001002")
 
 
 @test_registry.register(contexts=[Context.BASE])
@@ -89,859 +96,6 @@ def extra_users() -> list[User]:
 register_fixtures(test_registry, globals())
 
 
-class TestRegisterFixtures:
-    """Tests for register_fixtures function."""
-
-    def test_creates_fixtures_in_namespace(self):
-        """Fixtures are created in the namespace."""
-        assert "fixture_roles" in globals()
-        assert "fixture_users" in globals()
-        assert "fixture_extra_users" in globals()
-
-    def test_fixtures_are_callable(self):
-        """Created fixtures are callable."""
-        assert callable(globals()["fixture_roles"])
-        assert callable(globals()["fixture_users"])
-
-
-class TestGeneratedFixtures:
-    """Tests for the generated pytest fixtures."""
-
-    @pytest.mark.anyio
-    async def test_fixture_loads_data(
-        self, db_session: AsyncSession, fixture_roles: list[Role]
-    ):
-        """Fixture loads data into database and returns it."""
-        assert len(fixture_roles) == 2
-        assert fixture_roles[0].name == "plugin_admin"
-        assert fixture_roles[1].name == "plugin_user"
-
-        # Verify data is in database
-        count = await RoleCrud.count(db_session)
-        assert count == 2
-
-    @pytest.mark.anyio
-    async def test_fixture_with_dependency(
-        self, db_session: AsyncSession, fixture_users: list[User]
-    ):
-        """Fixture with dependency loads parent fixture first."""
-        # fixture_users depends on fixture_roles
-        # Both should be loaded
-        assert len(fixture_users) == 2
-
-        # Roles should also be in database
-        roles_count = await RoleCrud.count(db_session)
-        assert roles_count == 2
-
-        # Users should be in database
-        users_count = await UserCrud.count(db_session)
-        assert users_count == 2
-
-    @pytest.mark.anyio
-    async def test_fixture_returns_models(
-        self, db_session: AsyncSession, fixture_users: list[User]
-    ):
-        """Fixture returns actual model instances."""
-        user = fixture_users[0]
-        assert isinstance(user, User)
-        assert user.id == USER_ADMIN_ID
-        assert user.username == "plugin_admin"
-
-    @pytest.mark.anyio
-    async def test_fixture_relationships_work(
-        self, db_session: AsyncSession, fixture_users: list[User]
-    ):
-        """Loaded fixtures have working relationships directly accessible."""
-        user = next(u for u in fixture_users if u.id == USER_ADMIN_ID)
-        assert user.role is not None
-        assert user.role.name == "plugin_admin"
-
-    @pytest.mark.anyio
-    async def test_chained_dependencies(
-        self, db_session: AsyncSession, fixture_extra_users: list[User]
-    ):
-        """Chained dependencies are resolved correctly."""
-        # fixture_extra_users -> fixture_users -> fixture_roles
-        assert len(fixture_extra_users) == 1
-
-        # All fixtures should be loaded
-        roles_count = await RoleCrud.count(db_session)
-        users_count = await UserCrud.count(db_session)
-
-        assert roles_count == 2
-        assert users_count == 3  # 2 from users + 1 from extra_users
-
-    @pytest.mark.anyio
-    async def test_can_query_loaded_data(
-        self, db_session: AsyncSession, fixture_users: list[User]
-    ):
-        """Can query the loaded fixture data."""
-        # Get all users loaded by fixture
-        users = await UserCrud.get_multi(
-            db_session,
-            order_by=User.username,
-        )
-
-        assert len(users) == 2
-        assert users[0].username == "plugin_admin"
-        assert users[1].username == "plugin_user"
-
-    @pytest.mark.anyio
-    async def test_fixture_auto_loads_relationships(
-        self, db_session: AsyncSession, fixture_users: list[User]
-    ):
-        """Fixtures automatically eager-load all direct relationships."""
-        user = next(u for u in fixture_users if u.username == "plugin_admin")
-        assert user.role is not None
-        assert user.role.name == "plugin_admin"
-
-    @pytest.mark.anyio
-    async def test_multiple_fixtures_in_same_test(
-        self,
-        db_session: AsyncSession,
-        fixture_roles: list[Role],
-        fixture_users: list[User],
-    ):
-        """Multiple fixtures can be used in the same test."""
-        assert len(fixture_roles) == 2
-        assert len(fixture_users) == 2
-
-        # Both should be in database
-        roles = await RoleCrud.get_multi(db_session)
-        users = await UserCrud.get_multi(db_session)
-
-        assert len(roles) == 2
-        assert len(users) == 2
-
-
-class TestCreateAsyncClient:
-    """Tests for create_async_client helper."""
-
-    @pytest.mark.anyio
-    async def test_creates_working_client(self):
-        """Client can make requests to the app."""
-        app = FastAPI()
-
-        @app.get("/health")
-        async def health():
-            return {"status": "ok"}
-
-        async with create_async_client(app) as client:
-            assert isinstance(client, AsyncClient)
-            response = await client.get("/health")
-            assert response.status_code == 200
-            assert response.json() == {"status": "ok"}
-
-    @pytest.mark.anyio
-    async def test_custom_base_url(self):
-        """Client uses custom base URL."""
-        app = FastAPI()
-
-        @app.get("/test")
-        async def test_endpoint():
-            return {"url": "test"}
-
-        async with create_async_client(app, base_url="http://custom") as client:
-            assert str(client.base_url) == "http://custom"
-
-    @pytest.mark.anyio
-    async def test_client_closes_properly(self):
-        """Client is properly closed after context exit."""
-        app = FastAPI()
-
-        async with create_async_client(app) as client:
-            client_ref = client
-
-        assert client_ref.is_closed
-
-    @pytest.mark.anyio
-    async def test_dependency_overrides_applied_and_cleaned(self):
-        """Dependency overrides are applied during the context and removed after."""
-        app = FastAPI()
-
-        async def original_dep() -> str:
-            return "original"
-
-        async def override_dep() -> str:
-            return "overridden"
-
-        @app.get("/dep")
-        async def dep_endpoint(value: str = Depends(original_dep)):
-            return {"value": value}
-
-        async with create_async_client(
-            app, dependency_overrides={original_dep: override_dep}
-        ) as client:
-            response = await client.get("/dep")
-            assert response.json() == {"value": "overridden"}
-
-        # Overrides should be cleaned up
-        assert original_dep not in app.dependency_overrides
-
-    @pytest.mark.anyio
-    async def test_nested_clients_same_key_outer_override_survives(self):
-        """An inner client leaving does not strip the outer client's override."""
-        app = FastAPI()
-
-        async def original_dep() -> str:
-            return "original"
-
-        async def outer_dep() -> str:
-            return "outer"
-
-        async def inner_dep() -> str:
-            return "inner"
-
-        @app.get("/dep")
-        async def dep_endpoint(value: str = Depends(original_dep)):
-            return {"value": value}
-
-        async with create_async_client(
-            app, dependency_overrides={original_dep: outer_dep}
-        ) as outer:
-            async with create_async_client(
-                app, dependency_overrides={original_dep: inner_dep}
-            ) as inner:
-                assert (await inner.get("/dep")).json() == {"value": "inner"}
-
-            # The outer client is still open and must keep its own override.
-            assert (await outer.get("/dep")).json() == {"value": "outer"}
-
-        assert original_dep not in app.dependency_overrides
-
-    @pytest.mark.anyio
-    async def test_nested_clients_different_keys_do_not_leak(self):
-        """Nested clients overriding different keys each clean up only their own."""
-        app = FastAPI()
-
-        async def dep_a() -> str:
-            return "a"
-
-        async def dep_b() -> str:
-            return "b"
-
-        async def override_a() -> str:
-            return "override-a"
-
-        async def override_b() -> str:
-            return "override-b"
-
-        @app.get("/ab")
-        async def ab_endpoint(a: str = Depends(dep_a), b: str = Depends(dep_b)):
-            return {"a": a, "b": b}
-
-        async with create_async_client(
-            app, dependency_overrides={dep_a: override_a}
-        ) as outer:
-            async with create_async_client(
-                app, dependency_overrides={dep_b: override_b}
-            ) as inner:
-                assert (await inner.get("/ab")).json() == {
-                    "a": "override-a",
-                    "b": "override-b",
-                }
-
-            # Only dep_b was released.
-            assert dep_b not in app.dependency_overrides
-            assert (await outer.get("/ab")).json() == {"a": "override-a", "b": "b"}
-
-        assert dep_a not in app.dependency_overrides
-
-    @pytest.mark.anyio
-    async def test_pre_existing_override_is_restored_not_dropped(self):
-        """An override registered on the app before any client is put back on exit."""
-        app = FastAPI()
-
-        async def original_dep() -> str:
-            return "original"
-
-        async def app_dep() -> str:
-            return "app-level"
-
-        async def client_dep() -> str:
-            return "client-level"
-
-        @app.get("/dep")
-        async def dep_endpoint(value: str = Depends(original_dep)):
-            return {"value": value}
-
-        app.dependency_overrides[original_dep] = app_dep
-        try:
-            async with create_async_client(
-                app, dependency_overrides={original_dep: client_dep}
-            ) as client:
-                assert (await client.get("/dep")).json() == {"value": "client-level"}
-
-            assert app.dependency_overrides[original_dep] is app_dep
-        finally:
-            app.dependency_overrides.pop(original_dep, None)
-
-    @pytest.mark.anyio
-    async def test_overrides_restored_when_client_construction_fails(self):
-        """A failure building the AsyncClient still restores the overrides."""
-        app = FastAPI()
-
-        async def original_dep() -> str:
-            return "original"
-
-        async def override_dep() -> str:
-            return "overridden"
-
-        with pytest.raises(TypeError):
-            async with create_async_client(
-                app,
-                dependency_overrides={original_dep: override_dep},
-                not_a_real_kwarg=object(),
-            ):
-                pass  # pragma: no cover
-
-        assert original_dep not in app.dependency_overrides
-
-    @pytest.mark.anyio
-    async def test_interleaved_clients_first_to_close_does_not_strip_the_other(self):
-        """A client closing while another is still open leaves that one working."""
-        app = FastAPI()
-
-        async def original_dep() -> str:
-            return "real"
-
-        async def dep_a() -> str:
-            return "a"
-
-        async def dep_b() -> str:
-            return "b"
-
-        @app.get("/dep")
-        async def dep_endpoint(value: str = Depends(original_dep)):
-            return {"value": value}
-
-        # Opened A then B, but closed A first: the lifetimes overlap without
-        # nesting, so there is no LIFO order to rely on.
-        a_ctx = create_async_client(app, dependency_overrides={original_dep: dep_a})
-        client_a = await a_ctx.__aenter__()
-        assert (await client_a.get("/dep")).json() == {"value": "a"}
-
-        b_ctx = create_async_client(app, dependency_overrides={original_dep: dep_b})
-        client_b = await b_ctx.__aenter__()
-
-        try:
-            assert (await client_b.get("/dep")).json() == {"value": "b"}
-        finally:
-            await a_ctx.__aexit__(None, None, None)
-
-        # B is still open and must not have fallen back to the real dependency.
-        try:
-            assert (await client_b.get("/dep")).json() == {"value": "b"}
-        finally:
-            await b_ctx.__aexit__(None, None, None)
-
-        # And nothing from either client is left behind on the shared app.
-        assert original_dep not in app.dependency_overrides
-
-    @pytest.mark.anyio
-    async def test_interleaved_clients_leave_no_resurrected_override(self):
-        """The last client to close does not restore a dead client's override."""
-        app = FastAPI()
-
-        async def original_dep() -> str:
-            return "real"
-
-        async def dep_a() -> str:
-            return "a"
-
-        async def dep_b() -> str:
-            return "b"
-
-        @app.get("/dep")
-        async def dep_endpoint(value: str = Depends(original_dep)):
-            return {"value": value}
-
-        a_ctx = create_async_client(app, dependency_overrides={original_dep: dep_a})
-        await a_ctx.__aenter__()
-        b_ctx = create_async_client(app, dependency_overrides={original_dep: dep_b})
-        await b_ctx.__aenter__()
-        await a_ctx.__aexit__(None, None, None)
-        await b_ctx.__aexit__(None, None, None)
-
-        assert original_dep not in app.dependency_overrides
-
-        async with create_async_client(app) as client:
-            assert (await client.get("/dep")).json() == {"value": "real"}
-
-    @pytest.mark.anyio
-    async def test_interleaved_clients_restore_a_pre_existing_override(self):
-        """Overlapping clients release the key back to the app-level override."""
-        app = FastAPI()
-
-        async def original_dep() -> str:
-            return "real"
-
-        async def app_dep() -> str:
-            return "app-level"
-
-        async def dep_a() -> str:
-            return "a"
-
-        async def dep_b() -> str:
-            return "b"
-
-        @app.get("/dep")
-        async def dep_endpoint(value: str = Depends(original_dep)):
-            return {"value": value}
-
-        app.dependency_overrides[original_dep] = app_dep
-        try:
-            a_ctx = create_async_client(app, dependency_overrides={original_dep: dep_a})
-            await a_ctx.__aenter__()
-            b_ctx = create_async_client(app, dependency_overrides={original_dep: dep_b})
-            await b_ctx.__aenter__()
-            await a_ctx.__aexit__(None, None, None)
-            await b_ctx.__aexit__(None, None, None)
-
-            assert app.dependency_overrides[original_dep] is app_dep
-        finally:
-            app.dependency_overrides.pop(original_dep, None)
-
-    @pytest.mark.anyio
-    async def test_override_bookkeeping_is_released(self):
-        """The internal layer registry does not retain the app after the last client."""
-        from fastapi_toolsets.pytest.utils import _override_layers
-
-        app = FastAPI()
-
-        async def original_dep() -> str:
-            return "original"
-
-        async def override_dep() -> str:
-            return "overridden"
-
-        async with create_async_client(
-            app, dependency_overrides={original_dep: override_dep}
-        ):
-            assert app in _override_layers
-
-        assert app not in _override_layers
-
-    @pytest.mark.anyio
-    async def test_kwargs_forwarded_to_async_client(self):
-        """Extra kwargs are forwarded to AsyncClient (e.g. default headers)."""
-        from fastapi import Request
-
-        app = FastAPI()
-
-        @app.get("/headers")
-        async def headers_endpoint(request: Request):
-            return {"x-custom": request.headers.get("x-custom")}
-
-        async with create_async_client(app, headers={"X-Custom": "sentinel"}) as client:
-            response = await client.get("/headers")
-            assert response.json() == {"x-custom": "sentinel"}
-
-
-class TestCreateDbSession:
-    """Tests for create_db_session helper."""
-
-    @pytest.mark.anyio
-    async def test_creates_working_session(self):
-        """Session can perform database operations."""
-        role_id = uuid.uuid4()
-        async with create_db_session(DATABASE_URL, Base) as session:
-            assert isinstance(session, AsyncSession)
-
-            role = Role(id=role_id, name="test_helper_role")
-            session.add(role)
-            await session.commit()
-
-            result = await session.execute(select(Role).where(Role.id == role_id))
-            fetched = result.scalar_one()
-            assert fetched.name == "test_helper_role"
-
-    @pytest.mark.anyio
-    async def test_tables_created_before_session(self):
-        """Tables exist when session is yielded."""
-        async with create_db_session(DATABASE_URL, Base) as session:
-            # Should not raise - tables exist
-            result = await session.execute(select(Role))
-            assert result.all() == []
-
-    @pytest.mark.anyio
-    async def test_tables_dropped_after_session(self):
-        """Tables are dropped after session closes when drop_tables=True."""
-        role_id = uuid.uuid4()
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
-            role = Role(id=role_id, name="will_be_dropped")
-            session.add(role)
-            await session.commit()
-
-        # Verify tables were dropped by creating new session
-        async with create_db_session(DATABASE_URL, Base) as session:
-            result = await session.execute(select(Role))
-            assert result.all() == []
-
-    @pytest.mark.anyio
-    async def test_tables_preserved_when_drop_disabled(self):
-        """Tables are preserved when drop_tables=False."""
-        role_id = uuid.uuid4()
-        async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
-            role = Role(id=role_id, name="preserved_role")
-            session.add(role)
-            await session.commit()
-
-        # Create another session without dropping
-        async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
-            result = await session.execute(select(Role).where(Role.id == role_id))
-            fetched = result.scalar_one_or_none()
-            assert fetched is not None
-            assert fetched.name == "preserved_role"
-
-        # Cleanup: drop tables manually
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as _:
-            pass
-
-    @pytest.mark.anyio
-    async def test_cleanup_truncates_tables(self):
-        """Tables are truncated after session closes when cleanup=True."""
-        role_id = uuid.uuid4()
-        async with create_db_session(
-            DATABASE_URL, Base, cleanup=True, drop_tables=False
-        ) as session:
-            role = Role(id=role_id, name="will_be_cleaned")
-            session.add(role)
-            await session.commit()
-
-        # Data should have been truncated, but tables still exist
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as session:
-            result = await session.execute(select(Role))
-            assert result.all() == []
-
-    @pytest.mark.anyio
-    async def test_engine_kwargs_forwarded(self):
-        """engine_kwargs are forwarded to create_async_engine."""
-        async with create_db_session(
-            DATABASE_URL, Base, engine_kwargs={"pool_pre_ping": True}
-        ) as session:
-            assert isinstance(session, AsyncSession)
-
-    @pytest.mark.anyio
-    async def test_session_kwargs_forwarded(self):
-        """session_kwargs are forwarded to async_sessionmaker."""
-        async with create_db_session(
-            DATABASE_URL, Base, session_kwargs={"autoflush": False}
-        ) as session:
-            assert session.autoflush is False
-
-    @pytest.mark.anyio
-    async def test_transaction_commits_visible_to_separate_session(self):
-        """Data written via transaction() is committed and visible to other sessions."""
-        role_id = uuid.uuid4()
-
-        async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
-            # Simulate what _create_fixture_function does: insert via transaction()
-            # with no explicit commit afterward.
-            async with transaction(session):
-                role = Role(id=role_id, name="visible_to_other_session")
-                session.add(role)
-
-            # The data must have been committed (begin/commit, not a savepoint),
-            # so a separate engine/session can read it.
-            other_engine = create_async_engine(DATABASE_URL, echo=False)
-            try:
-                other_session_maker = async_sessionmaker(
-                    other_engine, expire_on_commit=False
-                )
-                async with other_session_maker() as other:
-                    result = await other.execute(select(Role).where(Role.id == role_id))
-                    fetched = result.scalar_one_or_none()
-                    assert fetched is not None, (
-                        "Fixture data inserted via transaction() must be committed "
-                        "and visible to a separate session. If create_db_session uses "
-                        "db.session(), auto-begin forces transaction() into "
-                        "savepoints instead of real commits."
-                    )
-                    assert fetched.name == "visible_to_other_session"
-            finally:
-                await other_engine.dispose()
-
-        # Cleanup
-        async with create_db_session(DATABASE_URL, Base, drop_tables=True) as _:
-            pass
-
-
-class TestGetXdistWorker:
-    """Tests for _get_xdist_worker helper."""
-
-    def test_returns_default_test_db_without_env_var(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Returns default_test_db when PYTEST_XDIST_WORKER is not set."""
-        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
-        assert _get_xdist_worker("my_default") == "my_default"
-
-    def test_returns_worker_name(self, monkeypatch: pytest.MonkeyPatch):
-        """Returns the worker name from the environment variable."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
-        assert _get_xdist_worker("ignored") == "gw0"
-
-
-class TestWorkerDatabaseUrl:
-    """Tests for worker_database_url helper."""
-
-    def test_uses_default_test_db_without_xdist(self, monkeypatch: pytest.MonkeyPatch):
-        """default_test_db is used as the database name when not running under xdist."""
-        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
-        url = "postgresql+asyncpg://user:pass@localhost:5432/mydb"
-        result = worker_database_url(url, default_test_db="fallback")
-        assert make_url(result).database == "fallback"
-
-    def test_uses_worker_id_as_database_name(self, monkeypatch: pytest.MonkeyPatch):
-        """Worker name is used as the database name."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
-        url = "postgresql+asyncpg://user:pass@localhost:5432/db"
-        result = worker_database_url(url, default_test_db="unused")
-        assert make_url(result).database == "gw0"
-
-    def test_preserves_url_components(self, monkeypatch: pytest.MonkeyPatch):
-        """Host, port, username, password, and driver are preserved."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw2")
-        url = "postgresql+asyncpg://myuser:secret@dbhost:6543/testdb"
-        result = make_url(worker_database_url(url, default_test_db="unused"))
-
-        assert result.drivername == "postgresql+asyncpg"
-        assert result.username == "myuser"
-        assert result.password == "secret"
-        assert result.host == "dbhost"
-        assert result.port == 6543
-        assert result.database == "gw2"
-
-    def test_prefix_with_xdist(self, monkeypatch: pytest.MonkeyPatch):
-        """prefix is prepended to the worker name when running under xdist."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
-        url = "postgresql+asyncpg://user:pass@localhost:5432/mydb"
-        result = worker_database_url(url, default_test_db="unused", prefix="myapp")
-        assert make_url(result).database == "myapp_gw0"
-
-    def test_prefix_without_xdist(self, monkeypatch: pytest.MonkeyPatch):
-        """prefix is prepended to default_test_db when not running under xdist."""
-        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
-        url = "postgresql+asyncpg://user:pass@localhost:5432/mydb"
-        result = worker_database_url(url, default_test_db="test", prefix="myapp")
-        assert make_url(result).database == "myapp_test"
-
-
-class TestCreateWorkerDatabase:
-    """Tests for create_worker_database context manager."""
-
-    @pytest.mark.anyio
-    async def test_creates_default_db_without_xdist(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Without xdist, creates a database named after default_test_db."""
-        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
-        default_test_db = "no_xdist_default"
-        expected_db = make_url(
-            worker_database_url(DATABASE_URL, default_test_db=default_test_db)
-        ).database
-
-        async with create_worker_database(
-            DATABASE_URL, default_test_db=default_test_db
-        ) as url:
-            assert make_url(url).database == expected_db
-
-            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-            async with engine.connect() as conn:
-                result = await conn.execute(
-                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                    {"name": expected_db},
-                )
-                assert result.scalar() == 1
-            await engine.dispose()
-
-        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                {"name": expected_db},
-            )
-            assert result.scalar() is None
-        await engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_creates_and_drops_worker_database(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Worker database exists inside the context and is dropped after."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_test_create")
-        expected_db = make_url(
-            worker_database_url(DATABASE_URL, default_test_db="unused")
-        ).database
-
-        async with create_worker_database(DATABASE_URL) as url:
-            assert make_url(url).database == expected_db
-
-            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-            async with engine.connect() as conn:
-                result = await conn.execute(
-                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                    {"name": expected_db},
-                )
-                assert result.scalar() == 1
-            await engine.dispose()
-
-        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                {"name": expected_db},
-            )
-            assert result.scalar() is None
-        await engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_cleans_up_stale_database(self, monkeypatch: pytest.MonkeyPatch):
-        """A pre-existing worker database is dropped and recreated."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_test_stale")
-        expected_db = make_url(
-            worker_database_url(DATABASE_URL, default_test_db="unused")
-        ).database
-
-        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-        async with engine.connect() as conn:
-            await conn.execute(text(f"DROP DATABASE IF EXISTS {expected_db}"))
-            await conn.execute(text(f"CREATE DATABASE {expected_db}"))
-        await engine.dispose()
-
-        async with create_worker_database(DATABASE_URL) as url:
-            assert make_url(url).database == expected_db
-
-        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                {"name": expected_db},
-            )
-            assert result.scalar() is None
-        await engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_works_when_database_url_db_does_not_exist(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Succeeds even when the database named in database_url does not exist.
-
-        Regression test: the old code connected the DDL engine to database_url
-        itself, which failed when that database had not been created yet.
-        """
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_noexist")
-        nonexistent_url = (
-            make_url(DATABASE_URL)
-            .set(database="no_such_db")
-            .render_as_string(hide_password=False)
-        )
-        expected_db = make_url(
-            worker_database_url(nonexistent_url, default_test_db="unused")
-        ).database
-
-        async with create_worker_database(nonexistent_url) as url:
-            assert make_url(url).database == expected_db
-
-            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-            async with engine.connect() as conn:
-                result = await conn.execute(
-                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                    {"name": expected_db},
-                )
-                assert result.scalar() == 1
-            await engine.dispose()
-
-        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                {"name": expected_db},
-            )
-            assert result.scalar() is None
-        await engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_explicit_server_url(self, monkeypatch: pytest.MonkeyPatch):
-        """Explicit server_url is used instead of the auto-derived one."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_explicit_srv")
-        expected_db = make_url(
-            worker_database_url(DATABASE_URL, default_test_db="unused")
-        ).database
-
-        async with create_worker_database(DATABASE_URL, server_url=DATABASE_URL) as url:
-            assert make_url(url).database == expected_db
-
-            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-            async with engine.connect() as conn:
-                result = await conn.execute(
-                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                    {"name": expected_db},
-                )
-                assert result.scalar() == 1
-            await engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_drops_database_with_active_connections(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """DROP DATABASE succeeds even when a connection is still open to it."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_active_conn")
-        expected_db = make_url(
-            worker_database_url(DATABASE_URL, default_test_db="unused")
-        ).database
-
-        lingering_engine = None
-        async with create_worker_database(DATABASE_URL) as url:
-            # Open a connection to the worker DB and intentionally leave it open.
-            lingering_engine = create_async_engine(url)
-            async with lingering_engine.connect():
-                pass  # connection returned to pool but engine not disposed
-
-        # If WITH (FORCE) is absent the DROP above would raise; reaching here means it worked.
-        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                {"name": expected_db},
-            )
-            assert result.scalar() is None
-        await engine.dispose()
-        if lingering_engine:
-            await lingering_engine.dispose()
-
-    @pytest.mark.anyio
-    async def test_prefix_names_database(self, monkeypatch: pytest.MonkeyPatch):
-        """prefix is prepended to the worker name in the created database."""
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_prefix")
-        expected_db = make_url(
-            worker_database_url(DATABASE_URL, default_test_db="unused", prefix="pfx")
-        ).database
-        assert expected_db == "pfx_gw_prefix"
-
-        async with create_worker_database(DATABASE_URL, prefix="pfx") as url:
-            assert make_url(url).database == expected_db
-
-            engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-            async with engine.connect() as conn:
-                result = await conn.execute(
-                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                    {"name": expected_db},
-                )
-                assert result.scalar() == 1
-            await engine.dispose()
-
-        engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                {"name": expected_db},
-            )
-            assert result.scalar() is None
-        await engine.dispose()
-
-
 class _LocalBase(DeclarativeBase):
     pass
 
@@ -963,169 +117,488 @@ class _CompositeItem(_LocalBase):
     group: Mapped["_Group"] = relationship()
 
 
-class TestGetPrimaryKey:
-    """Unit tests for _get_primary_key — no DB needed."""
+def _dep(value: str) -> Callable[[], Any]:
+    """An async dependency returning *value*, distinct per call."""
 
-    def test_single_pk_returns_value(self):
-        rid = uuid.UUID("00000000-0000-0000-0000-000000000001")
-        role = Role(id=rid, name="x")
-        assert _get_primary_key(role) == rid
+    async def dependency() -> str:
+        return value
 
-    def test_composite_pk_all_set_returns_tuple(self):
-        perm = Permission(subject="posts", action="read")
-        assert _get_primary_key(perm) == ("posts", "read")
-
-    def test_composite_pk_partial_none_returns_none(self):
-        perm = Permission(subject=None, action="read")
-        assert _get_primary_key(perm) is None
-
-    def test_composite_pk_all_none_returns_none(self):
-        perm = Permission(subject=None, action=None)
-        assert _get_primary_key(perm) is None
+    return dependency
 
 
-class TestRelationshipLoadOptions:
-    """Unit tests for _relationship_load_options — no DB needed."""
+def _app_with(original: Callable[..., Any]) -> FastAPI:
+    """An app whose ``/dep`` route returns what *original* resolves to."""
+    app = FastAPI()
 
-    def test_empty_for_model_with_no_relationships(self):
-        assert _relationship_load_options(IntRole) == []
+    @app.get("/dep")
+    async def dep_endpoint(value: str = Depends(original)):
+        return {"value": value}
 
-    def test_returns_options_for_model_with_relationships(self):
-        opts = _relationship_load_options(User)
-        assert len(opts) >= 1
+    return app
 
 
-class TestFixtureStrategies:
-    """Integration tests covering INSERT, SKIP_EXISTING, empty fixture, no-rels model."""
+async def _value(client: AsyncClient) -> str:
+    return (await client.get("/dep")).json()["value"]
+
+
+async def _generated_fixture(
+    rows: Callable[[], list[Any]], strategy: LoadStrategy
+) -> Callable[..., Any]:
+    """The inner function of the pytest fixture the plugin builds for *rows*."""
+    registry = FixtureRegistry()
+    registry.register(name="entries")(rows)
+    namespace: dict[str, Any] = {}
+    register_fixtures(registry, namespace, strategy=strategy)
+    return namespace["fixture_entries"].__wrapped__  # type: ignore[attr-defined]
+
+
+class TestGeneratedFixtures:
+    """``register_fixtures`` turns registry entries into pytest fixtures."""
+
+    def test_fixtures_added_to_namespace(self):
+        for name in ("fixture_roles", "fixture_users", "fixture_extra_users"):
+            assert callable(globals()[name])
 
     @pytest.mark.anyio
-    async def test_empty_fixture_returns_empty_list(self, db_session: AsyncSession):
-        """Fixture function returning [] produces an empty list."""
-        registry = FixtureRegistry()
+    async def test_fixture_loads_rows_with_dependencies_and_relationships(
+        self,
+        db_session: AsyncSession,
+        fixture_roles: list[Role],
+        fixture_users: list[User],
+    ):
+        """A fixture loads its dependencies first and returns usable instances."""
+        assert [r.name for r in fixture_roles] == ["plugin_admin", "plugin_user"]
+        assert len(await RoleCrud.get_multi(db_session)) == 2
+        assert await UserCrud.count(db_session) == 2
 
-        @registry.register()
-        def empty() -> list[Role]:
-            return []
+        admin = next(u for u in fixture_users if u.id == USER_ADMIN_ID)
+        assert isinstance(admin, User)
+        assert admin.username == "plugin_admin"
+        assert admin.role is not None and admin.role.name == "plugin_admin"
 
-        local_ns: dict = {}
-        register_fixtures(registry, local_ns, session_fixture="db_session")
-        inner = local_ns["fixture_empty"].__wrapped__  # type: ignore[attr-defined]
+        users = await UserCrud.get_multi(db_session, order_by=User.username)
+        assert [u.username for u in users] == ["plugin_admin", "plugin_user"]
+
+    @pytest.mark.anyio
+    async def test_chained_dependencies(
+        self, db_session: AsyncSession, fixture_extra_users: list[User]
+    ):
+        """extra_users -> users -> roles are all loaded."""
+        assert len(fixture_extra_users) == 1
+        assert await RoleCrud.count(db_session) == 2
+        assert await UserCrud.count(db_session) == 3
+
+
+class TestLoadStrategies:
+    """The generated fixture honours the registry's load strategy."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("strategy", "rows", "expected"),
+        [
+            (LoadStrategy.MERGE, list, []),
+            (
+                LoadStrategy.INSERT,
+                lambda: [IntRole(name="insert_role")],
+                ["insert_role"],
+            ),
+            (
+                LoadStrategy.SKIP_EXISTING,
+                lambda: [Role(id=ROLE_SKIP_ID, name="skip_new")],
+                ["skip_new"],
+            ),
+            (
+                LoadStrategy.SKIP_EXISTING,
+                lambda: [IntRole(name="auto_int")],
+                ["auto_int"],
+            ),
+        ],
+        ids=["merge/empty", "insert/no_relationships", "skip/new_pk", "skip/null_pk"],
+    )
+    async def test_returns_loaded_rows(
+        self,
+        db_session: AsyncSession,
+        strategy: LoadStrategy,
+        rows: Callable[[], list[Any]],
+        expected: list[str],
+    ):
+        inner = await _generated_fixture(rows, strategy)
+
         result = await inner(db_session=db_session)
-        assert result == []
+
+        assert [r.name for r in result] == expected
 
     @pytest.mark.anyio
-    async def test_insert_strategy_no_relationships(self, db_session: AsyncSession):
-        """INSERT strategy adds instances; model with no rels skips reload (line 135)."""
-        registry = FixtureRegistry()
-
-        @registry.register()
-        def int_roles() -> list[IntRole]:
-            return [IntRole(name="insert_role")]
-
-        local_ns: dict = {}
-        register_fixtures(
-            registry,
-            local_ns,
-            session_fixture="db_session",
-            strategy=LoadStrategy.INSERT,
-        )
-        inner = local_ns["fixture_int_roles"].__wrapped__  # type: ignore[attr-defined]
-        result = await inner(db_session=db_session)
-        assert len(result) == 1
-        assert result[0].name == "insert_role"
-
-    @pytest.mark.anyio
-    async def test_skip_existing_inserts_new_record(self, db_session: AsyncSession):
-        """SKIP_EXISTING inserts when the record does not yet exist."""
-        registry = FixtureRegistry()
-        role_id = uuid.uuid4()
-
-        @registry.register()
-        def new_roles() -> list[Role]:
-            return [Role(id=role_id, name="skip_new")]
-
-        local_ns: dict = {}
-        register_fixtures(
-            registry,
-            local_ns,
-            session_fixture="db_session",
-            strategy=LoadStrategy.SKIP_EXISTING,
-        )
-        inner = local_ns["fixture_new_roles"].__wrapped__  # type: ignore[attr-defined]
-        result = await inner(db_session=db_session)
-        assert len(result) == 1
-        assert result[0].id == role_id
-
-    @pytest.mark.anyio
-    async def test_skip_existing_returns_existing_record(
+    async def test_skip_existing_returns_the_existing_row(
         self, db_session: AsyncSession
     ):
-        """SKIP_EXISTING returns the existing DB record when PK already present."""
+        """A row already present is neither overwritten nor missing from the result."""
         role_id = uuid.uuid4()
-        existing = Role(id=role_id, name="already_there")
-        db_session.add(existing)
+        db_session.add(Role(id=role_id, name="already_there"))
         await db_session.flush()
 
-        registry = FixtureRegistry()
-
-        @registry.register()
         def dup_roles() -> list[Role]:
             return [Role(id=role_id, name="should_not_overwrite")]
 
-        local_ns: dict = {}
-        register_fixtures(
-            registry,
-            local_ns,
-            session_fixture="db_session",
-            strategy=LoadStrategy.SKIP_EXISTING,
-        )
-        inner = local_ns["fixture_dup_roles"].__wrapped__  # type: ignore[attr-defined]
+        inner = await _generated_fixture(dup_roles, LoadStrategy.SKIP_EXISTING)
         result = await inner(db_session=db_session)
-        assert len(result) == 1
-        assert result[0].name == "already_there"
+
+        assert [r.name for r in result] == ["already_there"]
+
+
+class TestFixtureUtils:
+    """Helpers from ``fixtures.utils`` the plugin relies on."""
+
+    def test_relationship_load_options(self):
+        assert _relationship_load_options(IntRole) == []
+        assert len(_relationship_load_options(User)) >= 1
 
     @pytest.mark.anyio
-    async def test_skip_existing_null_pk_inserts(self, db_session: AsyncSession):
-        """SKIP_EXISTING with null PK (auto-increment) falls through to session.add()."""
-        registry = FixtureRegistry()
-
-        @registry.register()
-        def auto_roles() -> list[IntRole]:
-            return [IntRole(name="auto_int")]
-
-        local_ns: dict = {}
-        register_fixtures(
-            registry,
-            local_ns,
-            session_fixture="db_session",
-            strategy=LoadStrategy.SKIP_EXISTING,
-        )
-        inner = local_ns["fixture_auto_roles"].__wrapped__  # type: ignore[attr-defined]
-        result = await inner(db_session=db_session)
-        assert len(result) == 1
-        assert result[0].name == "auto_int"
-
-
-class TestReloadWithRelationshipsCompositePK:
-    """Integration test for _reload_with_relationships composite-PK fallback."""
-
-    @pytest.mark.anyio
-    async def test_composite_pk_fallback_loads_relationships(self):
+    async def test_composite_pk_reload_falls_back_to_session_get(self):
         """Models with composite PKs are reloaded per-instance via session.get()."""
         async with create_db_session(DATABASE_URL, _LocalBase) as session:
             group = _Group(id=uuid.uuid4(), name="g1")
             session.add(group)
             await session.flush()
-
             item = _CompositeItem(group_id=group.id, item_code="A")
             session.add(item)
             await session.flush()
 
             load_opts = _relationship_load_options(_CompositeItem)
-            assert load_opts  # _CompositeItem has 'group' relationship
-
+            assert load_opts
             reloaded = await _reload_with_relationships(session, [item], load_opts)
+
             assert len(reloaded) == 1
-            reloaded_item = cast(_CompositeItem, reloaded[0])
-            assert reloaded_item.group is not None
-            assert reloaded_item.group.name == "g1"
+            assert cast(_CompositeItem, reloaded[0]).group.name == "g1"
+
+
+class TestCreateAsyncClient:
+    """``create_async_client`` wraps the app in an httpx client."""
+
+    @pytest.mark.anyio
+    async def test_client_talks_to_the_app_and_closes(self):
+        """Requests reach the app, kwargs reach httpx, and exiting closes the client."""
+        app = FastAPI()
+
+        @app.get("/headers")
+        async def headers_endpoint(request: Request):
+            return {"x-custom": request.headers.get("x-custom")}
+
+        async with create_async_client(
+            app, base_url="http://custom", headers={"X-Custom": "sentinel"}
+        ) as client:
+            assert isinstance(client, AsyncClient)
+            assert str(client.base_url) == "http://custom"
+            response = await client.get("/headers")
+            assert response.status_code == 200
+            assert response.json() == {"x-custom": "sentinel"}
+
+        assert client.is_closed
+
+
+class TestDependencyOverrides:
+    """Overrides are layered per client and put back exactly as they were."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("app_level", [False, True], ids=["absent", "pre_existing"])
+    async def test_override_applied_then_restored(self, app_level: bool):
+        """The client's override wins while open; whatever was there before returns."""
+        original = _dep("original")
+        app_dep = _dep("app-level")
+        app = _app_with(original)
+        if app_level:
+            app.dependency_overrides[original] = app_dep
+
+        async with create_async_client(
+            app, dependency_overrides={original: _dep("client-level")}
+        ) as client:
+            assert await _value(client) == "client-level"
+
+        if app_level:
+            assert app.dependency_overrides[original] is app_dep
+        else:
+            assert original not in app.dependency_overrides
+
+    @pytest.mark.anyio
+    async def test_nested_clients_same_key(self):
+        """An inner client leaving does not strip the outer client's override."""
+        original = _dep("original")
+        app = _app_with(original)
+
+        async with create_async_client(
+            app, dependency_overrides={original: _dep("outer")}
+        ) as outer:
+            async with create_async_client(
+                app, dependency_overrides={original: _dep("inner")}
+            ) as inner:
+                assert await _value(inner) == "inner"
+            assert await _value(outer) == "outer"
+
+        assert original not in app.dependency_overrides
+
+    @pytest.mark.anyio
+    async def test_nested_clients_different_keys(self):
+        """Nested clients overriding different keys each clean up only their own."""
+        dep_a, dep_b = _dep("a"), _dep("b")
+        app = FastAPI()
+
+        @app.get("/ab")
+        async def ab_endpoint(a: str = Depends(dep_a), b: str = Depends(dep_b)):
+            return {"a": a, "b": b}
+
+        async with create_async_client(
+            app, dependency_overrides={dep_a: _dep("override-a")}
+        ) as outer:
+            async with create_async_client(
+                app, dependency_overrides={dep_b: _dep("override-b")}
+            ) as inner:
+                assert (await inner.get("/ab")).json() == {
+                    "a": "override-a",
+                    "b": "override-b",
+                }
+            assert dep_b not in app.dependency_overrides
+            assert (await outer.get("/ab")).json() == {"a": "override-a", "b": "b"}
+
+        assert dep_a not in app.dependency_overrides
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("app_level", [False, True], ids=["absent", "pre_existing"])
+    async def test_interleaved_clients(self, app_level: bool):
+        """Overlapping (non-nested) lifetimes neither strip nor resurrect overrides.
+
+        A is opened before B but closed first, so there is no LIFO order to rely
+        on: B must keep working, and once both are gone the key must be back to
+        the app-level override (or absent), not to A's or B's.
+        """
+        original = _dep("real")
+        app = _app_with(original)
+        if app_level:
+            app.dependency_overrides[original] = _dep("app-level")
+
+        a_ctx = create_async_client(app, dependency_overrides={original: _dep("a")})
+        client_a = await a_ctx.__aenter__()
+        assert await _value(client_a) == "a"
+        b_ctx = create_async_client(app, dependency_overrides={original: _dep("b")})
+        client_b = await b_ctx.__aenter__()
+        try:
+            assert await _value(client_b) == "b"
+            await a_ctx.__aexit__(None, None, None)
+            assert await _value(client_b) == "b"
+        finally:
+            await b_ctx.__aexit__(None, None, None)
+
+        async with create_async_client(app) as client:
+            assert await _value(client) == ("app-level" if app_level else "real")
+        assert (original in app.dependency_overrides) is app_level
+
+    @pytest.mark.anyio
+    async def test_overrides_restored_when_client_construction_fails(self):
+        original = _dep("original")
+        app = _app_with(original)
+
+        with pytest.raises(TypeError):
+            async with create_async_client(
+                app,
+                dependency_overrides={original: _dep("overridden")},
+                not_a_real_kwarg=object(),
+            ):
+                pass  # pragma: no cover
+
+        assert original not in app.dependency_overrides
+
+    def test_pop_ignores_unknown_app_key_and_owner(self):
+        """Popping what was never pushed is a no-op and leaves other layers intact."""
+        app = FastAPI()
+        key, other, override = _dep("key"), _dep("other"), _dep("override")
+        owner, stranger = object(), object()
+
+        _pop_overrides(app, {key: override}, owner)
+        assert app not in _override_layers
+
+        _push_overrides(app, {key: override}, owner)
+        _pop_overrides(app, {other: override}, owner)
+        _pop_overrides(app, {key: override}, stranger)
+        assert app.dependency_overrides[key] is override
+
+        _pop_overrides(app, {key: override}, owner)
+        assert key not in app.dependency_overrides
+        assert app not in _override_layers
+
+
+class TestCreateDbSession:
+    """``create_db_session`` builds tables around a session and tears them down."""
+
+    @pytest.mark.anyio
+    async def test_session_is_usable_and_kwargs_forwarded(self):
+        role_id = uuid.uuid4()
+        async with create_db_session(
+            DATABASE_URL,
+            Base,
+            engine_kwargs={"pool_pre_ping": True},
+            session_kwargs={"autoflush": False},
+        ) as session:
+            assert isinstance(session, AsyncSession)
+            assert session.autoflush is False
+            assert (await session.execute(select(Role))).all() == []
+
+            session.add(Role(id=role_id, name="test_helper_role"))
+            await session.commit()
+            fetched = await session.scalar(select(Role).where(Role.id == role_id))
+            assert fetched is not None and fetched.name == "test_helper_role"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("drop_tables", "cleanup", "survives"),
+        [(True, False, False), (False, False, True), (False, True, False)],
+        ids=["drop", "keep", "keep+cleanup"],
+    )
+    async def test_rows_after_exit(
+        self, drop_tables: bool, cleanup: bool, survives: bool
+    ):
+        """Rows survive only when tables are neither dropped nor cleaned up."""
+        role_id = uuid.uuid4()
+        async with create_db_session(
+            DATABASE_URL, Base, drop_tables=drop_tables, cleanup=cleanup
+        ) as session:
+            session.add(Role(id=role_id, name="row"))
+            await session.commit()
+
+        async with create_db_session(DATABASE_URL, Base) as session:
+            fetched = await session.scalar(select(Role).where(Role.id == role_id))
+            assert (fetched is not None) is survives
+
+    @pytest.mark.anyio
+    async def test_transaction_commits_visible_to_separate_session(self):
+        """Data written via transaction() is committed, not held in a savepoint.
+
+        If create_db_session used ``db.session()``, auto-begin would force
+        ``transaction()`` into savepoints and fixture rows would never commit.
+        """
+        role_id = uuid.uuid4()
+        async with create_db_session(DATABASE_URL, Base, drop_tables=False) as session:
+            async with transaction(session):
+                session.add(Role(id=role_id, name="visible_to_other_session"))
+
+            other_engine = create_async_engine(DATABASE_URL)
+            try:
+                async with async_sessionmaker(other_engine)() as other:
+                    fetched = await other.scalar(select(Role).where(Role.id == role_id))
+                    assert fetched is not None
+                    assert fetched.name == "visible_to_other_session"
+            finally:
+                await other_engine.dispose()
+
+        async with create_db_session(DATABASE_URL, Base, drop_tables=True):
+            pass
+
+
+@pytest.fixture
+def xdist_worker(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
+    """``PYTEST_XDIST_WORKER`` set to the parameter, or unset for ``None``."""
+    if request.param is None:
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    else:
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", request.param)
+    return request.param
+
+
+class TestWorkerDatabaseUrl:
+    """``worker_database_url`` names the database after the xdist worker."""
+
+    @pytest.mark.parametrize(
+        ("xdist_worker", "default", "prefix", "expected"),
+        [
+            (None, "fallback", None, "fallback"),
+            ("gw2", "unused", None, "gw2"),
+            ("gw0", "unused", "myapp", "myapp_gw0"),
+            (None, "test", "myapp", "myapp_test"),
+        ],
+        ids=["no_xdist", "xdist", "xdist+prefix", "no_xdist+prefix"],
+        indirect=["xdist_worker"],
+    )
+    @pytest.mark.usefixtures("xdist_worker")
+    def test_database_name(self, default: str, prefix: str | None, expected: str):
+        """Only the database name changes; the other URL components are kept."""
+        url = "postgresql+asyncpg://myuser:secret@dbhost:6543/testdb"
+
+        result = make_url(
+            worker_database_url(url, default_test_db=default, prefix=prefix)
+        )
+
+        assert result.database == expected
+        assert (result.drivername, result.username, result.password) == (
+            "postgresql+asyncpg",
+            "myuser",
+            "secret",
+        )
+        assert (result.host, result.port) == ("dbhost", 6543)
+
+
+class TestCreateWorkerDatabase:
+    """``create_worker_database`` creates the worker database and drops it after."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("xdist_worker", "kwargs", "expected"),
+        [
+            (None, {"default_test_db": "no_xdist_default"}, "no_xdist_default"),
+            ("gw_test_create", {}, "gw_test_create"),
+            ("gw_prefix", {"prefix": "pfx"}, "pfx_gw_prefix"),
+            ("gw_explicit_srv", {"server_url": DATABASE_URL}, "gw_explicit_srv"),
+        ],
+        ids=["no_xdist", "xdist", "prefix", "explicit_server_url"],
+        indirect=["xdist_worker"],
+    )
+    @pytest.mark.usefixtures("xdist_worker")
+    async def test_creates_then_drops(self, kwargs: dict[str, Any], expected: str):
+        async with create_worker_database(DATABASE_URL, **kwargs) as url:
+            assert make_url(url).database == expected
+            assert await database_exists(expected)
+
+        assert not await database_exists(expected)
+
+    @pytest.mark.anyio
+    async def test_works_when_database_url_db_does_not_exist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Regression: the DDL engine must not connect to database_url's own database."""
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_noexist")
+        nonexistent_url = (
+            make_url(DATABASE_URL)
+            .set(database="no_such_db")
+            .render_as_string(hide_password=False)
+        )
+
+        async with create_worker_database(nonexistent_url) as url:
+            assert make_url(url).database == "gw_noexist"
+            assert await database_exists("gw_noexist")
+
+        assert not await database_exists("gw_noexist")
+
+    @pytest.mark.anyio
+    async def test_stale_database_is_replaced(self, monkeypatch: pytest.MonkeyPatch):
+        """A pre-existing worker database is dropped and recreated."""
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_test_stale")
+        await drop_database("gw_test_stale")
+        await create_database("gw_test_stale", server_url=DATABASE_URL)
+
+        async with create_worker_database(DATABASE_URL) as url:
+            assert make_url(url).database == "gw_test_stale"
+
+        assert not await database_exists("gw_test_stale")
+
+    @pytest.mark.anyio
+    async def test_drops_database_with_active_connections(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """DROP DATABASE succeeds even when a connection is still open to it."""
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw_active_conn")
+
+        async with create_worker_database(DATABASE_URL) as url:
+            lingering_engine = create_async_engine(url)
+            async with lingering_engine.connect():
+                pass  # connection returned to pool but engine not disposed
+
+        # Without WITH (FORCE) the DROP above raises; reaching here means it worked.
+        assert not await database_exists("gw_active_conn")
+        await lingering_engine.dispose()

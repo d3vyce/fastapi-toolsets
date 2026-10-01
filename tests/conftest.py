@@ -7,6 +7,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from enum import Enum
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -22,12 +23,17 @@ from sqlalchemy import (
     Table,
     Uuid,
     event,
+    text,
 )
 from sqlalchemy import (
     Enum as SAEnum,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -277,6 +283,14 @@ class UserUpdate(BaseModel):
     role_id: uuid.UUID | None = None
 
 
+class UserWithRoleRead(PydanticBase):
+    """Schema for reading a user with its role."""
+
+    id: uuid.UUID
+    username: str
+    role: RoleRead | None = None
+
+
 class TagCreate(BaseModel):
     """Schema for creating a tag."""
 
@@ -292,14 +306,6 @@ class PostCreate(BaseModel):
     content: str = ""
     is_published: bool = False
     author_id: uuid.UUID
-
-
-class PostUpdate(BaseModel):
-    """Schema for updating a post."""
-
-    title: str | None = None
-    content: str | None = None
-    is_published: bool | None = None
 
 
 class PostM2MCreate(BaseModel):
@@ -320,6 +326,21 @@ class PostM2MUpdate(BaseModel):
     content: str | None = None
     is_published: bool | None = None
     tag_ids: list[uuid.UUID] | None = None
+
+
+class TagRead(PydanticBase):
+    """Schema for reading a tag."""
+
+    id: uuid.UUID
+    name: str
+
+
+class PostWithTagsRead(PydanticBase):
+    """Schema for reading a post with its tags."""
+
+    id: uuid.UUID
+    title: str
+    tags: list[TagRead]
 
 
 class IntRoleRead(PydanticBase):
@@ -409,13 +430,6 @@ class TransferCreate(BaseModel):
     receiver_id: uuid.UUID
 
 
-class TransferRead(PydanticBase):
-    """Schema for reading a transfer."""
-
-    id: uuid.UUID
-    amount: str
-
-
 OrderCrud = CrudFactory(Order)
 TransferCrud = CrudFactory(Transfer)
 ArticleCrud = CrudFactory(Article)
@@ -444,6 +458,51 @@ ProductCrud = CrudFactory(Product)
 ProductNumericCursorCrud = CrudFactory(Product, cursor_column=Product.price)
 
 
+async def create_role(session: AsyncSession, name: str) -> Role:
+    """A role named *name*, committed through ``RoleCrud``."""
+    return await RoleCrud.create(session, RoleCreate(name=name))
+
+
+async def create_user(
+    session: AsyncSession, name: str, *, role_id: uuid.UUID | None = None
+) -> User:
+    """A user named *name*, committed through ``UserCrud``."""
+    return await UserCrud.create(
+        session, UserCreate(username=name, email=f"{name}@test.com", role_id=role_id)
+    )
+
+
+def raises_if(exc: type[BaseException], when: bool) -> Any:
+    """``pytest.raises(exc)`` when *when*, else a no-op context."""
+    return pytest.raises(exc) if when else contextlib.nullcontext()
+
+
+@asynccontextmanager
+async def _admin_connection():
+    """An AUTOCOMMIT connection to the server behind ``DATABASE_URL``."""
+    engine = create_async_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            yield conn
+    finally:
+        await engine.dispose()
+
+
+async def database_exists(name: str | None) -> bool:
+    """Whether the server has a database called *name*."""
+    async with _admin_connection() as conn:
+        found = await conn.execute(
+            text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": name}
+        )
+        return found.scalar() == 1
+
+
+async def drop_database(name: str) -> None:
+    """Drop the database called *name* if it exists."""
+    async with _admin_connection() as conn:
+        await conn.execute(text(f"DROP DATABASE IF EXISTS {name}"))
+
+
 @pytest.fixture
 def anyio_backend():
     """Use asyncio for async tests."""
@@ -459,28 +518,28 @@ async def engine():
 
 
 @asynccontextmanager
-async def _tables(engine):
-    """Create every table for the block, and drop them after it."""
+async def created_tables(engine, metadata=Base.metadata):
+    """Create every table of *metadata* for the block, and drop them after it."""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(metadata.create_all)
     try:
         yield
     finally:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(metadata.drop_all)
 
 
 @pytest.fixture(scope="function")
 async def session_maker(engine):
     """Provide a session factory with tables created and dropped around the test."""
-    async with _tables(engine):
+    async with created_tables(engine):
         yield async_sessionmaker(engine, expire_on_commit=False)
 
 
 @asynccontextmanager
 async def _session_with_tables(engine, *, expire_on_commit: bool):
     """A session over freshly created tables, dropped afterwards."""
-    async with _tables(engine):
+    async with created_tables(engine):
         session = async_sessionmaker(engine, expire_on_commit=expire_on_commit)()
         try:
             yield session
@@ -492,17 +551,6 @@ async def _session_with_tables(engine, *, expire_on_commit: bool):
 async def db_session(engine):
     """A session with ``expire_on_commit=False``, as the ``Database`` facade builds."""
     async with _session_with_tables(engine, expire_on_commit=False) as session:
-        yield session
-
-
-@pytest.fixture(scope="function")
-async def db_session_expire_on_commit(engine):
-    """A session with ``expire_on_commit=True``, the SQLAlchemy default.
-
-    Attributes read after commit are then expired and trigger an implicit
-    (sync) refresh, which fails under asyncio with MissingGreenlet.
-    """
-    async with _session_with_tables(engine, expire_on_commit=True) as session:
         yield session
 
 

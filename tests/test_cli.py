@@ -1,10 +1,15 @@
-"""Tests for fastapi_toolsets.cli module."""
+"""Tests for the CLI: pyproject discovery, configured imports and fixture commands."""
 
+import importlib
 import sys
+from pathlib import Path
 
 import pytest
+import typer
+import typer.rich_utils
 from typer.testing import CliRunner
 
+from fastapi_toolsets.cli import app
 from fastapi_toolsets.cli.config import (
     get_config_value,
     get_custom_cli,
@@ -19,549 +24,394 @@ from fastapi_toolsets.fixtures import FixtureRegistry
 runner = CliRunner()
 
 
+_FIXTURES_CONFIG = (
+    'fixtures = "app_fixtures:registry"\ndb_context = "app_db:get_session"\n'
+)
+_CUSTOM_CLI_CONFIG = 'custom_cli = "app_cli:cli"\n'
+_ALL_FIXTURES = ["roles", "users", "staging_only"]
+
+_FIXTURES_MODULE = """
+from fastapi_toolsets.fixtures import Context, FixtureRegistry
+
+registry = FixtureRegistry()
+
+
+@registry.register(contexts=[Context.BASE])
+def roles():
+    return [{"id": 1, "name": "admin"}, {"id": 2, "name": "user"}]
+
+
+@registry.register(depends_on=["roles"], contexts=[Context.TESTING])
+def users():
+    return [{"id": 1, "name": "alice", "role_id": 1}]
+
+
+@registry.register(contexts=["staging"])
+def staging_only():
+    return [{"id": 3, "name": "staging-user"}]
+"""
+
+_EMPTY_FIXTURES_MODULE = """
+from fastapi_toolsets.fixtures import FixtureRegistry
+
+registry = FixtureRegistry()
+"""
+
+_NO_ROWS_FIXTURES_MODULE = """
+from fastapi_toolsets.fixtures import FixtureRegistry
+
+registry = FixtureRegistry()
+
+
+@registry.register
+def roles():
+    return []
+"""
+
+_DB_MODULE = """
+from contextlib import asynccontextmanager
+
+calls = []
+
+
+@asynccontextmanager
+async def get_session():
+    calls.append("enter")
+    yield None
+    calls.append("exit")
+"""
+
+_CUSTOM_CLI_MODULE = """
+import typer
+
+cli = typer.Typer(name="my-app", help="My custom CLI")
+
+
+@cli.command()
+def hello():
+    print("Hello from custom CLI!")
+"""
+
+
+@pytest.fixture(autouse=True)
+def _plain_terminal(monkeypatch):
+    """Keep typer from styling its output when CI sets GITHUB_ACTIONS or FORCE_COLOR."""
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", False)
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    """An empty project directory as cwd; what gets imported from it is forgotten."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    root = str(tmp_path.resolve())
+    yield tmp_path
+    for name, module in list(sys.modules.items()):
+        if str(getattr(module, "__file__", None) or "").startswith(root):
+            del sys.modules[name]
+
+
+def _write(project: Path, config: str = "", **modules: str) -> None:
+    """Write pyproject.toml with *config* under the tool section, plus *modules*."""
+    project.joinpath("pyproject.toml").write_text(f"[tool.fastapi-toolsets]\n{config}")
+    for name, source in modules.items():
+        project.joinpath(f"{name}.py").write_text(source)
+
+
+def _cli() -> typer.Typer:
+    """The CLI as built from the current directory's pyproject.toml."""
+    return importlib.reload(app).cli
+
+
+@pytest.mark.usefixtures("project")
 class TestPyproject:
-    """Tests for pyproject.toml discovery and loading."""
+    """pyproject.toml discovery and the [tool.fastapi-toolsets] section."""
 
-    def test_find_pyproject_in_current_dir(self, tmp_path, monkeypatch):
-        """Finds pyproject.toml in current directory."""
-        pyproject = tmp_path / "pyproject.toml"
+    @pytest.mark.parametrize("subdir", ["", "src/app"], ids=["cwd", "nested"])
+    def test_find_pyproject_walks_up_from_cwd_or_a_start_path(
+        self, project, monkeypatch, subdir
+    ):
+        pyproject = project / "pyproject.toml"
         pyproject.write_text("[project]\nname = 'test'\n")
-        monkeypatch.chdir(tmp_path)
+        start = project / subdir
+        start.mkdir(parents=True, exist_ok=True)
+        monkeypatch.chdir(start)
 
-        result = find_pyproject()
-        assert result == pyproject
+        assert find_pyproject() == pyproject
+        assert find_pyproject(start) == pyproject
 
-    def test_find_pyproject_in_parent_dir(self, tmp_path, monkeypatch):
-        """Finds pyproject.toml in parent directory."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("[project]\nname = 'test'\n")
-        subdir = tmp_path / "src" / "app"
-        subdir.mkdir(parents=True)
-        monkeypatch.chdir(subdir)
+    def test_find_pyproject_returns_none_without_one(self):
+        assert find_pyproject() is None
 
-        result = find_pyproject()
-        assert result == pyproject
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (
+                '[tool.fastapi-toolsets]\nfixtures = "app:registry"\n',
+                {"fixtures": "app:registry"},
+            ),
+            ("[project]\nname = 'test'\n", {}),
+            ("invalid toml {{{", {}),
+            (None, {}),
+        ],
+        ids=["tool-section", "no-tool-section", "invalid-toml", "no-file"],
+    )
+    def test_load_pyproject_returns_the_tool_section_or_nothing(
+        self, project, content, expected
+    ):
+        pyproject = project / "pyproject.toml"
+        if content is not None:
+            pyproject.write_text(content)
+            assert load_pyproject(pyproject) == expected
 
-    def test_find_pyproject_not_found(self, tmp_path, monkeypatch):
-        """Returns None when no pyproject.toml exists."""
-        monkeypatch.chdir(tmp_path)
-        result = find_pyproject()
-        assert result is None
-
-    def test_load_pyproject_returns_tool_config(self, tmp_path, monkeypatch):
-        """load_pyproject returns the [tool.fastapi-toolsets] section."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[tool.fastapi-toolsets]\nfixtures = "app.fixtures:registry"\n'
-        )
-        monkeypatch.chdir(tmp_path)
-
-        result = load_pyproject()
-        assert result == {"fixtures": "app.fixtures:registry"}
-
-    def test_load_pyproject_empty_when_no_file(self, tmp_path, monkeypatch):
-        """Returns empty dict when no pyproject.toml exists."""
-        monkeypatch.chdir(tmp_path)
-        result = load_pyproject()
-        assert result == {}
-
-    def test_load_pyproject_empty_when_no_tool_section(self, tmp_path, monkeypatch):
-        """Returns empty dict when no [tool.fastapi-toolsets] section."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("[project]\nname = 'test'\n")
-        monkeypatch.chdir(tmp_path)
-
-        result = load_pyproject()
-        assert result == {}
-
-    def test_load_pyproject_invalid_toml(self, tmp_path, monkeypatch):
-        """Returns empty dict when pyproject.toml is invalid."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("invalid toml {{{")
-        monkeypatch.chdir(tmp_path)
-
-        result = load_pyproject()
-        assert result == {}
+        assert load_pyproject() == expected
 
 
-class TestImportFromString:
-    """Tests for import_from_string function."""
+@pytest.mark.usefixtures("project")
+class TestConfig:
+    """Dotted imports and the values configured in pyproject.toml."""
 
-    def test_import_valid_path(self):
-        """Import valid module:attribute path."""
-        result = import_from_string("fastapi_toolsets.fixtures:FixtureRegistry")
-        assert result is FixtureRegistry
+    def test_import_from_string_resolves_the_attribute(self):
+        imported = import_from_string("fastapi_toolsets.fixtures:FixtureRegistry")
 
-    def test_import_without_colon_raises_error(self):
-        """Import path without colon raises error."""
-        with pytest.raises(Exception) as exc_info:
-            import_from_string("fastapi_toolsets.fixtures.FixtureRegistry")
-        assert "Expected format: 'module:attribute'" in str(exc_info.value)
+        assert imported is FixtureRegistry
 
-    def test_import_nonexistent_module_raises_error(self):
-        """Import nonexistent module raises error."""
-        with pytest.raises(Exception) as exc_info:
-            import_from_string("nonexistent.module:something")
-        assert "Cannot import module" in str(exc_info.value)
+    @pytest.mark.parametrize(
+        ("path", "message"),
+        [
+            (
+                "fastapi_toolsets.fixtures.FixtureRegistry",
+                "Expected format: 'module:attribute'",
+            ),
+            (
+                "nonexistent.module:something",
+                "Cannot import module 'nonexistent.module'",
+            ),
+            ("fastapi_toolsets.fixtures:Nope", "has no attribute 'Nope'"),
+        ],
+        ids=["no-colon", "unknown-module", "unknown-attribute"],
+    )
+    def test_import_from_string_errors(self, path, message):
+        with pytest.raises(typer.BadParameter, match=message):
+            import_from_string(path)
 
-    def test_import_nonexistent_attribute_raises_error(self):
-        """Import nonexistent attribute raises error."""
-        with pytest.raises(Exception) as exc_info:
-            import_from_string("fastapi_toolsets.fixtures:NonexistentClass")
-        assert "has no attribute" in str(exc_info.value)
+    def test_project_root_is_added_to_sys_path_once(self, project):
+        _write(project, "", my_module="value = 'found'\n")
+        root = str(project.resolve())
+        assert root not in sys.path
 
+        first = import_from_string("my_module:value")
+        second = import_from_string("my_module:value")
 
-class TestGetConfigValue:
-    """Tests for get_config_value function."""
+        assert first == second == "found"
+        assert sys.path[0] == root and sys.path.count(root) == 1
 
-    def test_get_existing_value(self, tmp_path, monkeypatch):
-        """Returns value when key exists."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[tool.fastapi-toolsets]\nfixtures = "app:registry"\n')
-        monkeypatch.chdir(tmp_path)
+    def test_get_config_value(self, project):
+        _write(project, 'fixtures = "app:registry"\n')
 
-        result = get_config_value("fixtures")
-        assert result == "app:registry"
+        assert get_config_value("fixtures") == "app:registry"
+        assert get_config_value("db_context") is None
+        assert get_custom_cli() is None
+        with pytest.raises(typer.BadParameter, match="No 'db_context' configured"):
+            get_config_value("db_context", required=True)
 
-    def test_get_missing_value_returns_none(self, tmp_path, monkeypatch):
-        """Returns None when key is missing and not required."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("[tool.fastapi-toolsets]\n")
-        monkeypatch.chdir(tmp_path)
+    @pytest.mark.parametrize(
+        ("getter", "config", "message"),
+        [
+            (get_fixtures_registry, "", "No 'fixtures' configured"),
+            (
+                get_fixtures_registry,
+                'fixtures = "fake:obj"\n',
+                "must be a FixtureRegistry instance, got str",
+            ),
+            (get_db_context, "", "No 'db_context' configured"),
+            (
+                get_custom_cli,
+                'custom_cli = "fake:obj"\n',
+                "must be a Typer instance, got str",
+            ),
+        ],
+        ids=[
+            "fixtures-missing",
+            "fixtures-wrong-type",
+            "db-context-missing",
+            "custom-cli-wrong-type",
+        ],
+    )
+    def test_configured_imports_are_validated(self, project, getter, config, message):
+        _write(project, config, fake="obj = 'not it'\n")
 
-        result = get_config_value("fixtures")
-        assert result is None
+        with pytest.raises(typer.BadParameter, match=message):
+            getter()
 
-    def test_get_missing_value_required_raises_error(self, tmp_path, monkeypatch):
-        """Raises error when key is missing and required."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("[tool.fastapi-toolsets]\n")
-        monkeypatch.chdir(tmp_path)
-
-        with pytest.raises(Exception) as exc_info:
-            get_config_value("fixtures", required=True)
-        assert "No 'fixtures' configured" in str(exc_info.value)
-
-
-class TestGetFixturesRegistry:
-    """Tests for get_fixtures_registry function."""
-
-    def test_raises_when_not_configured(self, tmp_path, monkeypatch):
-        """Raises error when fixtures not configured."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("[tool.fastapi-toolsets]\n")
-        monkeypatch.chdir(tmp_path)
-
-        with pytest.raises(Exception) as exc_info:
-            get_fixtures_registry()
-        assert "No 'fixtures' configured" in str(exc_info.value)
-
-    def test_raises_when_not_registry_instance(self, tmp_path, monkeypatch):
-        """Raises error when imported object is not a FixtureRegistry."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[tool.fastapi-toolsets]\nfixtures = "my_fixtures:registry"\n'
+    def test_configured_imports_return_the_objects(self, project):
+        _write(
+            project,
+            _FIXTURES_CONFIG + _CUSTOM_CLI_CONFIG,
+            app_fixtures=_FIXTURES_MODULE,
+            app_db=_DB_MODULE,
+            app_cli=_CUSTOM_CLI_MODULE,
         )
 
-        fixtures_file = tmp_path / "my_fixtures.py"
-        fixtures_file.write_text("registry = 'not a registry'\n")
-
-        monkeypatch.chdir(tmp_path)
-        if str(tmp_path) not in sys.path:
-            sys.path.insert(0, str(tmp_path))
-
-        try:
-            with pytest.raises(Exception) as exc_info:
-                get_fixtures_registry()
-            assert "must be a FixtureRegistry instance" in str(exc_info.value)
-        finally:
-            if str(tmp_path) in sys.path:
-                sys.path.remove(str(tmp_path))
-            if "my_fixtures" in sys.modules:
-                del sys.modules["my_fixtures"]
+        assert isinstance(get_fixtures_registry(), FixtureRegistry)
+        assert get_db_context().__name__ == "get_session"
+        assert isinstance(get_custom_cli(), typer.Typer)
 
 
-class TestGetDbContext:
-    """Tests for get_db_context function."""
+@pytest.mark.usefixtures("project")
+class TestApp:
+    """The CLI is the default Typer or the configured one, with fixtures when set."""
 
-    def test_raises_when_not_configured(self, tmp_path, monkeypatch):
-        """Raises error when db_context not configured."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("[tool.fastapi-toolsets]\n")
-        monkeypatch.chdir(tmp_path)
+    def test_default_cli_without_configuration(self):
+        result = runner.invoke(_cli(), ["--help"])
 
-        with pytest.raises(Exception) as exc_info:
-            get_db_context()
-        assert "No 'db_context' configured" in str(exc_info.value)
-
-
-class TestGetCustomCli:
-    """Tests for get_custom_cli function."""
-
-    def test_returns_none_when_not_configured(self, tmp_path, monkeypatch):
-        """Returns None when custom_cli not configured."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("[tool.fastapi-toolsets]\n")
-        monkeypatch.chdir(tmp_path)
-
-        result = get_custom_cli()
-        assert result is None
-
-    def test_raises_when_not_typer_instance(self, tmp_path, monkeypatch):
-        """Raises error when imported object is not a Typer instance."""
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[tool.fastapi-toolsets]\ncustom_cli = "my_cli:cli"\n')
-
-        cli_file = tmp_path / "my_cli.py"
-        cli_file.write_text("cli = 'not a typer'\n")
-
-        monkeypatch.chdir(tmp_path)
-        if str(tmp_path) not in sys.path:
-            sys.path.insert(0, str(tmp_path))
-
-        try:
-            with pytest.raises(Exception) as exc_info:
-                get_custom_cli()
-            assert "must be a Typer instance" in str(exc_info.value)
-        finally:
-            if str(tmp_path) in sys.path:
-                sys.path.remove(str(tmp_path))
-            if "my_cli" in sys.modules:
-                del sys.modules["my_cli"]
-
-
-class TestCliApp:
-    """Tests for CLI application."""
-
-    def test_cli_help(self, tmp_path, monkeypatch):
-        """CLI shows help without fixtures."""
-        monkeypatch.chdir(tmp_path)
-
-        # Need to reload the module to pick up new cwd
-        import importlib
-
-        from fastapi_toolsets.cli import app
-
-        importlib.reload(app)
-
-        result = runner.invoke(app.cli, ["--help"])
         assert result.exit_code == 0
         assert "CLI utilities for FastAPI projects" in result.output
+        assert "fixtures" not in result.output
+
+    @pytest.mark.parametrize(
+        "with_fixtures", [False, True], ids=["alone", "with-fixtures"]
+    )
+    def test_custom_cli_replaces_the_default(self, project, with_fixtures):
+        config = _CUSTOM_CLI_CONFIG + (_FIXTURES_CONFIG if with_fixtures else "")
+        _write(
+            project,
+            config,
+            app_cli=_CUSTOM_CLI_MODULE,
+            app_fixtures=_EMPTY_FIXTURES_MODULE,
+            app_db=_DB_MODULE,
+        )
+        cli = _cli()
+
+        shown = runner.invoke(cli, ["--help"])
+        hello = runner.invoke(cli, ["hello"])
+
+        assert shown.exit_code == 0 and "My custom CLI" in shown.output
+        assert "hello" in shown.output
+        assert ("fixtures" in shown.output) is with_fixtures
+        assert hello.exit_code == 0 and "Hello from custom CLI!" in hello.output
 
 
-class TestFixturesCli:
-    """Tests for fixtures CLI commands."""
+class TestFixturesCommands:
+    """``fixtures list`` and ``fixtures load``."""
 
     @pytest.fixture
-    def cli_env(self, tmp_path, monkeypatch):
-        """Set up CLI environment with fixtures config."""
-        # Create pyproject.toml
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            "[tool.fastapi-toolsets]\n"
-            'fixtures = "fixtures:registry"\n'
-            'db_context = "db:get_session"\n'
+    def cli(self, project):
+        _write(
+            project, _FIXTURES_CONFIG, app_fixtures=_FIXTURES_MODULE, app_db=_DB_MODULE
         )
+        return _cli()
 
-        # Create fixtures module
-        fixtures_file = tmp_path / "fixtures.py"
-        fixtures_file.write_text(
-            "from fastapi_toolsets.fixtures import FixtureRegistry, Context\n"
-            "\n"
-            "registry = FixtureRegistry()\n"
-            "\n"
-            "@registry.register(contexts=[Context.BASE])\n"
-            "def roles():\n"
-            '    return [{"id": 1, "name": "admin"}, {"id": 2, "name": "user"}]\n'
-            "\n"
-            '@registry.register(depends_on=["roles"], contexts=[Context.TESTING])\n'
-            "def users():\n"
-            '    return [{"id": 1, "name": "alice", "role_id": 1}]\n'
-            "\n"
-            '@registry.register(contexts=["staging"])\n'
-            "def staging_only():\n"
-            '    return [{"id": 3, "name": "staging-user"}]\n'
-        )
-
-        # Create db module
-        db_file = tmp_path / "db.py"
-        db_file.write_text(
-            "from contextlib import asynccontextmanager\n"
-            "\n"
-            "@asynccontextmanager\n"
-            "async def get_session():\n"
-            "    yield None\n"
-        )
-
-        monkeypatch.chdir(tmp_path)
-
-        # Add tmp_path to sys.path for imports
-        if str(tmp_path) not in sys.path:
-            sys.path.insert(0, str(tmp_path))
-
-        # Reload the CLI module to pick up new config
-        import importlib
-
-        from fastapi_toolsets.cli import app
-
-        importlib.reload(app)
-
-        yield tmp_path, app.cli
-
-        # Cleanup
-        if str(tmp_path) in sys.path:
-            sys.path.remove(str(tmp_path))
-
-    def test_fixtures_list(self, cli_env):
-        """fixtures list shows registered fixtures."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "list"])
+    @pytest.mark.parametrize(
+        ("args", "listed"),
+        [
+            ([], _ALL_FIXTURES),
+            (["--context", "base"], ["roles"]),
+            (["-c", "testing"], ["roles", "users"]),
+            (["--context", "staging"], ["roles", "staging_only"]),
+        ],
+        ids=["all", "base", "testing", "custom-context"],
+    )
+    def test_list_shows_the_context_fixtures_plus_base(self, cli, args, listed):
+        result = runner.invoke(cli, ["fixtures", "list", *args])
 
         assert result.exit_code == 0
-        assert "roles" in result.output
-        assert "users" in result.output
-        assert "Total: 3 fixture(s)" in result.output
+        assert [n for n in _ALL_FIXTURES if n in result.output] == listed
+        assert f"Total: {len(listed)} fixture(s)" in result.output
 
-    def test_fixtures_list_with_context(self, cli_env):
-        """fixtures list --context filters by context."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "list", "--context", "base"])
+    @pytest.mark.parametrize(
+        ("args", "env", "strategy", "listed"),
+        [
+            (["base"], {}, "merge", ["roles: 2 dict(s)"]),
+            ([], {}, "merge", ["roles: 2 dict(s)"]),
+            (
+                ["testing", "-s", "insert"],
+                {},
+                "insert",
+                ["roles: 2 dict(s)", "users: 1 dict(s)"],
+            ),
+            (["staging"], {}, "merge", ["roles: 2 dict(s)", "staging_only: 1 dict(s)"]),
+            (
+                [],
+                {"FIXTURES_CONTEXT": "staging"},
+                "merge",
+                ["roles: 2 dict(s)", "staging_only: 1 dict(s)"],
+            ),
+        ],
+        ids=[
+            "base",
+            "default-context",
+            "testing-insert",
+            "custom-context",
+            "context-from-env",
+        ],
+    )
+    def test_load_dry_run_lists_what_would_be_loaded(
+        self, cli, args, env, strategy, listed
+    ):
+        """Base fixtures always come along; the context may come from FIXTURES_CONTEXT."""
+        result = runner.invoke(cli, ["fixtures", "load", *args, "--dry-run"], env=env)
 
         assert result.exit_code == 0
-        assert "roles" in result.output
-        assert "users" not in result.output
-        assert "Total: 1 fixture(s)" in result.output
-
-    def test_fixtures_load_dry_run(self, cli_env):
-        """fixtures load --dry-run shows what would be loaded."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "load", "base", "--dry-run"])
-
-        assert result.exit_code == 0
-        assert "Fixtures to load" in result.output
-        assert "roles" in result.output
+        assert f"Fixtures to load ({strategy} strategy):" in result.output
+        lines = result.output.splitlines()
+        assert [line.partition("  - ")[2] for line in lines if "  - " in line] == listed
         assert "[Dry run - no changes made]" in result.output
 
-    def test_fixtures_list_with_custom_context(self, cli_env):
-        """fixtures list --context accepts contexts outside the Context enum, and
-        always includes base fixtures alongside the requested context."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "list", "--context", "staging"])
+    def test_load_runs_the_fixtures_inside_the_db_context(self, project):
+        _write(
+            project,
+            _FIXTURES_CONFIG,
+            app_fixtures=_NO_ROWS_FIXTURES_MODULE,
+            app_db=_DB_MODULE,
+        )
+        cli = _cli()
+
+        result = runner.invoke(cli, ["fixtures", "load"])
 
         assert result.exit_code == 0
-        assert "staging_only" in result.output
-        assert "roles" in result.output
-        assert "Total: 2 fixture(s)" in result.output
+        assert "Loaded 0 record(s) successfully." in result.output
+        assert sys.modules["app_db"].calls == ["enter", "exit"]
 
-    def test_fixtures_load_custom_context_dry_run(self, cli_env):
-        """fixtures load accepts a custom context argument outside the Context enum,
-        and always loads base fixtures alongside it."""
-        tmp_path, cli = cli_env
-        result = runner.invoke(cli, ["fixtures", "load", "staging", "--dry-run"])
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            (["list"], "No fixtures found."),
+            (["list", "--context", "testing"], "No fixtures found."),
+            (["load", "testing"], "No fixtures to load for the specified context(s)."),
+        ],
+        ids=["list", "list-context", "load"],
+    )
+    def test_empty_registry_has_nothing_to_list_or_load(self, project, args, message):
+        _write(
+            project,
+            _FIXTURES_CONFIG,
+            app_fixtures=_EMPTY_FIXTURES_MODULE,
+            app_db=_DB_MODULE,
+        )
+        cli = _cli()
 
-        assert result.exit_code == 0
-        assert "staging_only" in result.output
-        assert "roles" in result.output
+        result = runner.invoke(cli, ["fixtures", *args])
 
-    def test_fixtures_load_invalid_strategy(self, cli_env):
-        """fixtures load with invalid strategy shows error."""
-        tmp_path, cli = cli_env
+        assert result.exit_code == 0 and message in result.output
+
+    def test_load_rejects_an_unknown_strategy(self, cli):
         result = runner.invoke(
             cli, ["fixtures", "load", "base", "--strategy", "invalid"]
         )
 
-        assert result.exit_code != 0
-
-
-class TestCliWithoutFixturesConfig:
-    """Tests for CLI when fixtures is not configured."""
-
-    def test_no_fixtures_command(self, tmp_path, monkeypatch):
-        """fixtures command is not available when not configured."""
-        # Create pyproject.toml without fixtures
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[project]\nname = "test"\n')
-
-        monkeypatch.chdir(tmp_path)
-
-        # Reload the CLI module
-        import importlib
-
-        from fastapi_toolsets.cli import app
-
-        importlib.reload(app)
-
-        result = runner.invoke(app.cli, ["--help"])
-
-        assert result.exit_code == 0
-        assert "fixtures" not in result.output
-
-
-class TestCustomCliConfig:
-    """Tests for custom CLI configuration."""
-
-    def test_cli_with_custom_cli(self, tmp_path, monkeypatch):
-        """CLI uses custom Typer instance when configured."""
-        import typer
-
-        # Create pyproject.toml with custom_cli config
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[tool.fastapi-toolsets]\ncustom_cli = "my_cli:cli"\n')
-
-        # Create custom CLI module with its own Typer and commands
-        cli_file = tmp_path / "my_cli.py"
-        cli_file.write_text(
-            "import typer\n"
-            "\n"
-            "cli = typer.Typer(name='my-app', help='My custom CLI')\n"
-            "\n"
-            "@cli.command()\n"
-            "def hello():\n"
-            '    print("Hello from custom CLI!")\n'
-        )
-
-        monkeypatch.chdir(tmp_path)
-
-        # Add tmp_path to sys.path for imports
-        if str(tmp_path) not in sys.path:
-            sys.path.insert(0, str(tmp_path))
-
-        # Remove my_cli from sys.modules if it was previously loaded
-        if "my_cli" in sys.modules:
-            del sys.modules["my_cli"]
-
-        # Reload the CLI module to pick up new config
-        import importlib
-
-        from fastapi_toolsets.cli import app
-
-        importlib.reload(app)
-
-        try:
-            # Verify custom CLI is used
-            assert isinstance(app.cli, typer.Typer)
-
-            result = runner.invoke(app.cli, ["--help"])
-            assert result.exit_code == 0
-            assert "My custom CLI" in result.output
-            assert "hello" in result.output
-
-            result = runner.invoke(app.cli, ["hello"])
-            assert result.exit_code == 0
-            assert "Hello from custom CLI!" in result.output
-        finally:
-            if str(tmp_path) in sys.path:
-                sys.path.remove(str(tmp_path))
-            if "my_cli" in sys.modules:
-                del sys.modules["my_cli"]
-
-    def test_custom_cli_with_fixtures(self, tmp_path, monkeypatch):
-        """Custom CLI gets fixtures command added when configured."""
-        # Create pyproject.toml with both custom_cli and fixtures
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            "[tool.fastapi-toolsets]\n"
-            'custom_cli = "my_cli:cli"\n'
-            'fixtures = "fixtures:registry"\n'
-            'db_context = "db:get_session"\n'
-        )
-
-        # Create custom CLI module
-        cli_file = tmp_path / "my_cli.py"
-        cli_file.write_text(
-            "import typer\n"
-            "\n"
-            "cli = typer.Typer(name='my-app', help='My custom CLI')\n"
-            "\n"
-            "@cli.command()\n"
-            "def hello():\n"
-            '    print("Hello!")\n'
-        )
-
-        # Create fixtures module
-        fixtures_file = tmp_path / "fixtures.py"
-        fixtures_file.write_text(
-            "from fastapi_toolsets.fixtures import FixtureRegistry\n"
-            "\n"
-            "registry = FixtureRegistry()\n"
-        )
-
-        # Create db module
-        db_file = tmp_path / "db.py"
-        db_file.write_text(
-            "from contextlib import asynccontextmanager\n"
-            "\n"
-            "@asynccontextmanager\n"
-            "async def get_session():\n"
-            "    yield None\n"
-        )
-
-        monkeypatch.chdir(tmp_path)
-
-        if str(tmp_path) not in sys.path:
-            sys.path.insert(0, str(tmp_path))
-
-        for mod in ["my_cli", "fixtures", "db"]:
-            if mod in sys.modules:
-                del sys.modules[mod]
-
-        import importlib
-
-        from fastapi_toolsets.cli import app
-
-        importlib.reload(app)
-
-        try:
-            result = runner.invoke(app.cli, ["--help"])
-            assert result.exit_code == 0
-            # Should have both custom command and fixtures
-            assert "hello" in result.output
-            assert "fixtures" in result.output
-        finally:
-            if str(tmp_path) in sys.path:
-                sys.path.remove(str(tmp_path))
-            for mod in ["my_cli", "fixtures", "db"]:
-                if mod in sys.modules:
-                    del sys.modules[mod]
+        assert result.exit_code == 2
+        assert "Invalid value for '--strategy'" in result.output
 
 
 class TestAsyncCommand:
-    """Tests for async_command decorator."""
+    """async_command runs a coroutine function synchronously."""
 
-    def test_async_command_runs_coroutine(self):
-        """async_command runs async function synchronously."""
-
+    def test_runs_the_coroutine_and_keeps_the_metadata(self):
         @async_command
-        async def async_func(value: int) -> int:
-            return value * 2
+        async def multiply(value: int, *, times: int = 2) -> int:
+            """Multiply it."""
+            return value * times
 
-        result = async_func(21)
-        assert result == 42
-
-    def test_async_command_preserves_signature(self):
-        """async_command preserves function signature."""
-
-        @async_command
-        async def async_func(name: str, count: int = 1) -> str:
-            return f"{name} x {count}"
-
-        result = async_func("test", count=3)
-        assert result == "test x 3"
-
-    def test_async_command_preserves_docstring(self):
-        """async_command preserves function docstring."""
-
-        @async_command
-        async def async_func() -> None:
-            """This is a docstring."""
-
-        assert async_func.__doc__ == """This is a docstring."""
-
-    def test_async_command_preserves_name(self):
-        """async_command preserves function name."""
-
-        @async_command
-        async def my_async_function() -> None:
-            pass
-
-        assert my_async_function.__name__ == "my_async_function"
+        assert multiply(21) == 42 and multiply(2, times=5) == 10
+        assert multiply.__name__ == "multiply" and multiply.__doc__ == "Multiply it."

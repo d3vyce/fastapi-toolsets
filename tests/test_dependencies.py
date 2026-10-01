@@ -1,8 +1,8 @@
-"""Tests for fastapi_toolsets.dependencies module."""
+"""Tests for ``PathDependency`` and ``BodyDependency``: signature and fetching."""
 
 import inspect
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Annotated, Any, cast
 
 import pytest
@@ -18,331 +18,186 @@ from fastapi_toolsets.dependencies import (
     _unwrap_session_dep,
 )
 
-from .conftest import Role, RoleCreate, RoleCrud, User, UserCreate, UserCrud
+from .conftest import Role, RoleCreate, RoleCrud, User, create_role, create_user
 
 
 async def mock_get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Mock session dependency for testing."""
+    """Session dependency stand-in; the tests pass the session explicitly."""
     yield None  # type: ignore[misc]  # ty:ignore[invalid-yield]
 
 
 MockSessionDep = Annotated[AsyncSession, Depends(mock_get_db)]
+_AnnotatedNoDepends = Annotated[AsyncSession, "not_a_depends"]
 
 
-class TestUnwrapSessionDep:
-    def test_plain_callable_returned_as_is(self):
-        """Plain callable is returned unchanged."""
-        assert _unwrap_session_dep(mock_get_db) is mock_get_db
-
-    def test_annotated_with_depends_unwrapped(self):
-        """Annotated form with Depends is unwrapped to the plain callable."""
-        assert _unwrap_session_dep(MockSessionDep) is mock_get_db
-
-    def test_annotated_without_depends_returned_as_is(self):
-        """Annotated form with no Depends falls back to returning session_dep as-is."""
-        annotated_no_dep = Annotated[AsyncSession, "not_a_depends"]
-        assert _unwrap_session_dep(annotated_no_dep) is annotated_no_dep
+def _path(**kwargs: Any) -> Any:
+    """``PathDependency`` on ``User.id`` with the default session dep."""
+    return PathDependency(User, User.id, session_dep=mock_get_db, **kwargs)
 
 
-class TestPathDependency:
-    """Tests for PathDependency factory."""
+def _body(**kwargs: Any) -> Any:
+    """``BodyDependency`` on ``User.id`` bound to the ``user_id`` body field."""
+    return BodyDependency(
+        User, User.id, session_dep=mock_get_db, body_field="user_id", **kwargs
+    )
 
-    def test_returns_depends_instance(self):
-        """PathDependency returns a Depends instance."""
-        dep = PathDependency(Role, Role.id, session_dep=mock_get_db)
-        assert isinstance(dep, Depends)
 
-    def test_signature_has_default_param_name(self):
-        """PathDependency uses model_field as default param name."""
-        dep = cast(Any, PathDependency(Role, Role.id, session_dep=mock_get_db))
-        func = dep.dependency
+def _signature(dep: Any) -> inspect.Signature:
+    return inspect.signature(dep.dependency)
 
-        sig = inspect.signature(func)
-        params = list(sig.parameters.keys())
 
-        assert "role_id" in params
-        assert "session" in params
+async def _user_with_role(session: AsyncSession) -> User:
+    role = await create_role(session, "load_opts_role")
+    user = await create_user(session, "load_opts", role_id=role.id)
+    session.expunge_all()
+    return user
 
-    def test_signature_has_correct_type_annotation(self):
-        """PathDependency uses field's python type for annotation."""
-        dep = cast(Any, PathDependency(Role, Role.id, session_dep=mock_get_db))
-        func = dep.dependency
 
-        sig = inspect.signature(func)
+@pytest.mark.parametrize(
+    ("session_dep", "expected"),
+    [
+        (mock_get_db, mock_get_db),
+        (MockSessionDep, mock_get_db),
+        (_AnnotatedNoDepends, _AnnotatedNoDepends),
+    ],
+    ids=["plain_callable", "annotated_depends", "annotated_without_depends"],
+)
+def test_unwrap_session_dep(session_dep: Any, expected: Any):
+    """Only ``Annotated[..., Depends(fn)]`` is unwrapped; anything else passes through."""
+    assert _unwrap_session_dep(session_dep) is expected
 
-        assert sig.parameters["role_id"].annotation == uuid.UUID
-        assert sig.parameters["session"].annotation == AsyncSession
 
-    def test_signature_session_has_depends_default(self):
-        """PathDependency session param has Depends as default."""
-        dep = cast(Any, PathDependency(Role, Role.id, session_dep=mock_get_db))
-        func = dep.dependency
+class TestSignature:
+    """Both factories expose a lookup parameter and a ``session`` parameter."""
 
-        sig = inspect.signature(func)
-
-        assert isinstance(sig.parameters["session"].default, Depends)
-
-    def test_custom_param_name_in_signature(self):
-        """PathDependency uses custom param_name in signature."""
-        dep = cast(
-            Any,
-            PathDependency(
-                Role, Role.id, session_dep=mock_get_db, param_name="role_uuid"
+    @pytest.mark.parametrize(
+        ("dep", "param", "annotation"),
+        [
+            (
+                PathDependency(Role, Role.id, session_dep=mock_get_db),
+                "role_id",
+                uuid.UUID,
             ),
-        )
-        func = dep.dependency
+            (
+                PathDependency(
+                    Role, Role.id, session_dep=mock_get_db, param_name="role_uuid"
+                ),
+                "role_uuid",
+                uuid.UUID,
+            ),
+            (
+                PathDependency(User, User.username, session_dep=mock_get_db),
+                "user_username",
+                str,
+            ),
+            (
+                BodyDependency(
+                    Role, Role.id, session_dep=mock_get_db, body_field="role_id"
+                ),
+                "role_id",
+                uuid.UUID,
+            ),
+            (
+                BodyDependency(
+                    User, User.id, session_dep=mock_get_db, body_field="user_uuid"
+                ),
+                "user_uuid",
+                uuid.UUID,
+            ),
+        ],
+        ids=[
+            "path/default_name",
+            "path/custom_name",
+            "path/string_field",
+            "body/role_id",
+            "body/custom_field",
+        ],
+    )
+    def test_lookup_param_and_session(self, dep: Any, param: str, annotation: type):
+        """The param is named after the model field (or the override) and typed by it."""
+        assert isinstance(dep, Depends)
+        sig = _signature(dep)
 
-        sig = inspect.signature(func)
-        params = list(sig.parameters.keys())
+        assert set(sig.parameters) == {param, "session"}
+        assert sig.parameters[param].annotation is annotation
+        assert sig.parameters["session"].annotation is AsyncSession
+        assert isinstance(sig.parameters["session"].default, Depends)
+        assert sig.parameters["session"].default.dependency is mock_get_db
 
-        assert "role_uuid" in params
-        assert "id" not in params
+    @pytest.mark.parametrize(
+        "dep",
+        [
+            PathDependency(Role, Role.id, session_dep=MockSessionDep),
+            BodyDependency(
+                Role, Role.id, session_dep=MockSessionDep, body_field="role_id"
+            ),
+        ],
+        ids=["path", "body"],
+    )
+    def test_annotated_session_dep_is_unwrapped(self, dep: Any):
+        """``Annotated[AsyncSession, Depends(fn)]`` injects ``fn``, not the alias."""
+        assert isinstance(dep, Depends)
+        session = _signature(dep).parameters["session"]
 
-    def test_string_field_type(self):
-        """PathDependency handles string field types."""
-        dep = cast(Any, PathDependency(User, User.username, session_dep=mock_get_db))
-        func = dep.dependency
+        assert isinstance(session.default, Depends)
+        assert session.default.dependency is mock_get_db
 
-        sig = inspect.signature(func)
 
-        assert sig.parameters["user_username"].annotation is str
+class TestFetch:
+    """The generated dependency fetches one row by the lookup parameter."""
 
     @pytest.mark.anyio
-    async def test_dependency_fetches_object(self, db_session):
-        """PathDependency inner function fetches object from database."""
+    @pytest.mark.parametrize(
+        "make_dep",
+        [
+            lambda dep: PathDependency(Role, Role.id, session_dep=dep),
+            lambda dep: BodyDependency(
+                Role, Role.id, session_dep=dep, body_field="role_id"
+            ),
+        ],
+        ids=["path", "body"],
+    )
+    @pytest.mark.parametrize(
+        "session_dep", [mock_get_db, MockSessionDep], ids=["plain", "annotated"]
+    )
+    async def test_fetches_row_by_field(
+        self, db_session: AsyncSession, make_dep: Callable[..., Any], session_dep: Any
+    ):
         role = await RoleCrud.create(db_session, RoleCreate(name="test_role"))
+        dep = make_dep(session_dep)
 
-        dep = cast(Any, PathDependency(Role, Role.id, session_dep=mock_get_db))
-        func = dep.dependency
-
-        result = await func(session=db_session, role_id=role.id)
+        result = await dep.dependency(session=db_session, role_id=role.id)
 
         assert result.id == role.id
         assert result.name == "test_role"
 
-    def test_annotated_session_dep_returns_depends_instance(self):
-        """PathDependency accepts Annotated[AsyncSession, Depends(...)] form."""
-        dep = PathDependency(Role, Role.id, session_dep=MockSessionDep)
-        assert isinstance(dep, Depends)
-
-    def test_annotated_session_dep_signature(self):
-        """PathDependency with Annotated session_dep produces a valid signature."""
-        dep = cast(Any, PathDependency(Role, Role.id, session_dep=MockSessionDep))
-        sig = inspect.signature(dep.dependency)
-
-        assert "role_id" in sig.parameters
-        assert "session" in sig.parameters
-        assert isinstance(sig.parameters["session"].default, Depends)
-
-    def test_annotated_session_dep_unwraps_callable(self):
-        """PathDependency with Annotated form uses the underlying callable, not the Annotated type."""
-        dep = cast(Any, PathDependency(Role, Role.id, session_dep=MockSessionDep))
-        sig = inspect.signature(dep.dependency)
-
-        inner_dep = sig.parameters["session"].default
-        assert inner_dep.dependency is mock_get_db
-
     @pytest.mark.anyio
-    async def test_annotated_session_dep_fetches_object(self, db_session):
-        """PathDependency with Annotated session_dep correctly fetches object from database."""
-        role = await RoleCrud.create(db_session, RoleCreate(name="annotated_role"))
+    async def test_bare_crud_leaves_relation_unloaded(self, db_session: AsyncSession):
+        """Baseline for the load-option tests: without options nothing is eager-loaded."""
+        user = await _user_with_role(db_session)
 
-        dep = cast(Any, PathDependency(Role, Role.id, session_dep=MockSessionDep))
-        result = await dep.dependency(session=db_session, role_id=role.id)
-
-        assert result.id == role.id
-        assert result.name == "annotated_role"
-
-
-class TestBodyDependency:
-    """Tests for BodyDependency factory."""
-
-    def test_returns_depends_instance(self):
-        """BodyDependency returns a Depends instance."""
-        dep = BodyDependency(
-            Role, Role.id, session_dep=mock_get_db, body_field="role_id"
-        )
-        assert isinstance(dep, Depends)
-
-    def test_signature_has_body_field_as_param(self):
-        """BodyDependency uses body_field as param name."""
-        dep = cast(
-            Any,
-            BodyDependency(
-                Role, Role.id, session_dep=mock_get_db, body_field="role_id"
-            ),
-        )
-        func = dep.dependency
-
-        sig = inspect.signature(func)
-        params = list(sig.parameters.keys())
-
-        assert "role_id" in params
-        assert "session" in params
-
-    def test_signature_has_correct_type_annotation(self):
-        """BodyDependency uses field's python type for annotation."""
-        dep = cast(
-            Any,
-            BodyDependency(
-                Role, Role.id, session_dep=mock_get_db, body_field="role_id"
-            ),
-        )
-        func = dep.dependency
-
-        sig = inspect.signature(func)
-
-        assert sig.parameters["role_id"].annotation == uuid.UUID
-        assert sig.parameters["session"].annotation == AsyncSession
-
-    def test_signature_session_has_depends_default(self):
-        """BodyDependency session param has Depends as default."""
-        dep = cast(
-            Any,
-            BodyDependency(
-                Role, Role.id, session_dep=mock_get_db, body_field="role_id"
-            ),
-        )
-        func = dep.dependency
-
-        sig = inspect.signature(func)
-
-        assert isinstance(sig.parameters["session"].default, Depends)
-
-    def test_different_body_field_name(self):
-        """BodyDependency can use any body_field name."""
-        dep = cast(
-            Any,
-            BodyDependency(
-                User, User.id, session_dep=mock_get_db, body_field="user_uuid"
-            ),
-        )
-        func = dep.dependency
-
-        sig = inspect.signature(func)
-        params = list(sig.parameters.keys())
-
-        assert "user_uuid" in params
-        assert "id" not in params
-
-    @pytest.mark.anyio
-    async def test_dependency_fetches_object(self, db_session):
-        """BodyDependency inner function fetches object from database."""
-        role = await RoleCrud.create(db_session, RoleCreate(name="body_test_role"))
-
-        dep = cast(
-            Any,
-            BodyDependency(
-                Role, Role.id, session_dep=mock_get_db, body_field="role_id"
-            ),
-        )
-        func = dep.dependency
-
-        result = await func(session=db_session, role_id=role.id)
-
-        assert result.id == role.id
-        assert result.name == "body_test_role"
-
-    def test_annotated_session_dep_returns_depends_instance(self):
-        """BodyDependency accepts Annotated[AsyncSession, Depends(...)] form."""
-        dep = BodyDependency(
-            Role, Role.id, session_dep=MockSessionDep, body_field="role_id"
-        )
-        assert isinstance(dep, Depends)
-
-    def test_annotated_session_dep_unwraps_callable(self):
-        """BodyDependency with Annotated form uses the underlying callable, not the Annotated type."""
-        dep = cast(
-            Any,
-            BodyDependency(
-                Role, Role.id, session_dep=MockSessionDep, body_field="role_id"
-            ),
-        )
-        sig = inspect.signature(dep.dependency)
-
-        inner_dep = sig.parameters["session"].default
-        assert inner_dep.dependency is mock_get_db
-
-    @pytest.mark.anyio
-    async def test_annotated_session_dep_fetches_object(self, db_session):
-        """BodyDependency with Annotated session_dep correctly fetches object from database."""
-        role = await RoleCrud.create(db_session, RoleCreate(name="body_annotated_role"))
-
-        dep = cast(
-            Any,
-            BodyDependency(
-                Role, Role.id, session_dep=MockSessionDep, body_field="role_id"
-            ),
-        )
-        result = await dep.dependency(session=db_session, role_id=role.id)
-
-        assert result.id == role.id
-        assert result.name == "body_annotated_role"
-
-
-class TestDependencyLoadOptions:
-    """Both factories can eager-load relations instead of using a bare CRUD."""
-
-    @staticmethod
-    async def _make_user(db_session):
-        role = await RoleCrud.create(db_session, RoleCreate(name="load_opts_role"))
-        user = await UserCrud.create(
-            db_session,
-            UserCreate(username="load_opts", email="load@opts", role_id=role.id),
-        )
-        db_session.expunge_all()
-        return user
-
-    @pytest.mark.anyio
-    async def test_bare_crud_leaves_relation_unloaded(self, db_session):
-        """Baseline: without options the relation is not loaded (what the ticket reports)."""
-        user = await self._make_user(db_session)
-
-        dep = cast(Any, PathDependency(User, User.id, session_dep=mock_get_db))
-        result = await dep.dependency(session=db_session, user_id=user.id)
+        result = await _path().dependency(session=db_session, user_id=user.id)
 
         assert "role" in sa_inspect(result).unloaded
 
     @pytest.mark.anyio
-    async def test_load_options_and_crud_eager_load(self, db_session):
-        """Every way of asking for eager loading, on both factories, actually loads."""
-        user = await self._make_user(db_session)
+    @pytest.mark.parametrize("factory", [_path, _body], ids=["path", "body"])
+    @pytest.mark.parametrize("option", ["load_options", "crud"])
+    async def test_load_options_and_crud_eager_load(
+        self, db_session: AsyncSession, factory: Callable[..., Any], option: str
+    ):
+        """Both ``load_options=`` and a configured ``crud=`` eager-load the relation."""
+        user = await _user_with_role(db_session)
         eager = [selectinload(User.role)]
-        eager_crud = CrudFactory(User, default_load_options=eager)
+        value: Any = eager
+        if option == "crud":
+            value = CrudFactory(User, default_load_options=eager)
+        dep = factory(**{option: value})
 
-        deps = {
-            "path/load_options": PathDependency(
-                User, User.id, session_dep=mock_get_db, load_options=eager
-            ),
-            "path/crud": PathDependency(
-                User, User.id, session_dep=mock_get_db, crud=eager_crud
-            ),
-            "body/load_options": BodyDependency(
-                User,
-                User.id,
-                session_dep=mock_get_db,
-                body_field="user_id",
-                load_options=eager,
-            ),
-            "body/crud": BodyDependency(
-                User,
-                User.id,
-                session_dep=mock_get_db,
-                body_field="user_id",
-                crud=eager_crud,
-            ),
-        }
+        result = await dep.dependency(session=db_session, user_id=user.id)
 
-        for label, dep in deps.items():
-            # Drop the identity map, or the next fetch reuses the already-loaded
-            # instance and the assertion passes for the wrong reason.
-            db_session.expunge_all()
-            result = await cast(Any, dep).dependency(
-                session=db_session, user_id=user.id
-            )
-
-            assert "role" not in sa_inspect(result).unloaded, label
-            assert result.role.name == "load_opts_role", label
+        assert "role" not in sa_inspect(result).unloaded
+        assert result.role.name == "load_opts_role"
 
     def test_crud_bound_to_another_model_is_rejected(self):
         """A crud= for a different model would silently query the wrong table.
@@ -350,6 +205,4 @@ class TestDependencyLoadOptions:
         ``ty`` rejects this statically; the runtime guard covers untyped callers.
         """
         with pytest.raises(ValueError, match="bound to Role, not User"):
-            PathDependency(
-                User, User.id, session_dep=mock_get_db, crud=cast(Any, RoleCrud)
-            )
+            _path(crud=cast(Any, RoleCrud))
