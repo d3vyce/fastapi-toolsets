@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_session as _async_session
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value as _sa_set_committed_value
 
-from .._orm import loaded_relationships
+from .._orm import is_expired, loaded_relationships
 from ..logger import get_logger
 
 _logger = get_logger()
@@ -260,13 +260,9 @@ def _suspended_trans_ctx(session: AsyncSession) -> Iterator[None]:
 
 
 def _needs_reload(obj: Any, preloaded: dict[int, set[str]]) -> bool:
-    """True when the commit expired *obj* or a column or recorded relationship."""
-    state = sa_inspect(obj)
-    return bool(
-        state.expired
-        or state.expired_attributes
-        or preloaded.get(id(obj), set()) & state.unloaded
-    )
+    """True when the commit expired *obj* or a recorded relationship is unloaded."""
+    recorded = preloaded.get(id(obj))
+    return is_expired(obj) or bool(recorded and recorded & sa_inspect(obj).unloaded)
 
 
 async def _batch_reload(
@@ -368,9 +364,8 @@ class EventSession(AsyncSession):
                 k: v for k, v in field_changes.items() if k not in create_ids
             }
 
-        # Resolve reloadable state up front and group PKs by model type so
-        # the post-commit reload is one query per type instead of one
-        # session.get() per object.
+        # Resolve reloadable state up front and group the stale objects by
+        # model type so the post-commit reload is one query per type.
         create_items: list[Any] = []
         update_items: list[tuple[Any, dict[str, dict[str, Any]]]] = []
         objs_by_type: dict[type, list[Any]] = {}
@@ -380,23 +375,22 @@ class EventSession(AsyncSession):
             if state is None or state.detached or state.transient:  # pragma: no cover
                 continue
             create_items.append(obj)
-            objs_by_type.setdefault(type(obj), []).append(obj)
+            if _needs_reload(obj, preloaded):
+                objs_by_type.setdefault(type(obj), []).append(obj)
 
         for obj, changes in field_changes.values():
             state = sa_inspect(obj, raiseerr=False)
             if state is None or state.detached or state.transient:  # pragma: no cover
                 continue
             update_items.append((obj, changes))
-            objs_by_type.setdefault(type(obj), []).append(obj)
+            if _needs_reload(obj, preloaded):
+                objs_by_type.setdefault(type(obj), []).append(obj)
 
         with _suspended_trans_ctx(self):
             had_transaction = self.in_transaction()
             for model, objs in objs_by_type.items():
-                stale = [obj for obj in objs if _needs_reload(obj, preloaded)]
-                if not stale:
-                    continue
                 try:
-                    await _batch_reload(self, model, stale, preloaded)
+                    await _batch_reload(self, model, objs, preloaded)
                 except Exception as exc:
                     _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
             if not had_transaction and self.in_transaction():

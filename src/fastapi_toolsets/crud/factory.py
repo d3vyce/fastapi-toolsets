@@ -7,6 +7,7 @@ import inspect
 import json
 import uuid as uuid_module
 from collections.abc import Awaitable, Callable, Collection, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -24,7 +25,6 @@ from sqlalchemy import (
     and_,
     func,
     select,
-    tuple_,
 )
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import NoResultFound
@@ -37,7 +37,7 @@ from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.roles import WhereHavingRole
 from sqlalchemy.sql.util import ClauseAdapter
 
-from .._orm import loaded_relationships
+from .._orm import is_expired, key_expr, loaded_relationships
 from ..db import transaction
 from ..exceptions import InvalidOrderFieldError, NotFoundError
 from ..schemas import (
@@ -62,7 +62,7 @@ from .search import (
     SearchConfig,
     apply_search_joins,
     build_filter_by,
-    build_search_filters,
+    build_search_plan,
     decode_facet,
     facet_keys,
     facet_scalars,
@@ -146,13 +146,27 @@ def _apply_joins(q: Any, joins: JoinType | None, outer_join: bool) -> Any:
     return q
 
 
-def _fans_out(
-    search_joins: Sequence[Any] | None, order_joins: Sequence[Any] | None
-) -> bool:
-    """True if any relationship join yields a collection."""
-    return any(
-        rel.property.uselist for rel in (*(search_joins or ()), *(order_joins or ()))
+def _repeats_rows(joins: JoinType | None, *rel_lists: Sequence[Any] | None) -> bool:
+    """True if a join can repeat an entity.
+
+    A to-many relationship join yields one row per related row. A raw
+    join's cardinality cannot be inspected, so it counts as repeating.
+    """
+    return bool(joins) or any(
+        rel.property.uselist for rels in rel_lists for rel in (rels or ())
     )
+
+
+@dataclass
+class _QueryPlan:
+    """The filters and joins of a paginated query, for the page and the aggregates."""
+
+    filters: list[Any]
+    joins: list[Any]
+    facet_base: list[Any]
+    search_joins: list[Any]
+    fb_filters: dict[str, Any]
+    fb_joins: list[Any]
 
 
 def _grouped_order(clause: Any, table: Any) -> Any:
@@ -246,10 +260,7 @@ class AsyncCrud(Generic[ModelType]):
         if not ids:
             return []
 
-        where = (
-            pk_attrs[0].in_(ids) if len(pk_attrs) == 1 else tuple_(*pk_attrs).in_(ids)
-        )
-        item_q = select(cls.model).where(where)
+        item_q = select(cls.model).where(key_expr(pk_attrs).in_(ids))
         if resolved := cls._resolve_load_options(load_options):
             item_q = item_q.options(*resolved)
         item_q = _apply_for_update(item_q, with_for_update)
@@ -264,6 +275,37 @@ class AsyncCrud(Generic[ModelType]):
         return cast(
             list[ModelType], sorted(found, key=lambda o: rank.get(_key(o), len(ids)))
         )
+
+    @classmethod
+    async def _fetch_page(
+        cls: type[Self],
+        session: AsyncSession,
+        q: Any,
+        *,
+        repeats: bool,
+        order_clauses: Sequence[Any],
+        limit: int,
+        offset: int | None = None,
+        load_options: Sequence[ExecutableOption] | None = None,
+        with_for_update: _ForUpdateMode = False,
+    ) -> list[ModelType]:
+        """Return up to *limit* entities of *q*, by key when a join *repeats* rows."""
+        if repeats:
+            # LIMIT would slice joined rows and `.unique()` shrink the page.
+            return await cls._page_entities(
+                session,
+                q,
+                order_clauses=order_clauses,
+                limit=limit,
+                offset=offset,
+                load_options=load_options,
+                with_for_update=with_for_update,
+            )
+        q = _apply_for_update(q, with_for_update)
+        if offset:
+            q = q.offset(offset)
+        result = await session.execute(q.limit(limit))
+        return cast(list[ModelType], result.unique().scalars().all())
 
     @classmethod
     def _resolve_load_options(
@@ -282,21 +324,19 @@ class AsyncCrud(Generic[ModelType]):
         *,
         loaded: Collection[str],
     ) -> ModelType:
-        """Reload *instance* after a write, keeping the *loaded* relationships.
-
-        Without options, the row is only re-read when the commit expired the
-        instance or a server-generated column was not returned by the write.
-        """
+        """Reload *instance* after a write, keeping the *loaded* relationships."""
+        state = instance_state(instance)
         if not cls.default_load_options:
-            state = instance_state(instance)
-            if state.expired or state.expired_attributes:
+            # The write returned the generated columns unless something expired.
+            if is_expired(instance):
                 await session.refresh(instance)
             return cast(ModelType, instance)
         session.expire(instance)
-        identity = instance_state(instance).identity
-        assert identity is not None
-        await cls.get(session, [a == v for a, v in zip(cls._pk_attrs(), identity)])
-        if missing := [k for k in loaded if k not in instance_state(instance).dict]:
+        assert state.identity is not None
+        await cls.get(
+            session, [a == v for a, v in zip(cls._pk_attrs(), state.identity)]
+        )
+        if missing := [k for k in loaded if k in state.unloaded]:
             await session.refresh(instance, attribute_names=missing)
         return cast(ModelType, instance)
 
@@ -379,67 +419,77 @@ class AsyncCrud(Generic[ModelType]):
         return build_filter_by(filter_by, resolved or [])
 
     @classmethod
-    def _build_search(
+    def _query_plan(
         cls: type[Self],
+        filters: list[Any] | None,
+        *,
         search: str | SearchConfig | None,
         search_fields: Sequence[SearchFieldType] | None,
         search_column: str | None,
-    ) -> tuple[list[Any], list[Any], list[Any], list[Any]]:
-        """Return search (filters, joins) for the page query, then for COUNT and facets.
+        filter_by: dict[str, Any] | BaseModel | None,
+        facet_fields: Sequence[FacetFieldType] | None,
+    ) -> _QueryPlan:
+        """Combine the caller's filters, the search and ``filter_by`` into a plan.
 
-        The second pair filters to-many fields with subqueries, so the
-        aggregate queries do not scan one row per related row.
+        Facets combine the base filters with each facet's own filter
+        individually, so ``fb_filters`` is left out of ``facet_base``.
         """
-        if not search:
-            return [], [], [], []
-        options: dict[str, Any] = {
-            "search_fields": search_fields,
-            "default_fields": cls.searchable_fields,
-            "search_column": search_column,
-        }
-        page_filters, page_joins = build_search_filters(cls.model, search, **options)
-        agg_filters, agg_joins = build_search_filters(
-            cls.model, search, **options, to_many_subqueries=True
+        filters = list(filters) if filters else []
+        fb_filters, fb_joins = cls._prepare_filter_by(filter_by, facet_fields)
+        plan = (
+            build_search_plan(
+                cls.model, search, search_fields, cls.searchable_fields, search_column
+            )
+            if search
+            else None
         )
-        return page_filters, page_joins, agg_filters, agg_joins
+        return _QueryPlan(
+            filters=[
+                *filters,
+                *(plan.page_filters if plan else []),
+                *fb_filters.values(),
+            ],
+            joins=[*fb_joins, *(plan.page_joins if plan else [])],
+            facet_base=[*filters, *(plan.agg_filters if plan else [])],
+            search_joins=plan.agg_joins if plan else [],
+            fb_filters=fb_filters,
+            fb_joins=fb_joins,
+        )
 
     @classmethod
     async def _aggregates(
         cls: type[Self],
         session: AsyncSession,
+        plan: _QueryPlan,
         *,
         joins: JoinType | None,
         outer_join: bool,
-        filters: list[Any],
-        search_joins: list[Any],
-        fb_filters: dict[str, Any],
-        fb_joins: list[Any],
         facet_fields: Sequence[FacetFieldType] | None,
         include_total: bool,
-        include_facets: bool,
     ) -> tuple[int | None, dict[str, list[Any]] | None]:
         """Total and facets of the filtered rows, in one statement when both are wanted.
 
-        With facets to compute over filtered rows, the matching rows' keys
-        and facet columns are selected once into a CTE that the total and
-        every facet read, so the filters run once instead of once per
-        aggregate. A to-many search join keeps the join form, which lets a
-        facet on that path read the matched related row.
+        With facets over filtered rows, the matching rows' keys and facet
+        columns are selected once into a CTE that the total and every
+        facet read, so the filters run once. A to-many search join keeps
+        the join form, which lets a facet on that path read the matched row.
         """
-        resolved = cls._resolve_facet_fields(facet_fields) if include_facets else None
-        if not include_total and not resolved:
+        facet_fields = facet_fields or None
+        if not include_total and facet_fields is None:
             return None, None
         entity: Any = cls.model
         pk_attrs: list[Any] = cls._pk_attrs()
-        agg_joins = [*fb_joins, *search_joins]
-        shared = bool(resolved and (filters or joins)) and not _fans_out(
-            search_joins, None
+        filters = plan.facet_base
+        fb_filters = plan.fb_filters
+        agg_joins = [*plan.fb_joins, *plan.search_joins]
+        prefiltered = bool(facet_fields and (filters or joins)) and not _repeats_rows(
+            None, plan.search_joins
         )
-        if shared:
-            rows = select(*facet_source_columns(cls.model, resolved or []))
+        if prefiltered:
+            rows = select(*facet_source_columns(cls.model, facet_fields or []))
             rows = rows.select_from(cls.model)
             rows = apply_search_joins(
-                _apply_joins(rows, joins, outer_join), search_joins
+                _apply_joins(rows, joins, outer_join), plan.search_joins
             )
             if filters:
                 rows = rows.where(and_(*filters))
@@ -448,41 +498,41 @@ class AsyncCrud(Generic[ModelType]):
             cte = rows.cte()
             entity = aliased(cls.model, cte)
             adapt = ClauseAdapter(cte)
-            mapper = cls.model.__mapper__
             pk_attrs = [getattr(entity, attr.key) for attr in pk_attrs]
             filters = []
-            fb_filters = {k: adapt.traverse(f) for k, f in fb_filters.items()}
+            fb_filters = {k: adapt.traverse(v) for k, v in fb_filters.items()}
             agg_joins = [
-                getattr(entity, rel.key) if rel.parent.mapper is mapper else rel
-                for rel in fb_joins
+                getattr(entity, rel.key)
+                if rel.parent.mapper is cls.model.__mapper__
+                else rel
+                for rel in plan.fb_joins
             ]
-            fans_out = _fans_out(fb_joins, None)
-        else:
-            # A raw join's cardinality cannot be inspected, so it counts as
-            # repeating rows.
-            fans_out = bool(joins) or _fans_out(agg_joins, None)
-        key = pk_attrs[0] if len(pk_attrs) == 1 else tuple_(*pk_attrs)
+            joins = None
+        repeats = _repeats_rows(joins, agg_joins)
 
         scalars: list[Any] = []
         if include_total:
-            count_q = select(
-                func.count(func.distinct(key)) if fans_out else func.count()
+            count = (
+                func.count(func.distinct(key_expr(pk_attrs)))
+                if repeats
+                else func.count()
             )
-            count_q = count_q.select_from(entity)
-            if not shared:
-                count_q = _apply_joins(count_q, joins, outer_join)
-            count_q = apply_search_joins(count_q, agg_joins)
+            count_q = select(count).select_from(entity)
+            count_q = apply_search_joins(
+                _apply_joins(count_q, joins, outer_join), agg_joins
+            )
             if filters or fb_filters:
                 count_q = count_q.where(and_(*filters, *fb_filters.values()))
-            if not resolved:
+            if facet_fields is None:
                 return (await session.execute(count_q)).scalar_one(), None
             scalars.append(count_q.scalar_subquery())
         facets = facet_scalars(
             entity,
-            resolved or [],
+            facet_fields or [],
             base_filters=filters,
             base_joins=agg_joins,
             own_filters=fb_filters,
+            prefiltered=prefiltered,
         )
         scalars.extend(scalar for _, scalar, _ in facets)
         values = list((await session.execute(select(*scalars))).one())
@@ -967,7 +1017,7 @@ class AsyncCrud(Generic[ModelType]):
                     setattr(db_model, rel_attr, related_instances)
 
             session.add(db_model)
-            loaded = loaded_relationships(db_model)
+            loaded = loaded_relationships(db_model) if cls.default_load_options else ()
         result = await cls._refresh_after_write(session, db_model, loaded=loaded)
         if schema:
             return Response(data=schema.model_validate(result))
@@ -1236,10 +1286,11 @@ class AsyncCrud(Generic[ModelType]):
         if order_by is not None:
             q = q.order_by(order_by)
 
-        if limit is not None and joins:
-            return await cls._page_entities(
+        if limit is not None:
+            return await cls._fetch_page(
                 session,
                 q,
+                repeats=_repeats_rows(joins),
                 order_clauses=[] if order_by is None else [order_by],
                 limit=limit,
                 offset=offset,
@@ -1250,8 +1301,6 @@ class AsyncCrud(Generic[ModelType]):
         q = _apply_for_update(q, with_for_update)
         if offset is not None:
             q = q.offset(offset)
-        if limit is not None:
-            q = q.limit(limit)
         result = await session.execute(q)
         return cast(Sequence[ModelType], result.unique().scalars().all())
 
@@ -1344,7 +1393,7 @@ class AsyncCrud(Generic[ModelType]):
                 m2m_resolved = await cls._resolve_m2m(session, obj, only_set=True)
                 for rel_attr, related_instances in m2m_resolved.items():
                     setattr(db_model, rel_attr, related_instances)
-            loaded = loaded_relationships(db_model)
+            loaded = loaded_relationships(db_model) if cls.default_load_options else ()
         db_model = await cls._refresh_after_write(session, db_model, loaded=loaded)
         if schema:
             return Response(data=schema.model_validate(db_model))
@@ -1550,71 +1599,54 @@ class AsyncCrud(Generic[ModelType]):
         Returns:
             PaginatedResponse with OffsetPagination metadata
         """
-        filters = list(filters) if filters else []
         offset = (page - 1) * items_per_page
-
-        fb_filters, fb_joins = cls._prepare_filter_by(filter_by, facet_fields)
-        search_filters, page_search_joins, agg_search_filters, agg_search_joins = (
-            cls._build_search(search, search_fields, search_column)
+        plan = cls._query_plan(
+            filters,
+            search=search,
+            search_fields=search_fields,
+            search_column=search_column,
+            filter_by=filter_by,
+            facet_fields=facet_fields,
         )
-        search_joins = [*fb_joins, *page_search_joins]
-
-        # Facets combine these with each facet's own filter individually, so
-        # fb_filters is applied to the queries below but excluded here.
-        facet_base_filters = [*filters, *agg_search_filters]
-        filters.extend([*search_filters, *fb_filters.values()])
-
-        # Build query with joins
         q = select(cls.model)
-
-        # Apply explicit joins
         q = _apply_joins(q, joins, outer_join)
-
-        # Apply search joins (always outer joins for search)
-        q = apply_search_joins(q, search_joins)
-
-        # Apply order joins (relation joins required for order_by field)
-        if order_joins:
-            q = apply_search_joins(q, order_joins)
-
-        if filters:
-            q = q.where(and_(*filters))
+        q = apply_search_joins(q, [*plan.joins, *(order_joins or [])])
+        if plan.filters:
+            q = q.where(and_(*plan.filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
         order_clauses: list[Any] = [] if order_by is None else [order_by]
         q = q.order_by(*order_clauses)
 
         fetch_limit = items_per_page if include_total else items_per_page + 1
-        # A to-many join repeats each entity, so LIMIT would slice joined rows
-        # and `.unique()` would shrink the page after the fact. A raw join's
-        # cardinality cannot be inspected, so it is treated the same way.
-        if joins or _fans_out(search_joins, order_joins):
-            raw_items = await cls._page_entities(
-                session,
-                q,
-                order_clauses=order_clauses,
-                limit=fetch_limit,
-                offset=offset,
-                load_options=load_options,
-            )
-        else:
-            result = await session.execute(q.offset(offset).limit(fetch_limit))
-            raw_items = cast(list[ModelType], result.unique().scalars().all())
+        raw_items = await cls._fetch_page(
+            session,
+            q,
+            repeats=_repeats_rows(joins, plan.joins, order_joins),
+            order_clauses=order_clauses,
+            limit=fetch_limit,
+            offset=offset,
+            load_options=load_options,
+        )
         fetched = len(raw_items)
         raw_items = raw_items[:items_per_page]
 
+        # A short page is the last one, so it gives the total for free.
+        last_page = (
+            include_total and fetched < items_per_page and (fetched or not offset)
+        )
         total_count, filter_attributes = await cls._aggregates(
             session,
+            plan,
             joins=joins,
             outer_join=outer_join,
-            filters=facet_base_filters,
-            search_joins=agg_search_joins,
-            fb_filters=fb_filters,
-            fb_joins=fb_joins,
-            facet_fields=facet_fields,
-            include_total=include_total,
-            include_facets=include_facets,
+            facet_fields=cls._resolve_facet_fields(facet_fields)
+            if include_facets
+            else None,
+            include_total=include_total and not last_page,
         )
+        if last_page:
+            total_count = offset + fetched
         if total_count is not None:
             has_more = page * items_per_page < total_count
         else:
@@ -1690,10 +1722,6 @@ class AsyncCrud(Generic[ModelType]):
         Returns:
             PaginatedResponse with CursorPagination metadata
         """
-        filters = list(filters) if filters else []
-
-        fb_filters, fb_joins = cls._prepare_filter_by(filter_by, facet_fields)
-
         if cls.cursor_column is None:
             raise ValueError(
                 f"{cls.__name__}.cursor_column is not set. "
@@ -1702,43 +1730,30 @@ class AsyncCrud(Generic[ModelType]):
         cursor_column: Any = cls.cursor_column
         cursor_col_name: str = cursor_column.key
 
+        plan = cls._query_plan(
+            filters,
+            search=search,
+            search_fields=search_fields,
+            search_column=search_column,
+            filter_by=filter_by,
+            facet_fields=facet_fields,
+        )
+        # The cursor only positions the page: facets describe the whole result.
         direction = _CursorDirection.NEXT
-        cursor_filters: list[Any] = []
         if cursor is not None:
             raw_val, direction = _decode_cursor(cursor)
             col_type = cursor_column.property.columns[0].type
             cursor_val: Any = _parse_cursor_value(raw_val, col_type)
             if direction is _CursorDirection.PREV:
-                cursor_filters.append(cursor_column < cursor_val)
+                plan.filters.append(cursor_column < cursor_val)
             else:
-                cursor_filters.append(cursor_column > cursor_val)
+                plan.filters.append(cursor_column > cursor_val)
 
-        search_filters, page_search_joins, agg_search_filters, agg_search_joins = (
-            cls._build_search(search, search_fields, search_column)
-        )
-        search_joins = [*fb_joins, *page_search_joins]
-
-        # Facets combine these with each facet's own filter individually, so
-        # fb_filters is applied to the query below but excluded here.
-        # The cursor only positions the page: facets describe the whole result.
-        facet_base_filters = [*filters, *agg_search_filters]
-        filters.extend([*cursor_filters, *search_filters, *fb_filters.values()])
-
-        # Build query
         q = select(cls.model)
-
-        # Apply explicit joins
         q = _apply_joins(q, joins, outer_join)
-
-        # Apply search joins (always outer joins)
-        q = apply_search_joins(q, search_joins)
-
-        # Apply order joins (relation joins required for order_by field)
-        if order_joins:
-            q = apply_search_joins(q, order_joins)
-
-        if filters:
-            q = q.where(and_(*filters))
+        q = apply_search_joins(q, [*plan.joins, *(order_joins or [])])
+        if plan.filters:
+            q = q.where(and_(*plan.filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
 
@@ -1754,20 +1769,14 @@ class AsyncCrud(Generic[ModelType]):
         q = q.order_by(*order_clauses)
 
         # One extra row detects whether another page exists in this direction.
-        # Under a to-many join that extra row may be a duplicate of one already
-        # on the page, which reads as "no next page" and ends traversal early.
-        # A raw join's cardinality cannot be inspected, so it counts as one.
-        if joins or _fans_out(search_joins, order_joins):
-            raw_items = await cls._page_entities(
-                session,
-                q,
-                order_clauses=order_clauses,
-                limit=items_per_page + 1,
-                load_options=load_options,
-            )
-        else:
-            result = await session.execute(q.limit(items_per_page + 1))
-            raw_items = cast(list[ModelType], result.unique().scalars().all())
+        raw_items = await cls._fetch_page(
+            session,
+            q,
+            repeats=_repeats_rows(joins, plan.joins, order_joins),
+            order_clauses=order_clauses,
+            limit=items_per_page + 1,
+            load_options=load_options,
+        )
         has_more = len(raw_items) > items_per_page
         items_page = raw_items[:items_per_page]
 
@@ -1805,15 +1814,13 @@ class AsyncCrud(Generic[ModelType]):
 
         _, filter_attributes = await cls._aggregates(
             session,
+            plan,
             joins=joins,
             outer_join=outer_join,
-            filters=facet_base_filters,
-            search_joins=agg_search_joins,
-            fb_filters=fb_filters,
-            fb_joins=fb_joins,
-            facet_fields=facet_fields,
+            facet_fields=cls._resolve_facet_fields(facet_fields)
+            if include_facets
+            else None,
             include_total=False,
-            include_facets=include_facets,
         )
         search_columns = cls._resolve_search_columns(search_fields)
         order_columns = cls._resolve_order_columns(order_fields)

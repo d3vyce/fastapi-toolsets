@@ -1,7 +1,7 @@
 """Search utilities for AsyncCrud."""
 
 import functools
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -14,11 +14,8 @@ from sqlalchemy import (
     func,
     or_,
     select,
-    tuple_,
 )
-from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.dialects.postgresql import aggregate_order_by
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql import operators, visitors
@@ -35,6 +32,7 @@ from sqlalchemy.types import (
     Uuid,
 )
 
+from .._orm import key_expr
 from ..exceptions import (
     InvalidFacetFilterError,
     InvalidSearchColumnError,
@@ -105,6 +103,94 @@ def get_searchable_fields(
     return fields
 
 
+@dataclass(frozen=True)
+class SearchPlan:
+    """A search rendered for the page query and for the aggregate queries.
+
+    The page form joins every relationship field: a to-one join cannot fan
+    out, and a join keeps the scan parallel and lets LIMIT stop early. The
+    aggregate form filters to-many fields with ``IN (subquery)`` instead,
+    so COUNT and facets do not fan out.
+    """
+
+    page_filters: list["ColumnElement[bool]"]
+    page_joins: list[InstrumentedAttribute[Any]]
+    agg_filters: list["ColumnElement[bool]"]
+    agg_joins: list[InstrumentedAttribute[Any]]
+
+
+_EMPTY_PLAN = SearchPlan([], [], [], [])
+
+_Entry = tuple[tuple[Any, ...], "ColumnElement[bool]"]
+
+
+def build_search_plan(
+    model: type[DeclarativeBase],
+    search: str | SearchConfig,
+    search_fields: Sequence[SearchFieldType] | None = None,
+    default_fields: Sequence[SearchFieldType] | None = None,
+    search_column: str | None = None,
+) -> SearchPlan:
+    """Build the search conditions once, in both forms.
+
+    Args:
+        model: SQLAlchemy model class
+        search: Search string or SearchConfig
+        search_fields: Fields specified per-call (takes priority)
+        default_fields: Default fields (from ClassVar)
+        search_column: Optional key to narrow search to a single field.
+            Must match one of the resolved search field keys.
+
+    Raises:
+        NoSearchableFieldsError: If no searchable field has been configured
+    """
+    if isinstance(search, str):
+        config = SearchConfig(query=search, fields=search_fields)
+    else:
+        config = (
+            replace(search, fields=search_fields)
+            if search_fields is not None
+            else search
+        )
+    query = config.query.strip() if config.query else ""
+    if not query:
+        return _EMPTY_PLAN
+
+    fields = config.fields or default_fields or get_searchable_fields(model)
+    if not fields:
+        raise NoSearchableFieldsError(model)
+    if search_column is not None:
+        index = {k: f for k, f in zip(search_field_keys(fields), fields)}
+        if search_column not in index:
+            raise InvalidSearchColumnError(search_column, sorted(index))
+        fields = [index[search_column]]
+
+    entries = [(_field_rels(f), _search_condition(f, query, config)) for f in fields]
+    page = _render_search(entries, [], config.match_mode)
+    to_many = [e for e in entries if any(r.property.uselist for r in e[0])]
+    # All or nothing, so the aggregate form matches the page form exactly.
+    if to_many and all(_semi_joinable(r) for rels, _ in to_many for r in rels):
+        joined = [e for e in entries if e not in to_many]
+        agg = _render_search(joined, to_many, config.match_mode)
+    else:
+        agg = page
+    return SearchPlan(*page, *agg)
+
+
+def _render_search(
+    joined: Sequence[_Entry], subqueries: Sequence[_Entry], match_mode: str
+) -> tuple[list["ColumnElement[bool]"], list[InstrumentedAttribute[Any]]]:
+    """Conditions and joins for *joined* entries, plus subqueries for the rest."""
+    joins = unique_relationships(rel for rels, _ in joined for rel in rels)
+    filters = [condition for _, condition in joined]
+    filters += _semi_join_tree(subqueries, match_mode)
+    if not filters:  # pragma: no cover
+        return [], []
+    if match_mode == "any":
+        return [or_(*filters)], joins
+    return filters, joins
+
+
 def build_search_filters(
     model: type[DeclarativeBase],
     search: str | SearchConfig,
@@ -116,89 +202,18 @@ def build_search_filters(
 ) -> tuple[list["ColumnElement[bool]"], list[InstrumentedAttribute[Any]]]:
     """Build SQLAlchemy filter conditions for search.
 
-    Args:
-        model: SQLAlchemy model class
-        search: Search string or SearchConfig
-        search_fields: Fields specified per-call (takes priority)
-        default_fields: Default fields (from ClassVar)
-        search_column: Optional key to narrow search to a single field.
-            Must match one of the resolved search field keys.
-        to_many_subqueries: Filter fields reached through a to-many
-            relationship with ``IN (subquery)`` instead of a join, so the
-            query does not fan out. Meant for COUNT and facet queries.
+    See :func:`build_search_plan` for the arguments. With
+    ``to_many_subqueries`` the aggregate form is returned.
 
     Returns:
         Tuple of (filter_conditions, joins_needed)
-
-    Raises:
-        NoSearchableFieldsError: If no searchable field has been configured
     """
-    # Normalize input
-    if isinstance(search, str):
-        config = SearchConfig(query=search, fields=search_fields)
-    else:
-        config = (
-            replace(search, fields=search_fields)
-            if search_fields is not None
-            else search
-        )
-
-    if not config.query or not config.query.strip():
-        return [], []
-
-    # Determine which fields to search
-    fields = config.fields or default_fields or get_searchable_fields(model)
-
-    if not fields:
-        raise NoSearchableFieldsError(model)
-
-    # Narrow to a single column when search_column is specified
-    if search_column is not None:
-        keys = search_field_keys(fields)
-        index = {k: f for k, f in zip(keys, fields)}
-        if search_column not in index:
-            raise InvalidSearchColumnError(search_column, sorted(index))
-        fields = [index[search_column]]
-
-    query = config.query.strip()
-
-    entries = [(_field_rels(f), _search_condition(f, query, config)) for f in fields]
-    subquery_entries: list[tuple[tuple[Any, ...], ColumnElement[bool]]] = []
+    plan = build_search_plan(
+        model, search, search_fields, default_fields, search_column
+    )
     if to_many_subqueries:
-        to_many = [
-            entry for entry in entries if any(r.property.uselist for r in entry[0])
-        ]
-        # All or nothing, so the result matches the join form exactly.
-        if all(_semi_joinable(r) for rels, _ in to_many for r in rels):
-            subquery_entries = to_many
-            entries = [
-                entry
-                for entry in entries
-                if not any(r.property.uselist for r in entry[0])
-            ]
-
-    # Remaining relationship fields are outer-joined. A to-one join cannot
-    # fan out, and unlike a subquery it keeps the scan parallel and lets
-    # LIMIT stop early.
-    joins: list[InstrumentedAttribute[Any]] = []
-    added_joins: set[str] = set()
-    for rels, _ in entries:
-        for rel in rels:
-            rel_key = str(rel)
-            if rel_key not in added_joins:
-                joins.append(rel)
-                added_joins.add(rel_key)
-    filters = [condition for _, condition in entries]
-    filters += _semi_join_tree(subquery_entries, config.match_mode)
-
-    if not filters:  # pragma: no cover
-        return [], []
-
-    # Combine based on match_mode
-    if config.match_mode == "any":
-        return [or_(*filters)], joins
-    else:
-        return filters, joins
+        return plan.agg_filters, plan.agg_joins
+    return plan.page_filters, plan.page_joins
 
 
 def _field_rels(field: SearchFieldType) -> tuple[Any, ...]:
@@ -253,54 +268,48 @@ def _semi_joinable(rel: Any) -> bool:
     return _is_plain_join(prop.primaryjoin, prop.local_remote_pairs)
 
 
+def _owner_pairs(prop: Any) -> Sequence[tuple[Any, Any]]:
+    """``(owner column, linked column)`` pairs of *prop*'s first hop."""
+    return (
+        prop.synchronize_pairs
+        if prop.secondary is not None
+        else prop.local_remote_pairs
+    )
+
+
 def _semi_join(rel: Any, condition: "ColumnElement[bool]") -> "ColumnElement[bool]":
     """Express "some related row matches *condition*" as `local IN (subquery)`."""
     prop = rel.property
+    pairs = _owner_pairs(prop)
+    sub = select(*(linked for _, linked in pairs)).where(condition)
     if prop.secondary is not None:
-        pairs = prop.synchronize_pairs
-        sub = select(*(assoc for _, assoc in pairs)).where(
-            prop.secondaryjoin, condition
-        )
-    else:
-        pairs = prop.local_remote_pairs
-        sub = select(*(remote for _, remote in pairs)).where(condition)
-    return _in_subquery([col for col, _ in pairs], sub)
+        sub = sub.where(prop.secondaryjoin)
+    return _in_subquery([owner for owner, _ in pairs], sub)
 
 
 def _in_subquery(columns: Sequence[Any], sub: Any) -> "ColumnElement[bool]":
     """``columns IN (sub)``, with a tuple for multi-column keys."""
     # Never correlate: a self-referential relationship would otherwise lose
     # its inner FROM to the outer query.
-    sub = sub.correlate(None)
-    if len(columns) == 1:
-        return columns[0].in_(sub)
-    return tuple_(*columns).in_(sub)
+    return key_expr(columns).in_(sub.correlate(None))
 
 
 def _related_to(rel: Any, parent_rows: Any) -> "ColumnElement[bool]":
     """Condition on *rel*'s target: linked to some row selected by *parent_rows*."""
     prop = rel.property
-    if prop.secondary is not None:
-        parent_keys = parent_rows.with_only_columns(
-            *(parent for parent, _ in prop.synchronize_pairs)
-        )
-        linked = select(*(assoc for _, assoc in prop.secondary_synchronize_pairs))
-        linked = linked.where(
-            _in_subquery([assoc for _, assoc in prop.synchronize_pairs], parent_keys)
-        )
-        return _in_subquery(
-            [target for target, _ in prop.secondary_synchronize_pairs], linked
-        )
-    pairs = prop.local_remote_pairs
-    return _in_subquery(
-        [remote for _, remote in pairs],
-        parent_rows.with_only_columns(*(local for local, _ in pairs)),
+    pairs = _owner_pairs(prop)
+    parent_keys = parent_rows.with_only_columns(*(owner for owner, _ in pairs))
+    if prop.secondary is None:
+        return _in_subquery([linked for _, linked in pairs], parent_keys)
+    target_pairs = prop.secondary_synchronize_pairs
+    linked = select(*(assoc for _, assoc in target_pairs)).where(
+        _in_subquery([assoc for _, assoc in pairs], parent_keys)
     )
+    return _in_subquery([target for target, _ in target_pairs], linked)
 
 
 def _semi_join_tree(
-    entries: Sequence[tuple[tuple[Any, ...], "ColumnElement[bool]"]],
-    match_mode: Literal["any", "all"],
+    entries: Sequence[_Entry], match_mode: str
 ) -> list["ColumnElement[bool]"]:
     """Turn (relationship path, condition) entries into conditions on the root model.
 
@@ -308,26 +317,16 @@ def _semi_join_tree(
     ``match_mode="all"`` they must match the same related row, as with a join.
     """
     combine = or_ if match_mode == "any" else and_
-    parts: list[Any] = []
-    groups: dict[str, tuple[Any, list[Any]]] = {}
+    direct = [condition for rels, condition in entries if not rels]
+    groups: dict[str, tuple[Any, list[_Entry]]] = {}
     for rels, condition in entries:
-        if not rels:
-            parts.append(condition)
-            continue
-        key = str(rels[0])
-        if key not in groups:
-            groups[key] = (rels[0], [])
-            # Placeholder keeps the original field order.
-            parts.append(key)
-        groups[key][1].append((rels[1:], condition))
-    return [
-        _semi_join(
-            groups[part][0],
-            combine(*_semi_join_tree(groups[part][1], match_mode)),
-        )
-        if isinstance(part, str)
-        else part
-        for part in parts
+        if rels:
+            groups.setdefault(str(rels[0]), (rels[0], []))[1].append(
+                (rels[1:], condition)
+            )
+    return direct + [
+        _semi_join(rel, combine(*_semi_join_tree(sub, match_mode)))
+        for rel, sub in groups.values()
     ]
 
 
@@ -336,18 +335,26 @@ def search_field_keys(fields: Sequence[SearchFieldType]) -> list[str]:
     return facet_keys(fields)
 
 
+def unique_relationships(rels: Iterable[Any]) -> list[Any]:
+    """*rels* without repeats, by relationship identity, in order."""
+    seen: set[str] = set()
+    unique: list[Any] = []
+    for rel in rels:
+        key = str(rel)
+        if key not in seen:
+            seen.add(key)
+            unique.append(rel)
+    return unique
+
+
 def apply_search_joins(q: Any, joins: Sequence[Any]) -> Any:
     """Apply relationship-based outer joins (from search/filter_by/facets) to a query.
 
     Deduplicates by relationship identity so a join used by several fields
     (e.g. search + a facet on the same relation) is only applied once.
     """
-    seen: set[str] = set()
-    for rel in joins:
-        rel_key = str(rel)
-        if rel_key not in seen:
-            seen.add(rel_key)
-            q = q.outerjoin(rel)
+    for rel in unique_relationships(joins):
+        q = q.outerjoin(rel)
     return q
 
 
@@ -373,22 +380,15 @@ def facet_keys(facet_fields: Sequence[FacetFieldType]) -> list[str]:
 def facet_source_columns(
     model: type[DeclarativeBase], facet_fields: Sequence[FacetFieldType]
 ) -> list[Any]:
-    """The model's columns the facets read: its key, direct facet columns and
-    the foreign keys of each relationship path's first hop."""
+    """The model's columns the facets read: its key and each path's first hop."""
     columns: dict[Any, Any] = {col.key: col for col in model.__mapper__.primary_key}
     for field in facet_fields:
-        if not isinstance(field, tuple):
+        if isinstance(field, tuple):
+            for owner, _ in _owner_pairs(field[0].property):
+                columns.setdefault(owner.key, owner)
+        else:
             for col in field.property.columns:
                 columns.setdefault(col.key, col)
-            continue
-        prop = field[0].property
-        pairs = (
-            prop.synchronize_pairs
-            if prop.secondary is not None
-            else prop.local_remote_pairs
-        )
-        for local, _ in pairs:
-            columns.setdefault(local.key, local)
     return list(columns.values())
 
 
@@ -396,9 +396,10 @@ def facet_scalars(
     model: Any,
     facet_fields: Sequence[FacetFieldType],
     *,
-    base_filters: "list[ColumnElement[bool]] | None" = None,
-    base_joins: list[InstrumentedAttribute[Any]] | None = None,
-    own_filters: "dict[str, ColumnElement[bool]] | None" = None,
+    base_filters: Sequence["ColumnElement[bool]"],
+    base_joins: Sequence[InstrumentedAttribute[Any]],
+    own_filters: "dict[str, ColumnElement[bool]]",
+    prefiltered: bool = False,
 ) -> list[tuple[str, Any, Any]]:
     """One ``(key, scalar subquery, enum class)`` per facet field.
 
@@ -411,17 +412,13 @@ def facet_scalars(
             same key (if any). Excluded from that facet's own subquery so
             filtering on a facet doesn't collapse its own value list down to
             just the filtered value.
-
-    Returns:
-        The scalar subqueries selecting each facet's sorted distinct values.
+        prefiltered: *model* already holds only the filtered rows (a CTE).
     """
-    own_filters = own_filters or {}
     scalars: list[tuple[str, Any, Any]] = []
 
     for field, key in zip(facet_fields, facet_keys(facet_fields)):
         # Read the model's own attributes from *model*, which may be an alias.
         if isinstance(field, tuple):
-            # Relationship chain: (User.role, Role.name) — last element is the column
             rels = (getattr(model, field[0].key), *field[1:-1])
             column = field[-1]
         else:
@@ -429,14 +426,9 @@ def facet_scalars(
             column = getattr(model, field.key)
 
         col_type = column.property.columns[0].type
-        is_array = isinstance(col_type, ARRAY)
-
-        filters = [
-            *(base_filters or []),
-            *(f for k, f in own_filters.items() if k != key),
-        ]
-        rows = _facet_rows(model, rels, filters, base_joins or [])
-        value = func.unnest(column) if is_array else column
+        filters = [*base_filters, *(f for k, f in own_filters.items() if k != key)]
+        rows = _facet_rows(model, rels, filters, base_joins, prefiltered=prefiltered)
+        value = func.unnest(column) if isinstance(col_type, ARRAY) else column
         values_sq = rows.with_only_columns(value.label("v")).subquery()
         # DISTINCT in a subquery can hash in parallel workers, where
         # array_agg(DISTINCT ...) always sorts every row in a single process.
@@ -459,68 +451,33 @@ def decode_facet(values: Any, enum_class: Any) -> list[Any]:
     ]
 
 
-async def build_facets(
-    session: "AsyncSession",
-    model: type[DeclarativeBase],
-    facet_fields: Sequence[FacetFieldType],
-    *,
-    base_filters: "list[ColumnElement[bool]] | None" = None,
-    base_joins: list[InstrumentedAttribute[Any]] | None = None,
-    own_filters: "dict[str, ColumnElement[bool]] | None" = None,
-) -> dict[str, list[Any]]:
-    """Return distinct values for each facet field, respecting current filters.
-
-    See :func:`facet_scalars` for the arguments.
-
-    Returns:
-        Dict mapping column key to sorted list of distinct non-None values
-    """
-    if not facet_fields:
-        return {}
-    scalars = facet_scalars(
-        model,
-        facet_fields,
-        base_filters=base_filters,
-        base_joins=base_joins,
-        own_filters=own_filters,
-    )
-    row = (await session.execute(select(*(s for _, s, _ in scalars)))).one()
-    return {
-        key: decode_facet(values, enum_class)
-        for (key, _, enum_class), values in zip(scalars, row)
-    }
-
-
 def _facet_rows(
-    model: type[DeclarativeBase],
+    model: Any,
     rels: Sequence[Any],
     filters: Sequence[Any],
     base_joins: Sequence[Any],
+    *,
+    prefiltered: bool,
 ) -> Any:
     """Select the rows of the facet column's table that relate to the filtered rows."""
     joined = {str(rel) for rel in base_joins}
-    to_many = any(rel.property.uselist for rel in rels)
-    # Keep the join when:
-    # - the rows were already filtered into a CTE (an alias): joining it is
-    #   bounded by its size, where the planner may loop a subquery over
-    #   the related table once per row;
-    # - the path cannot be expressed as subqueries;
-    # - the filters already join a to-many relationship on this path, since
-    #   they then constrain the same related row the facet reads;
-    # - a to-one path meets joined filters: the planner tends to probe the
-    #   lookup table with a nested loop that re-runs those joins per value.
-    if (
-        sa_inspect(model).is_aliased_class
+    # Join the path when the rows are prefiltered (a subquery over the related
+    # table may be looped once per row otherwise), when it cannot be expressed
+    # as subqueries, when the filters join a to-many relationship on it (the
+    # facet must read the same related row), or when a to-one path meets
+    # joined filters (the planner tends to re-run those joins per value).
+    keep_join = (
+        prefiltered
         or not all(_semi_joinable(rel) for rel in rels)
         or any(rel.property.uselist and str(rel) in joined for rel in rels)
-        or (not to_many and base_joins)
-    ):
-        rows = apply_search_joins(select(model), [*base_joins, *rels])
-        return rows.where(and_(*filters)) if filters else rows
-
-    rows = apply_search_joins(select(model), base_joins)
+        or (base_joins and not any(rel.property.uselist for rel in rels))
+    )
+    joins = [*base_joins, *rels] if keep_join else base_joins
+    rows = apply_search_joins(select(model), joins)
     if filters:
         rows = rows.where(and_(*filters))
+    if keep_join:
+        return rows
     # Walk the path from the related side: each table is filtered on keys
     # linked to the previous one, so a to-many path never fans out and a
     # small lookup table is probed through the foreign key index.
@@ -578,19 +535,13 @@ def build_filter_by(
     valid_keys = set(index)
     filters: dict[str, ColumnElement[bool]] = {}
     joins: list[InstrumentedAttribute[Any]] = []
-    added_join_keys: set[str] = set()
 
     for key, value in filter_by.items():
         if key not in index:
             raise InvalidFacetFilterError(key, valid_keys)
 
         column, rels = index[key]
-
-        for rel in rels:
-            rel_key = str(rel)
-            if rel_key not in added_join_keys:
-                joins.append(rel)
-                added_join_keys.add(rel_key)
+        joins.extend(rels)
 
         col_type = column.property.columns[0].type
         if isinstance(col_type, Boolean):
@@ -630,4 +581,4 @@ def build_filter_by(
         else:
             raise UnsupportedFacetTypeError(key, type(col_type).__name__)
 
-    return filters, joins
+    return filters, unique_relationships(joins)

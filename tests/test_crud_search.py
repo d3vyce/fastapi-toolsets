@@ -24,6 +24,7 @@ from fastapi_toolsets.crud import (
     UnsupportedFacetTypeError,
     get_searchable_fields,
 )
+from fastapi_toolsets.crud.search import build_search_filters
 from fastapi_toolsets.exceptions import InvalidOrderFieldError
 from fastapi_toolsets.schemas import OffsetPagination, PaginationType, PydanticBase
 
@@ -436,8 +437,6 @@ class TestBuildSearchFilters:
 
     def test_to_many_field_is_joined_by_default(self):
         """The default form keeps the outer join, for the page query."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         _, joins = build_search_filters(
             Post, "x", search_fields=[Post.title, (Post.tags, Tag.name)]
         )
@@ -446,8 +445,6 @@ class TestBuildSearchFilters:
 
     def test_to_many_field_becomes_a_subquery_for_aggregates(self):
         """The aggregate form selects owner keys through the association table."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, joins = build_search_filters(
             Post,
             "x",
@@ -462,8 +459,6 @@ class TestBuildSearchFilters:
 
     def test_to_one_field_stays_joined_for_aggregates(self):
         """A to-one join cannot fan out, so it is kept."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, joins = build_search_filters(
             User,
             "admin",
@@ -476,8 +471,6 @@ class TestBuildSearchFilters:
 
     def test_fields_on_the_same_relationship_share_one_subquery(self):
         """With match_mode="all", both conditions must hold for the same related row."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, _ = build_search_filters(
             Post,
             SearchConfig(query="x", match_mode="all"),
@@ -492,8 +485,6 @@ class TestBuildSearchFilters:
 
     def test_self_referential_subquery_keeps_its_from(self):
         """The subquery is never correlated, even against its own table."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, _ = build_search_filters(
             _Node,
             "x",
@@ -507,8 +498,6 @@ class TestBuildSearchFilters:
 
     def test_composite_key_relationship_uses_a_tuple(self):
         """A multi-column foreign key compares a tuple against the subquery."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, _ = build_search_filters(
             _CompositeOrder,
             "x",
@@ -523,8 +512,6 @@ class TestBuildSearchFilters:
 
     def test_custom_join_condition_falls_back_to_joins(self):
         """A relationship with extra join criteria keeps the outer-join path."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, joins = build_search_filters(
             _Shelf,
             "x",
@@ -537,8 +524,6 @@ class TestBuildSearchFilters:
 
     def test_aliased_relationship_falls_back_to_joins(self):
         """A relationship reached through an alias keeps the outer-join path."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         post = aliased(Post)
         _, joins = build_search_filters(
             Post,
@@ -551,24 +536,18 @@ class TestBuildSearchFilters:
 
     def test_skips_cast_on_string_column(self):
         """String columns are filtered directly, without a CAST (keeps pg_trgm indexable)."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, _ = build_search_filters(User, "john", search_fields=[User.username])
 
         assert "CAST" not in str(filters[0])
 
     def test_casts_non_string_column(self):
         """Non-string columns (e.g. UUID) still get cast to String so ilike works."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, _ = build_search_filters(User, "123", search_fields=[User.id])
 
         assert "CAST" in str(filters[0])
 
     def test_casts_enum_column(self):
         """Enum subclasses String but maps to a native DB enum, which has no ILIKE."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, _ = build_search_filters(Order, "PEND", search_fields=[Order.status])
 
         assert "CAST" in str(filters[0])
@@ -610,9 +589,6 @@ class _PermissionRead(PydanticBase):
 PostCursorFacetCrud = CrudFactory(
     Post, facet_fields=[Post.title], cursor_column=Post.id
 )
-PostTagSiblingFacetCrud = CrudFactory(
-    Post, facet_fields=[(Post.tags, Tag.name), (Post.tags, Tag.id)]
-)
 PostSharedFacetCrud = CrudFactory(
     Post,
     searchable_fields=[Post.title],
@@ -637,6 +613,22 @@ async def _seed_posts_with_tags(session) -> None:
     await session.flush()
 
 
+def _seed_permissions(session) -> None:
+    """Three permissions with a composite key, two under the same subject."""
+    session.add_all(
+        [
+            Permission(subject="users", action="read"),
+            Permission(subject="users", action="write"),
+            Permission(subject="posts", action="read"),
+        ]
+    )
+
+
+def _aggregates(statements: list[str]) -> list[str]:
+    """The statements computing facets."""
+    return [sql for sql in statements if "array_agg" in sql]
+
+
 # Search on a to-many field filters with a subquery, while ordering through a
 # to-many join still fans out and goes through `_page_entities`. Cover both.
 _fan_out = pytest.mark.parametrize(
@@ -644,9 +636,6 @@ _fan_out = pytest.mark.parametrize(
     [{}, {"order_by": Tag.name, "order_joins": [Post.tags]}],
     ids=["search", "order_join"],
 )
-
-
-_fan_out_raw = pytest.mark.parametrize("paginate", ["offset", "cursor"])
 
 
 class TestPaginateToManyJoin:
@@ -854,11 +843,15 @@ class TestPaginateToManyJoin:
 
         with capture_sql(engine) as statements:
             plain = await PostTagSearchCrud.offset_paginate(
-                db_session, include_facets=False, schema=_PostTitle
+                db_session, items_per_page=5, include_facets=False, schema=_PostTitle
             )
             # The to-many search is a subquery in COUNT, so it cannot fan out.
             searched = await PostTagSearchCrud.offset_paginate(
-                db_session, search="shared", include_facets=False, schema=_PostTitle
+                db_session,
+                items_per_page=5,
+                search="shared",
+                include_facets=False,
+                schema=_PostTitle,
             )
 
         counts = [sql for sql in statements if "count(" in sql]
@@ -877,6 +870,7 @@ class TestPaginateToManyJoin:
         with capture_sql(engine) as statements:
             result = await PostTagSearchCrud.offset_paginate(
                 db_session,
+                items_per_page=5,
                 joins=[(post_tags, post_tags.c.post_id == Post.id)],
                 include_facets=False,
                 schema=_PostTitle,
@@ -895,6 +889,7 @@ class TestPaginateToManyJoin:
         with capture_sql(engine) as statements:
             result = await PostTagFacetCrud.offset_paginate(
                 db_session,
+                items_per_page=1,
                 filter_by={"tags__name": ["shared-0-0", "shared-0-1"]},
                 include_facets=False,
                 schema=_PostTitle,
@@ -919,33 +914,16 @@ class TestPaginateToManyJoin:
             "tags__name": ["shared-3-0", "shared-3-1", "shared-3-2"]
         }
 
-    @pytest.mark.anyio
-    async def test_facet_shares_the_related_row_with_a_filter_on_it(
-        self, db_session: AsyncSession
-    ):
-        """filter_by on a to-many facet narrows a sibling facet to the same tags."""
-        await _seed_posts_with_tags(db_session)
-        tag = (
-            await db_session.execute(select(Tag).where(Tag.name == "shared-0-0"))
-        ).scalar_one()
-
-        result = await PostTagSiblingFacetCrud.offset_paginate(
-            db_session, filter_by={"tags__id": tag.id}, schema=_PostTitle
-        )
-
-        assert result.filter_attributes is not None
-        assert result.filter_attributes["tags__name"] == ["shared-0-0"]
-
     def test_facet_with_custom_join_condition_keeps_the_join(self):
         """A relationship the subquery form cannot express is joined instead."""
         from fastapi_toolsets.crud.search import _facet_rows
 
-        sql = str(_facet_rows(_Shelf, [_Shelf.active_books], [], []))
+        sql = str(_facet_rows(_Shelf, [_Shelf.active_books], [], [], prefiltered=False))
 
         assert "JOIN books" in sql
         assert "IN (SELECT" not in sql
 
-    @_fan_out_raw
+    @pytest.mark.parametrize("paginate", ["offset", "cursor"])
     @pytest.mark.anyio
     async def test_raw_to_many_join_returns_full_pages(
         self, db_session: AsyncSession, paginate: str
@@ -953,22 +931,15 @@ class TestPaginateToManyJoin:
         """A caller-supplied to-many join must not shrink a page after LIMIT."""
         await _seed_posts_with_tags(db_session)
 
-        if paginate == "offset":
-            result = await PostTagSearchCrud.offset_paginate(
-                db_session,
-                joins=[(post_tags, post_tags.c.post_id == Post.id)],
-                items_per_page=5,
-                schema=_PostTitle,
-            )
-            assert result.pagination.total_count == _POST_COUNT
-        else:
-            result = await PostTagSearchCrud.cursor_paginate(
-                db_session,
-                joins=[(post_tags, post_tags.c.post_id == Post.id)],
-                items_per_page=5,
-                schema=_PostTitle,
-            )
+        result = await getattr(PostTagSearchCrud, f"{paginate}_paginate")(
+            db_session,
+            joins=[(post_tags, post_tags.c.post_id == Post.id)],
+            items_per_page=5,
+            schema=_PostTitle,
+        )
 
+        if paginate == "offset":
+            assert result.pagination.total_count == _POST_COUNT
         assert len(result.data) == 5
         assert result.pagination.has_more is True
 
@@ -998,25 +969,20 @@ class TestPaginateToManyJoin:
         self, db_session: AsyncSession
     ):
         """With a composite key, DISTINCT must count whole keys, not the first column."""
-        db_session.add_all(
-            [
-                Permission(subject="users", action="read"),
-                Permission(subject="users", action="write"),
-                Permission(subject="posts", action="read"),
-            ]
-        )
+        _seed_permissions(db_session)
         db_session.add(Role(name="viewer"))
         await db_session.flush()
 
         result = await PermissionCrud.offset_paginate(
             db_session,
+            items_per_page=2,
             # A raw join keeps the DISTINCT count.
             joins=[(Role, Role.name.isnot(None))],
             schema=_PermissionRead,
         )
 
         assert result.pagination.total_count == 3
-        assert len(result.data) == 3
+        assert len(result.data) == 2
 
     def test_grouped_order_only_aggregates_foreign_columns(self):
         """A base-table column is left alone; anything else collapses to min()."""
@@ -1033,11 +999,13 @@ class TestPaginateToManyJoin:
 
     def test_to_one_join_does_not_take_the_fan_out_path(self):
         """A to-one join keeps the single-query path."""
-        from fastapi_toolsets.crud.factory import _fans_out
+        from fastapi_toolsets.crud.factory import _repeats_rows
 
-        assert _fans_out([User.role], None) is False
-        assert _fans_out([Post.tags], None) is True
-        assert _fans_out(None, [Post.tags]) is True
+        assert _repeats_rows(None, [User.role]) is False
+        assert _repeats_rows(None, [Post.tags]) is True
+        assert _repeats_rows(None, None, [Post.tags]) is True
+        # A raw join's cardinality cannot be inspected.
+        assert _repeats_rows([(Role, Role.id == User.role_id)]) is True
 
 
 class TestSearchEnumColumn:
@@ -1107,8 +1075,6 @@ class TestSearchConfig:
 
     def test_search_config_empty_query_returns_empty(self):
         """SearchConfig with an empty/blank query returns empty filters without hitting the DB."""
-        from fastapi_toolsets.crud.search import build_search_filters
-
         filters, joins = build_search_filters(User, SearchConfig(query="   "))
 
         assert filters == []
@@ -1259,15 +1225,6 @@ class TestFacetsNotSet:
         result = await UserCursorCrud.cursor_paginate(db_session, schema=UserRead)
 
         assert result.filter_attributes is None
-
-    @pytest.mark.anyio
-    async def test_build_facets_empty_field_list(self, db_session: AsyncSession):
-        """build_facets([]) is a no-op that returns {} without querying — the escape hatch."""
-        from fastapi_toolsets.crud.search import build_facets
-
-        result = await build_facets(db_session, User, [])
-
-        assert result == {}
 
 
 class TestFacetsDirectColumn:
@@ -3361,12 +3318,13 @@ class TestSharedAggregates:
         with capture_sql(engine) as statements:
             result = await PostSharedFacetCrud.offset_paginate(
                 db_session,
+                items_per_page=5,
                 search="post0",
                 filter_by={"is_published": "false"},
                 schema=_PostTitle,
             )
 
-        aggregates = [sql for sql in statements if "array_agg" in sql]
+        aggregates = _aggregates(statements)
         assert len(aggregates) == 1
         sql = aggregates[0]
         assert sql.startswith("WITH")
@@ -3378,18 +3336,19 @@ class TestSharedAggregates:
         assert result.filter_attributes["is_published"] == [False]
         assert len(result.filter_attributes["tags__name"]) == 3 * _POST_COUNT
 
+    @pytest.mark.parametrize("search", [None, "post"], ids=["table", "cte"])
     @pytest.mark.anyio
-    async def test_facet_filter_still_narrows_a_sibling_facet(
-        self, db_session: AsyncSession
+    async def test_facet_filter_narrows_a_sibling_facet(
+        self, db_session: AsyncSession, search: str | None
     ):
-        """On the shared path, a filter_by on a to-many facet keeps its join."""
+        """filter_by on a to-many facet narrows a sibling facet to the same tags."""
         await _seed_posts_with_tags(db_session)
         tag = (
             await db_session.execute(select(Tag).where(Tag.name == "shared-0-0"))
         ).scalar_one()
 
         result = await PostSharedFacetCrud.offset_paginate(
-            db_session, search="post", filter_by={"tags__id": tag.id}, schema=_PostTitle
+            db_session, search=search, filter_by={"tags__id": tag.id}, schema=_PostTitle
         )
 
         assert result.pagination.total_count == 1
@@ -3406,10 +3365,10 @@ class TestSharedAggregates:
 
         with capture_sql(engine) as statements:
             result = await PostSharedFacetCrud.offset_paginate(
-                db_session, schema=_PostTitle
+                db_session, items_per_page=5, schema=_PostTitle
             )
 
-        aggregates = [sql for sql in statements if "array_agg" in sql]
+        aggregates = _aggregates(statements)
         assert len(aggregates) == 1
         assert "count(" in aggregates[0]
         assert "WITH" not in aggregates[0]
@@ -3427,7 +3386,7 @@ class TestSharedAggregates:
                 db_session, search="post0", schema=_PostTitle
             )
 
-        aggregates = [sql for sql in statements if "array_agg" in sql]
+        aggregates = _aggregates(statements)
         assert len(aggregates) == 1
         assert aggregates[0].startswith("WITH")
         assert "count(" not in aggregates[0]
@@ -3439,24 +3398,19 @@ class TestSharedAggregates:
         self, engine, db_session: AsyncSession
     ):
         """A raw join can repeat rows, so the CTE selects distinct composite keys."""
-        db_session.add_all(
-            [
-                Permission(subject="users", action="read"),
-                Permission(subject="users", action="write"),
-                Permission(subject="posts", action="read"),
-            ]
-        )
+        _seed_permissions(db_session)
         db_session.add_all([Role(name="viewer"), Role(name="editor")])
         await db_session.flush()
 
         with capture_sql(engine) as statements:
             result = await PermissionFacetCrud.offset_paginate(
                 db_session,
+                items_per_page=2,
                 joins=[(Role, Role.name.isnot(None))],
                 schema=_PermissionRead,
             )
 
-        aggregates = [sql for sql in statements if "array_agg" in sql]
+        aggregates = _aggregates(statements)
         assert len(aggregates) == 1
         assert "SELECT DISTINCT permissions.subject" in aggregates[0]
         # Every aggregate reads the CTE, nothing goes back to the table.

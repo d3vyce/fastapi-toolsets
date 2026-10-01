@@ -34,6 +34,7 @@ from sqlalchemy.orm import (
     defer,
     mapped_column,
     relationship,
+    selectinload,
 )
 
 from fastapi_toolsets.crud import CrudFactory
@@ -430,6 +431,12 @@ PostM2MCrud = CrudFactory(Post, m2m_fields={"tag_ids": Post.tags})
 PostDeferredCrud = CrudFactory(
     Post, default_load_options=[defer(Post.content)], m2m_fields={"tag_ids": Post.tags}
 )
+PostTagsLoadCrud = CrudFactory(
+    Post,
+    default_load_options=[selectinload(Post.tags)],
+    m2m_fields={"tag_ids": Post.tags},
+)
+UserRoleLoadCrud = CrudFactory(User, default_load_options=[selectinload(User.role)])
 EventCrud = CrudFactory(Event)
 EventDateTimeCursorCrud = CrudFactory(Event, cursor_column=Event.occurred_at)
 EventDateCursorCrud = CrudFactory(Event, cursor_column=Event.scheduled_date)
@@ -451,33 +458,34 @@ async def engine():
     await engine.dispose()
 
 
-@pytest.fixture(scope="function")
-async def session_maker(engine):
-    """Provide a session factory with tables created and dropped around the test."""
+@asynccontextmanager
+async def _tables(engine):
+    """Create every table for the block, and drop them after it."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
     try:
-        yield factory
+        yield
     finally:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture(scope="function")
+async def session_maker(engine):
+    """Provide a session factory with tables created and dropped around the test."""
+    async with _tables(engine):
+        yield async_sessionmaker(engine, expire_on_commit=False)
 
 
 @asynccontextmanager
 async def _session_with_tables(engine, *, expire_on_commit: bool):
     """A session over freshly created tables, dropped afterwards."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    session = async_sessionmaker(engine, expire_on_commit=expire_on_commit)()
-    try:
-        yield session
-    finally:
-        await session.close()
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+    async with _tables(engine):
+        session = async_sessionmaker(engine, expire_on_commit=expire_on_commit)()
+        try:
+            yield session
+        finally:
+            await session.close()
 
 
 @pytest.fixture(scope="function")
@@ -518,3 +526,14 @@ def capture_sql(engine):
         yield statements
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", _record)
+
+
+def selects(statements: list[str]) -> list[str]:
+    """The SELECT statements among *statements*."""
+    return [sql for sql in statements if sql.startswith("SELECT")]
+
+
+def following(statements: list[str], marker: str) -> list[str]:
+    """The statements sent after the first one containing *marker*."""
+    first = next(i for i, sql in enumerate(statements) if marker in sql)
+    return statements[first + 1 :]
