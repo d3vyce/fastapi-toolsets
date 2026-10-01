@@ -1,8 +1,21 @@
-"""SQLAlchemy instance state helpers."""
+"""SQLAlchemy state and expression helpers."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import tuple_
+
+
+def key_expr(columns: Sequence[Any]) -> Any:
+    """*columns* as one comparable expression: the column, or a tuple of them."""
+    return columns[0] if len(columns) == 1 else tuple_(*columns)
+
+
+def is_expired(obj: Any) -> bool:
+    """True when *obj* or any of its attributes must be re-read from the database."""
+    state = sa_inspect(obj)
+    return bool(state.expired or state.expired_attributes)
 
 
 def loaded_relationships(obj: Any) -> set[str]:

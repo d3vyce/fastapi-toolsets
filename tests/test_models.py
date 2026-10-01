@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import ForeignKey, String, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -20,6 +21,7 @@ from sqlalchemy.orm import (
 )
 
 import fastapi_toolsets.models.watched as _watched_module
+from fastapi_toolsets.crud import CrudFactory
 from fastapi_toolsets.models import (
     CreatedAtMixin,
     ModelEvent,
@@ -45,7 +47,7 @@ from fastapi_toolsets.models.watched import (
 )
 from fastapi_toolsets.pytest import create_db_session
 
-from .conftest import DATABASE_URL, capture_sql
+from .conftest import DATABASE_URL, capture_sql, following, selects
 
 
 class MixinBase(DeclarativeBase):
@@ -2571,6 +2573,17 @@ class TestDeferredFieldUpdates:
         assert "old" in change  # distinguishable from the deferred case
 
 
+class _StampedCreate(BaseModel):
+    name: str
+
+
+class _StampedUpdate(BaseModel):
+    name: str | None = None
+
+
+StampedCrud = CrudFactory(FullMixinModel)
+
+
 class TestCrudWritesWithMixins:
     """Server-generated mixin columns and the post-write refresh."""
 
@@ -2579,49 +2592,26 @@ class TestCrudWritesWithMixins:
         self, mixin_session_maker
     ):
         """The INSERT returns the id and the timestamp, so nothing is re-read."""
-        from pydantic import BaseModel
-
-        from fastapi_toolsets.crud import CrudFactory
-
-        class _Create(BaseModel):
-            name: str
-
-        crud = CrudFactory(FullMixinModel)
-        engine = mixin_session_maker.kw["bind"]
         async with mixin_session_maker() as session:
-            with capture_sql(engine) as statements:
-                obj = await crud.create(session, _Create(name="a"))
+            with capture_sql(mixin_session_maker.kw["bind"]) as statements:
+                obj = await StampedCrud.create(session, _StampedCreate(name="a"))
 
-        assert not [sql for sql in statements if sql.startswith("SELECT")]
+        assert selects(statements) == []
         assert obj.id is not None
         assert obj.updated_at is not None
 
     @pytest.mark.anyio
     async def test_update_re_reads_an_onupdate_column(self, mixin_session_maker):
         """An UPDATE expires the ``onupdate`` column, which one refresh re-reads."""
-        from pydantic import BaseModel
-
-        from fastapi_toolsets.crud import CrudFactory
-
-        class _Create(BaseModel):
-            name: str
-
-        class _Update(BaseModel):
-            name: str | None = None
-
-        crud = CrudFactory(FullMixinModel)
-        engine = mixin_session_maker.kw["bind"]
         async with mixin_session_maker() as session:
-            obj = await crud.create(session, _Create(name="a"))
+            obj = await StampedCrud.create(session, _StampedCreate(name="a"))
             first = obj.updated_at
-            with capture_sql(engine) as statements:
-                obj = await crud.update(
-                    session, _Update(name="b"), [FullMixinModel.id == obj.id]
+            with capture_sql(mixin_session_maker.kw["bind"]) as statements:
+                obj = await StampedCrud.update(
+                    session, _StampedUpdate(name="b"), [FullMixinModel.id == obj.id]
                 )
 
-        write = next(i for i, sql in enumerate(statements) if "UPDATE" in sql)
-        after = [sql for sql in statements[write + 1 :] if sql.startswith("SELECT")]
-        assert len(after) == 1
+        assert len(selects(following(statements, "UPDATE"))) == 1
         assert obj.name == "b"
         assert obj.updated_at > first
 
@@ -2644,7 +2634,7 @@ class TestPostCommitReloadIsSkippedWhenCurrent:
         with capture_sql(mixin_session.bind) as statements:
             await mixin_session.commit()
 
-        assert [sql for sql in statements if sql.startswith("SELECT")] == []
+        assert selects(statements) == []
         assert mixin_session.in_transaction() is False
         assert [e["obj_id"] for e in _test_events if e["event"] == "create"] == [obj.id]
 
@@ -2659,7 +2649,7 @@ class TestPostCommitReloadIsSkippedWhenCurrent:
         with capture_sql(mixin_session_expire.bind) as statements:
             await mixin_session_expire.commit()
 
-        assert len([sql for sql in statements if sql.startswith("SELECT")]) == 1
+        assert len(selects(statements)) == 1
         assert [e["obj_id"] for e in _test_events if e["event"] == "create"] == [obj.id]
 
     @pytest.mark.anyio
@@ -2673,6 +2663,6 @@ class TestPostCommitReloadIsSkippedWhenCurrent:
         with capture_sql(mixin_session.bind) as statements:
             await mixin_session.commit()
 
-        assert len([sql for sql in statements if sql.startswith("SELECT")]) == 1
+        assert len(selects(statements)) == 1
         assert obj.updated_at is not None
         assert [e["event"] for e in _test_events] == ["create", "update"]

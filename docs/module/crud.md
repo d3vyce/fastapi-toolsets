@@ -518,7 +518,7 @@ The distinct values for each facet field are returned in the `filter_attributes`
 
 !!! info "Added in `v5.1.0`"
 
-Facet values only change with the filters, not with the page. Pass `include_facets=False` to `offset_paginate_params()` / `cursor_paginate_params()` on pages 2..N to skip the facets entirely (`filter_attributes` will be `None`). The total and the facets are computed in one query: with a search or caller filters, the matching keys are selected once and shared by every aggregate, so the cost no longer grows with the number of facet fields.
+Facet values only change with the filters, not with the page. Pass `include_facets=False` to `offset_paginate_params()` / `cursor_paginate_params()` on pages 2..N to skip the facets entirely (`filter_attributes` will be `None`). The total and the facets come from one query: with a search or caller filters, the matching rows are selected once and every aggregate reads them.
 
 ```python
 params: Annotated[dict, Depends(UserCrud.offset_paginate_params(include_facets=False))]

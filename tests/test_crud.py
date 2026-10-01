@@ -26,6 +26,7 @@ from .conftest import (
     PostM2MCreate,
     PostM2MCrud,
     PostM2MUpdate,
+    PostTagsLoadCrud,
     ProductCreate,
     ProductCrud,
     ProductNumericCursorCrud,
@@ -48,8 +49,11 @@ from .conftest import (
     UserCrud,
     UserCursorCrud,
     UserRead,
+    UserRoleLoadCrud,
     UserUpdate,
     capture_sql,
+    following,
+    selects,
 )
 
 
@@ -497,20 +501,17 @@ class TestDefaultLoadOptionsIntegration:
         self, engine, db_session: AsyncSession
     ):
         """create() does not refresh the row before reloading it with options."""
-        UserWithDefaultLoad = CrudFactory(
-            User, default_load_options=[selectinload(User.role)]
-        )
         role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
 
         with capture_sql(engine) as statements:
-            user = await UserWithDefaultLoad.create(
+            user = await UserRoleLoadCrud.create(
                 db_session,
                 UserCreate(username="alice", email="alice@test.com", role_id=role.id),
             )
 
-        selects = [sql for sql in statements if sql.startswith("SELECT")]
-        assert [sql for sql in selects if "FROM users" in sql] == [selects[0]]
-        assert any("FROM roles" in sql for sql in selects)
+        queries = selects(statements)
+        assert [sql for sql in queries if "FROM users" in sql] == [queries[0]]
+        assert any("FROM roles" in sql for sql in queries)
         assert user.username == "alice"
         assert user.role is not None
         assert user.role.name == "admin"
@@ -520,9 +521,6 @@ class TestDefaultLoadOptionsIntegration:
         self, engine, db_session: AsyncSession
     ):
         """A column-only update() leaves default_load_options to the reload."""
-        UserWithDefaultLoad = CrudFactory(
-            User, default_load_options=[selectinload(User.role)]
-        )
         role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
         user = await UserCrud.create(
             db_session,
@@ -530,13 +528,13 @@ class TestDefaultLoadOptionsIntegration:
         )
 
         with capture_sql(engine) as statements:
-            updated = await UserWithDefaultLoad.update(
+            updated = await UserRoleLoadCrud.update(
                 db_session, UserUpdate(username="alicia"), [User.id == user.id]
             )
 
-        write = next(i for i, sql in enumerate(statements) if "UPDATE" in sql)
-        assert not any("FROM roles" in sql for sql in statements[:write])
-        after = statements[write + 1 :]
+        before = statements[: statements.index(following(statements, "UPDATE")[0])]
+        assert not any("FROM roles" in sql for sql in before)
+        after = following(statements, "UPDATE")
         assert len([sql for sql in after if "FROM users" in sql]) == 1
         assert any("FROM roles" in sql for sql in after)
         assert updated.username == "alicia"
@@ -591,8 +589,7 @@ class TestDefaultLoadOptionsIntegration:
         with capture_sql(engine) as statements:
             role = await RoleCrud.create(db_session_any, RoleCreate(name="admin"))
 
-        selects = [sql for sql in statements if sql.startswith("SELECT")]
-        assert len(selects) == (1 if expires else 0)
+        assert len(selects(statements)) == int(expires)
         assert role.name == "admin"
         assert role.id is not None
 
@@ -609,9 +606,7 @@ class TestDefaultLoadOptionsIntegration:
                 db_session_any, RoleUpdate(name="owner"), [Role.id == role.id]
             )
 
-        write = next(i for i, sql in enumerate(statements) if "UPDATE" in sql)
-        selects = [sql for sql in statements[write + 1 :] if sql.startswith("SELECT")]
-        assert len(selects) == (1 if expires else 0)
+        assert len(selects(following(statements, "UPDATE"))) == int(expires)
         assert updated.name == "owner"
 
     @pytest.mark.anyio
@@ -619,11 +614,6 @@ class TestDefaultLoadOptionsIntegration:
         self, db_session: AsyncSession
     ):
         """The reloaded instance carries the written values, not stale ones."""
-        PostWithDefaultLoad = CrudFactory(
-            Post,
-            default_load_options=[selectinload(Post.tags)],
-            m2m_fields={"tag_ids": Post.tags},
-        )
         user = await UserCrud.create(
             db_session, UserCreate(username="alice", email="alice@test.com")
         )
@@ -632,7 +622,7 @@ class TestDefaultLoadOptionsIntegration:
             db_session, PostM2MCreate(title="Hello", author_id=user.id, tag_ids=[])
         )
 
-        updated = await PostWithDefaultLoad.update(
+        updated = await PostTagsLoadCrud.update(
             db_session,
             PostM2MUpdate(title="Hello again", tag_ids=[tag.id]),
             [Post.id == post.id],
