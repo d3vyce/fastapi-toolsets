@@ -1644,14 +1644,15 @@ class AsyncCrud(Generic[ModelType]):
         cursor_col_name: str = cursor_column.key
 
         direction = _CursorDirection.NEXT
+        cursor_filters: list[Any] = []
         if cursor is not None:
             raw_val, direction = _decode_cursor(cursor)
             col_type = cursor_column.property.columns[0].type
             cursor_val: Any = _parse_cursor_value(raw_val, col_type)
             if direction is _CursorDirection.PREV:
-                filters.append(cursor_column < cursor_val)
+                cursor_filters.append(cursor_column < cursor_val)
             else:
-                filters.append(cursor_column > cursor_val)
+                cursor_filters.append(cursor_column > cursor_val)
 
         search_filters, page_search_joins, agg_search_filters, agg_search_joins = (
             cls._build_search(search, search_fields, search_column)
@@ -1661,8 +1662,9 @@ class AsyncCrud(Generic[ModelType]):
 
         # Facets combine these with each facet's own filter individually, so
         # fb_filters is applied to the query below but excluded here.
+        # The cursor only positions the page: facets describe the whole result.
         facet_base_filters = [*filters, *agg_search_filters]
-        filters.extend([*search_filters, *fb_filters.values()])
+        filters.extend([*cursor_filters, *search_filters, *fb_filters.values()])
 
         # Build query
         q = select(cls.model)
