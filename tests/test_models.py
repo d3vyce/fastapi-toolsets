@@ -117,6 +117,17 @@ async def _watched_on_update(obj, event_type, changes):
     _test_events.append({"event": "update", "obj_id": obj.id, "changes": changes})
 
 
+class WatchedStampedModel(MixinBase, UUIDMixin, UpdatedAtMixin):
+    __tablename__ = "mixin_watched_stamped_models"
+
+    status: Mapped[str] = mapped_column(String(50))
+
+
+@listens_for(WatchedStampedModel, [ModelEvent.CREATE, ModelEvent.UPDATE])
+async def _stamped_on_write(obj, event_type, changes):
+    _test_events.append({"event": event_type.value, "obj_id": obj.id})
+
+
 class RelTarget(MixinBase, UUIDMixin):
     __tablename__ = "mixin_rel_targets"
 
@@ -1345,6 +1356,8 @@ class TestEventCallbacks:
         mixin_session.add_all([keep, doomed])
         await mixin_session.flush()
         doomed_id = doomed.id
+        # Leave something to re-read, or the reload is skipped.
+        mixin_session.sync_session.expire(doomed, ["other"])
 
         raced = {"done": False}
 
@@ -1386,6 +1399,9 @@ class TestEventCallbacks:
         """A batched-reload failure is logged; CREATE handlers still fire."""
         obj = WatchedModel(status="active", other="x")
         mixin_session.add(obj)
+        await mixin_session.flush()
+        # Leave something to re-read, or the reload is skipped.
+        mixin_session.sync_session.expire(obj, ["other"])
 
         async def failing_batch_reload(session, model, objs, preloaded):
             raise RuntimeError("reload failed")
@@ -2608,3 +2624,55 @@ class TestCrudWritesWithMixins:
         assert len(after) == 1
         assert obj.name == "b"
         assert obj.updated_at > first
+
+
+class TestPostCommitReloadIsSkippedWhenCurrent:
+    """The reload before dispatch only runs for objects the commit left stale."""
+
+    @pytest.fixture(autouse=True)
+    def clear_events(self):
+        _test_events.clear()
+        yield
+        _test_events.clear()
+
+    @pytest.mark.anyio
+    async def test_no_reload_when_nothing_is_expired(self, mixin_session):
+        """expire_on_commit=False and RETURNING: the handler gets the object as is."""
+        obj = WatchedModel(status="active", other="x")
+        mixin_session.add(obj)
+
+        with capture_sql(mixin_session.bind) as statements:
+            await mixin_session.commit()
+
+        assert [sql for sql in statements if sql.startswith("SELECT")] == []
+        assert mixin_session.in_transaction() is False
+        assert [e["obj_id"] for e in _test_events if e["event"] == "create"] == [obj.id]
+
+    @pytest.mark.anyio
+    async def test_reload_when_the_commit_expired_the_object(
+        self, mixin_session_expire
+    ):
+        """expire_on_commit=True: one SELECT re-populates the object first."""
+        obj = WatchedModel(status="active", other="x")
+        mixin_session_expire.add(obj)
+
+        with capture_sql(mixin_session_expire.bind) as statements:
+            await mixin_session_expire.commit()
+
+        assert len([sql for sql in statements if sql.startswith("SELECT")]) == 1
+        assert [e["obj_id"] for e in _test_events if e["event"] == "create"] == [obj.id]
+
+    @pytest.mark.anyio
+    async def test_reload_when_an_onupdate_column_is_expired(self, mixin_session):
+        """An UPDATE leaves the onupdate column expired, so it is re-read."""
+        obj = WatchedStampedModel(status="new")
+        mixin_session.add(obj)
+        await mixin_session.commit()
+        obj.status = "done"
+
+        with capture_sql(mixin_session.bind) as statements:
+            await mixin_session.commit()
+
+        assert len([sql for sql in statements if sql.startswith("SELECT")]) == 1
+        assert obj.updated_at is not None
+        assert [e["event"] for e in _test_events] == ["create", "update"]

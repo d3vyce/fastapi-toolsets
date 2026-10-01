@@ -259,6 +259,16 @@ def _suspended_trans_ctx(session: AsyncSession) -> Iterator[None]:
         sync_session._trans_context_manager = ctx
 
 
+def _needs_reload(obj: Any, preloaded: dict[int, set[str]]) -> bool:
+    """True when the commit expired *obj* or a column or recorded relationship."""
+    state = sa_inspect(obj)
+    return bool(
+        state.expired
+        or state.expired_attributes
+        or preloaded.get(id(obj), set()) & state.unloaded
+    )
+
+
 async def _batch_reload(
     session: AsyncSession,
     model: type,
@@ -382,8 +392,11 @@ class EventSession(AsyncSession):
         with _suspended_trans_ctx(self):
             had_transaction = self.in_transaction()
             for model, objs in objs_by_type.items():
+                stale = [obj for obj in objs if _needs_reload(obj, preloaded)]
+                if not stale:
+                    continue
                 try:
-                    await _batch_reload(self, model, objs, preloaded)
+                    await _batch_reload(self, model, stale, preloaded)
                 except Exception as exc:
                     _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
             if not had_transaction and self.in_transaction():
