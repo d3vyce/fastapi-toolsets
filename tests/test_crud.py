@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from fastapi_toolsets.crud import CrudFactory, PaginationType
 from fastapi_toolsets.crud.factory import AsyncCrud, _CursorDirection
@@ -22,6 +22,7 @@ from .conftest import (
     Post,
     PostCreate,
     PostCrud,
+    PostDeferredCrud,
     PostM2MCreate,
     PostM2MCrud,
     PostM2MUpdate,
@@ -48,6 +49,7 @@ from .conftest import (
     UserCursorCrud,
     UserRead,
     UserUpdate,
+    capture_sql,
 )
 
 
@@ -491,6 +493,123 @@ class TestDefaultLoadOptionsIntegration:
         assert role.users == []
 
     @pytest.mark.anyio
+    async def test_create_reloads_with_a_single_query(
+        self, engine, db_session: AsyncSession
+    ):
+        """create() does not refresh the row before reloading it with options."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+
+        with capture_sql(engine) as statements:
+            user = await UserWithDefaultLoad.create(
+                db_session,
+                UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+            )
+
+        selects = [sql for sql in statements if sql.startswith("SELECT")]
+        assert [sql for sql in selects if "FROM users" in sql] == [selects[0]]
+        assert any("FROM roles" in sql for sql in selects)
+        assert user.username == "alice"
+        assert user.role is not None
+        assert user.role.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_update_loads_the_graph_once_after_the_write(
+        self, engine, db_session: AsyncSession
+    ):
+        """A column-only update() leaves default_load_options to the reload."""
+        UserWithDefaultLoad = CrudFactory(
+            User, default_load_options=[selectinload(User.role)]
+        )
+        role = await RoleCrud.create(db_session, RoleCreate(name="admin"))
+        user = await UserCrud.create(
+            db_session,
+            UserCreate(username="alice", email="alice@test.com", role_id=role.id),
+        )
+
+        with capture_sql(engine) as statements:
+            updated = await UserWithDefaultLoad.update(
+                db_session, UserUpdate(username="alicia"), [User.id == user.id]
+            )
+
+        write = next(i for i, sql in enumerate(statements) if "UPDATE" in sql)
+        assert not any("FROM roles" in sql for sql in statements[:write])
+        after = statements[write + 1 :]
+        assert len([sql for sql in after if "FROM users" in sql]) == 1
+        assert any("FROM roles" in sql for sql in after)
+        assert updated.username == "alicia"
+        assert updated.role is not None
+        assert updated.role.name == "admin"
+
+    @pytest.mark.anyio
+    async def test_create_keeps_relationships_outside_default_load_options(
+        self, db_session_any: AsyncSession
+    ):
+        """An M2M set on create() stays loaded when the options do not name it."""
+        session = db_session_any
+        user = await UserCrud.create(
+            session, UserCreate(username="alice", email="alice@test.com")
+        )
+        tag = await TagCrud.create(session, TagCreate(name="python"))
+
+        post = await PostDeferredCrud.create(
+            session,
+            PostM2MCreate(title="Hello", author_id=user.id, tag_ids=[tag.id]),
+        )
+
+        assert [t.name for t in post.tags] == ["python"]
+
+    @pytest.mark.anyio
+    async def test_update_keeps_relationships_outside_default_load_options(
+        self, db_session_any: AsyncSession
+    ):
+        """An M2M set on update() stays loaded when the options do not name it."""
+        session = db_session_any
+        user = await UserCrud.create(
+            session, UserCreate(username="alice", email="alice@test.com")
+        )
+        tag = await TagCrud.create(session, TagCreate(name="python"))
+        post = await PostM2MCrud.create(
+            session, PostM2MCreate(title="Hello", author_id=user.id, tag_ids=[])
+        )
+
+        updated = await PostDeferredCrud.update(
+            session, PostM2MUpdate(tag_ids=[tag.id]), [Post.id == post.id]
+        )
+
+        assert [t.name for t in updated.tags] == ["python"]
+
+    @pytest.mark.anyio
+    async def test_update_reflects_the_database_after_the_write(
+        self, db_session: AsyncSession
+    ):
+        """The reloaded instance carries the written values, not stale ones."""
+        PostWithDefaultLoad = CrudFactory(
+            Post,
+            default_load_options=[selectinload(Post.tags)],
+            m2m_fields={"tag_ids": Post.tags},
+        )
+        user = await UserCrud.create(
+            db_session, UserCreate(username="alice", email="alice@test.com")
+        )
+        tag = await TagCrud.create(db_session, TagCreate(name="python"))
+        post = await PostM2MCrud.create(
+            db_session, PostM2MCreate(title="Hello", author_id=user.id, tag_ids=[])
+        )
+
+        updated = await PostWithDefaultLoad.update(
+            db_session,
+            PostM2MUpdate(title="Hello again", tag_ids=[tag.id]),
+            [Post.id == post.id],
+        )
+
+        assert updated is post
+        assert updated.title == "Hello again"
+        assert [t.name for t in updated.tags] == ["python"]
+
+    @pytest.mark.anyio
     async def test_load_options_overrides_default_load_options(
         self, db_session: AsyncSession
     ):
@@ -710,6 +829,48 @@ class TestCrudFirst:
 
         role = await RoleCrud.first(db_session)
         assert role is not None
+
+    @pytest.mark.anyio
+    async def test_first_limits_the_query(self, engine, db_session: AsyncSession):
+        """First fetches one entity, not every match."""
+        for name in ("role1", "role2", "role3"):
+            await RoleCrud.create(db_session, RoleCreate(name=name))
+
+        with capture_sql(engine) as statements:
+            role = await RoleCrud.first(db_session)
+
+        assert role is not None
+        assert len(statements) == 1
+        assert "LIMIT" in statements[0]
+
+    @pytest.mark.anyio
+    async def test_first_keeps_a_joined_collection_whole(
+        self, engine, db_session: AsyncSession
+    ):
+        """The limit applies to the entity, not to the joined collection rows."""
+        user = await UserCrud.create(
+            db_session, UserCreate(username="alice", email="alice@test.com")
+        )
+        tags = [
+            await TagCrud.create(db_session, TagCreate(name=name))
+            for name in ("python", "fastapi", "sqlalchemy")
+        ]
+        await PostM2MCrud.create(
+            db_session,
+            PostM2MCreate(
+                title="Hello", author_id=user.id, tag_ids=[t.id for t in tags]
+            ),
+        )
+
+        with capture_sql(engine) as statements:
+            post = await PostCrud.first(
+                db_session, load_options=[joinedload(Post.tags)]
+            )
+
+        assert post is not None
+        assert sorted(t.name for t in post.tags) == ["fastapi", "python", "sqlalchemy"]
+        assert len(statements) == 1
+        assert "LIMIT" in statements[0]
 
     @pytest.mark.anyio
     async def test_first_with_schema(self, db_session: AsyncSession):

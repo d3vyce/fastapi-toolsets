@@ -6,7 +6,7 @@ import base64
 import inspect
 import json
 import uuid as uuid_module
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -30,11 +30,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, QueryableAttribute, selectinload
+from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.base import ExecutableOption
 from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.roles import WhereHavingRole
 
+from .._orm import loaded_relationships
 from ..db import transaction
 from ..exceptions import InvalidOrderFieldError, NotFoundError
 from ..schemas import (
@@ -270,17 +272,24 @@ class AsyncCrud(Generic[ModelType]):
         return cls.default_load_options
 
     @classmethod
-    async def _reload_with_options(
-        cls: type[Self], session: AsyncSession, instance: DeclarativeBase
+    async def _refresh_after_write(
+        cls: type[Self],
+        session: AsyncSession,
+        instance: DeclarativeBase,
+        *,
+        loaded: Collection[str],
     ) -> ModelType:
-        """Re-query instance by PK with default_load_options applied."""
-        mapper = cls.model.__mapper__
-        pk_filters = [
-            getattr(cls.model, cast(str, col.key))
-            == getattr(instance, cast(str, col.key))
-            for col in mapper.primary_key
-        ]
-        return await cls.get(session, filters=pk_filters)
+        """Reload *instance* after a write, keeping the *loaded* relationships."""
+        if not cls.default_load_options:
+            await session.refresh(instance)
+            return cast(ModelType, instance)
+        session.expire(instance)
+        identity = instance_state(instance).identity
+        assert identity is not None
+        await cls.get(session, [a == v for a, v in zip(cls._pk_attrs(), identity)])
+        if missing := [k for k in loaded if k not in instance_state(instance).dict]:
+            await session.refresh(instance, attribute_names=missing)
+        return cast(ModelType, instance)
 
     @classmethod
     async def _resolve_m2m(
@@ -886,10 +895,8 @@ class AsyncCrud(Generic[ModelType]):
                     setattr(db_model, rel_attr, related_instances)
 
             session.add(db_model)
-        await session.refresh(db_model)
-        if cls.default_load_options:
-            db_model = await cls._reload_with_options(session, db_model)
-        result = cast(ModelType, db_model)
+            loaded = loaded_relationships(db_model)
+        result = await cls._refresh_after_write(session, db_model, loaded=loaded)
         if schema:
             return Response(data=schema.model_validate(result))
         return result
@@ -1107,7 +1114,7 @@ class AsyncCrud(Generic[ModelType]):
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
         q = _apply_for_update(q, with_for_update)
-        result = await session.execute(q)
+        result = await session.execute(q.limit(1))
         item = result.unique().scalars().first()
         if item is None:
             return None
@@ -1251,7 +1258,7 @@ class AsyncCrud(Generic[ModelType]):
                 session=session,
                 filters=filters,
                 with_for_update=with_for_update,
-                load_options=m2m_load_options or None,
+                load_options=m2m_load_options,
             )
             values = obj.model_dump(
                 exclude_unset=exclude_unset,
@@ -1265,9 +1272,8 @@ class AsyncCrud(Generic[ModelType]):
                 m2m_resolved = await cls._resolve_m2m(session, obj, only_set=True)
                 for rel_attr, related_instances in m2m_resolved.items():
                     setattr(db_model, rel_attr, related_instances)
-        await session.refresh(db_model)
-        if cls.default_load_options:
-            db_model = await cls._reload_with_options(session, db_model)
+            loaded = loaded_relationships(db_model)
+        db_model = await cls._refresh_after_write(session, db_model, loaded=loaded)
         if schema:
             return Response(data=schema.model_validate(db_model))
         return db_model
