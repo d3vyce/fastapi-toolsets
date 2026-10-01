@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_session as _async_session
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value as _sa_set_committed_value
 
+from .._orm import loaded_relationships
 from ..logger import get_logger
 
 _logger = get_logger()
@@ -224,23 +225,10 @@ async def _dispatch(
             _logger.error(_CALLBACK_ERROR_MSG, exc_info=exc)
 
 
-def _loaded_relationships(obj: Any) -> set[str]:
-    """Relationship keys currently loaded on *obj*."""
-    state = sa_inspect(obj, raiseerr=False)
-    if state is None:
-        return set()
-    unloaded = state.unloaded
-    return {
-        rel.key
-        for rel in state.mapper.relationships
-        if rel.key not in unloaded and rel.lazy not in ("dynamic", "write_only")
-    }
-
-
 def _record_loaded_relationships(session: Any, obj: Any) -> None:
     """Merge the relationships loaded on *obj* into the session's record."""
     store: dict[int, set[str]] = session.info.setdefault(_SESSION_PRELOADED, {})
-    store.setdefault(id(obj), set()).update(_loaded_relationships(obj))
+    store.setdefault(id(obj), set()).update(loaded_relationships(obj))
 
 
 def _snapshot_loaded_relationships(session: Any) -> dict[int, set[str]]:
@@ -252,7 +240,7 @@ def _snapshot_loaded_relationships(session: Any) -> dict[int, set[str]]:
     objs = list(session.info.get(_SESSION_CREATES, []))
     objs += [obj for obj, _ in session.info.get(_SESSION_UPDATES, {}).values()]
     for obj in objs:
-        snapshot.setdefault(id(obj), set()).update(_loaded_relationships(obj))
+        snapshot.setdefault(id(obj), set()).update(loaded_relationships(obj))
     return snapshot
 
 

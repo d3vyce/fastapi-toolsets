@@ -1,9 +1,11 @@
 """Shared pytest fixtures for fastapi-utils tests."""
 
+import contextlib
 import datetime
 import decimal
 import os
 import uuid
+from contextlib import asynccontextmanager
 from enum import Enum
 
 import pytest
@@ -19,13 +21,20 @@ from sqlalchemy import (
     String,
     Table,
     Uuid,
+    event,
 )
 from sqlalchemy import (
     Enum as SAEnum,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    defer,
+    mapped_column,
+    relationship,
+)
 
 from fastapi_toolsets.crud import CrudFactory
 from fastapi_toolsets.schemas import PydanticBase
@@ -417,6 +426,10 @@ UserCursorCrud = CrudFactory(User, cursor_column=User.id)
 PostCrud = CrudFactory(Post)
 TagCrud = CrudFactory(Tag)
 PostM2MCrud = CrudFactory(Post, m2m_fields={"tag_ids": Post.tags})
+# Default options that leave the M2M collection out.
+PostDeferredCrud = CrudFactory(
+    Post, default_load_options=[defer(Post.content)], m2m_fields={"tag_ids": Post.tags}
+)
 EventCrud = CrudFactory(Event)
 EventDateTimeCursorCrud = CrudFactory(Event, cursor_column=Event.occurred_at)
 EventDateCursorCrud = CrudFactory(Event, cursor_column=Event.scheduled_date)
@@ -453,48 +466,55 @@ async def session_maker(engine):
             await conn.run_sync(Base.metadata.drop_all)
 
 
-@pytest.fixture(scope="function")
-async def db_session(engine):
-    """Create a test database session with tables.
-
-    Creates all tables before the test and drops them after.
-    Each test gets a clean database state.
-    """
-    # Create tables
+@asynccontextmanager
+async def _session_with_tables(engine, *, expire_on_commit: bool):
+    """A session over freshly created tables, dropped afterwards."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-    # Create session
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    session = session_factory()
-
+    session = async_sessionmaker(engine, expire_on_commit=expire_on_commit)()
     try:
         yield session
     finally:
         await session.close()
-        # Drop tables after test
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture(scope="function")
+async def db_session(engine):
+    """A session with ``expire_on_commit=False``, as the ``Database`` facade builds."""
+    async with _session_with_tables(engine, expire_on_commit=False) as session:
+        yield session
 
 
 @pytest.fixture(scope="function")
 async def db_session_expire_on_commit(engine):
-    """Session with expire_on_commit=True (the SQLAlchemy default).
+    """A session with ``expire_on_commit=True``, the SQLAlchemy default.
 
-    Attributes read off an instance after commit are expired and trigger an
-    implicit (sync) refresh under this setting — which fails under asyncio
-    with MissingGreenlet. The other ``db_session`` fixture uses
-    ``expire_on_commit=False`` and would not catch that class of bug.
+    Attributes read after commit are then expired and trigger an implicit
+    (sync) refresh, which fails under asyncio with MissingGreenlet.
     """
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, expire_on_commit=True)
-    session = session_factory()
-
-    try:
+    async with _session_with_tables(engine, expire_on_commit=True) as session:
         yield session
+
+
+@pytest.fixture(scope="function", params=[False, True], ids=["keep", "expire"])
+async def db_session_any(engine, request):
+    """A session under both ``expire_on_commit`` settings."""
+    async with _session_with_tables(engine, expire_on_commit=request.param) as session:
+        yield session
+
+
+@contextlib.contextmanager
+def capture_sql(engine):
+    """Collect every SQL statement sent through *engine*."""
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _record)
+    try:
+        yield statements
     finally:
-        await session.close()
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+        event.remove(engine.sync_engine, "before_cursor_execute", _record)

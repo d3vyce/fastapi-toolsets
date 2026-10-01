@@ -1,11 +1,10 @@
 """Tests for CRUD search functionality."""
 
-import contextlib
 import inspect
 import uuid
 
 import pytest
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, and_, event, select
+from sqlalchemy import ForeignKey, ForeignKeyConstraint, and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -52,6 +51,7 @@ from .conftest import (
     UserCreate,
     UserCrud,
     UserRead,
+    capture_sql,
     post_tags,
 )
 
@@ -615,21 +615,6 @@ PostTagSiblingFacetCrud = CrudFactory(
 )
 
 
-@contextlib.contextmanager
-def _capture_sql(engine):
-    """Collect every SQL statement sent through *engine*."""
-    statements: list[str] = []
-
-    def _record(conn, cursor, statement, parameters, context, executemany):
-        statements.append(statement)
-
-    event.listen(engine.sync_engine, "before_cursor_execute", _record)
-    try:
-        yield statements
-    finally:
-        event.remove(engine.sync_engine, "before_cursor_execute", _record)
-
-
 _POST_COUNT = 10
 
 
@@ -860,7 +845,7 @@ class TestPaginateToManyJoin:
         """Without a to-many join, the total is a plain count(*)."""
         await _seed_posts_with_tags(db_session)
 
-        with _capture_sql(engine) as statements:
+        with capture_sql(engine) as statements:
             plain = await PostTagSearchCrud.offset_paginate(
                 db_session, include_facets=False, schema=_PostTitle
             )
@@ -882,7 +867,7 @@ class TestPaginateToManyJoin:
         """A raw join's cardinality is unknown, so entities are counted distinctly."""
         await _seed_posts_with_tags(db_session)
 
-        with _capture_sql(engine) as statements:
+        with capture_sql(engine) as statements:
             result = await PostTagSearchCrud.offset_paginate(
                 db_session,
                 joins=[(post_tags, post_tags.c.post_id == Post.id)],
@@ -900,7 +885,7 @@ class TestPaginateToManyJoin:
         """filter_by on a to-many facet joins the collection, so it fans out."""
         await _seed_posts_with_tags(db_session)
 
-        with _capture_sql(engine) as statements:
+        with capture_sql(engine) as statements:
             result = await PostTagFacetCrud.offset_paginate(
                 db_session,
                 filter_by={"tags__name": ["shared-0-0", "shared-0-1"]},
