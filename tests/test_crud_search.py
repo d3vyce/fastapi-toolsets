@@ -1,10 +1,11 @@
 """Tests for CRUD search functionality."""
 
+import contextlib
 import inspect
 import uuid
 
 import pytest
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, and_, select
+from sqlalchemy import ForeignKey, ForeignKeyConstraint, and_, event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -596,6 +597,24 @@ PostTagSearchCrud = CrudFactory(
     cursor_column=Post.id,
 )
 
+PostTagFacetCrud = CrudFactory(Post, facet_fields=[(Post.tags, Tag.name)])
+
+
+@contextlib.contextmanager
+def _capture_sql(engine):
+    """Collect every SQL statement sent through *engine*."""
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _record)
+    try:
+        yield statements
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _record)
+
+
 _POST_COUNT = 10
 
 
@@ -815,6 +834,65 @@ class TestPaginateToManyJoin:
 
         assert [p.title for p in result.data] == ["post01"]
         assert result.pagination.total_count == 1
+
+    @pytest.mark.anyio
+    async def test_count_drops_distinct_when_nothing_fans_out(
+        self, engine, db_session: AsyncSession
+    ):
+        """Without a to-many join, the total is a plain count(*)."""
+        await _seed_posts_with_tags(db_session)
+
+        with _capture_sql(engine) as statements:
+            plain = await PostTagSearchCrud.offset_paginate(
+                db_session, include_facets=False, schema=_PostTitle
+            )
+            # The to-many search is a subquery in COUNT, so it cannot fan out.
+            searched = await PostTagSearchCrud.offset_paginate(
+                db_session, search="shared", include_facets=False, schema=_PostTitle
+            )
+
+        counts = [sql for sql in statements if "count(" in sql]
+        assert len(counts) == 2
+        assert all("count(*)" in sql for sql in counts)
+        assert plain.pagination.total_count == _POST_COUNT
+        assert searched.pagination.total_count == _POST_COUNT
+
+    @pytest.mark.anyio
+    async def test_count_keeps_distinct_for_a_raw_join(
+        self, engine, db_session: AsyncSession
+    ):
+        """A raw join's cardinality is unknown, so entities are counted distinctly."""
+        await _seed_posts_with_tags(db_session)
+
+        with _capture_sql(engine) as statements:
+            result = await PostTagSearchCrud.offset_paginate(
+                db_session,
+                joins=[(post_tags, post_tags.c.post_id == Post.id)],
+                include_facets=False,
+                schema=_PostTitle,
+            )
+
+        assert any("count(distinct(" in sql for sql in statements)
+        assert result.pagination.total_count == _POST_COUNT
+
+    @pytest.mark.anyio
+    async def test_count_keeps_distinct_for_a_to_many_facet_filter(
+        self, engine, db_session: AsyncSession
+    ):
+        """filter_by on a to-many facet joins the collection, so it fans out."""
+        await _seed_posts_with_tags(db_session)
+
+        with _capture_sql(engine) as statements:
+            result = await PostTagFacetCrud.offset_paginate(
+                db_session,
+                filter_by={"tags__name": ["shared-0-0", "shared-0-1"]},
+                include_facets=False,
+                schema=_PostTitle,
+            )
+
+        assert any("count(distinct(" in sql for sql in statements)
+        assert result.pagination.total_count == 1
+        assert [p.title for p in result.data] == ["post00"]
 
     def test_grouped_order_only_aggregates_foreign_columns(self):
         """A base-table column is left alone; anything else collapses to min()."""
