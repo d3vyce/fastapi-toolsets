@@ -1528,8 +1528,13 @@ class AsyncCrud(Generic[ModelType]):
         raw_items = raw_items[:items_per_page]
 
         if include_total:
-            # Count query (with same joins and filters)
-            count_q = select(func.count(func.distinct(cls._pk_attrs()[0])))
+            # Count query (with same joins and filters). DISTINCT is only
+            # needed when a join can repeat rows: a to-many relationship join,
+            # or a raw join whose cardinality cannot be inspected.
+            if joins or _fans_out(agg_joins, None):
+                count_q = select(func.count(func.distinct(cls._pk_attrs()[0])))
+            else:
+                count_q = select(func.count())
             count_q = count_q.select_from(cls.model)
 
             # Apply explicit joins to count query
