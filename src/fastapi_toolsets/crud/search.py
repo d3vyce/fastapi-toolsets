@@ -11,7 +11,6 @@ from sqlalchemy import (
     Table,
     and_,
     any_,
-    distinct,
     func,
     or_,
     select,
@@ -264,13 +263,38 @@ def _semi_join(rel: Any, condition: "ColumnElement[bool]") -> "ColumnElement[boo
     else:
         pairs = prop.local_remote_pairs
         sub = select(*(remote for _, remote in pairs)).where(condition)
+    return _in_subquery([col for col, _ in pairs], sub)
+
+
+def _in_subquery(columns: Sequence[Any], sub: Any) -> "ColumnElement[bool]":
+    """``columns IN (sub)``, with a tuple for multi-column keys."""
     # Never correlate: a self-referential relationship would otherwise lose
     # its inner FROM to the outer query.
     sub = sub.correlate(None)
-    local = [col for col, _ in pairs]
-    if len(local) == 1:
-        return local[0].in_(sub)
-    return tuple_(*local).in_(sub)
+    if len(columns) == 1:
+        return columns[0].in_(sub)
+    return tuple_(*columns).in_(sub)
+
+
+def _related_to(rel: Any, parent_rows: Any) -> "ColumnElement[bool]":
+    """Condition on *rel*'s target: linked to some row selected by *parent_rows*."""
+    prop = rel.property
+    if prop.secondary is not None:
+        parent_keys = parent_rows.with_only_columns(
+            *(parent for parent, _ in prop.synchronize_pairs)
+        )
+        linked = select(*(assoc for _, assoc in prop.secondary_synchronize_pairs))
+        linked = linked.where(
+            _in_subquery([assoc for _, assoc in prop.synchronize_pairs], parent_keys)
+        )
+        return _in_subquery(
+            [target for target, _ in prop.secondary_synchronize_pairs], linked
+        )
+    pairs = prop.local_remote_pairs
+    return _in_subquery(
+        [remote for _, remote in pairs],
+        parent_rows.with_only_columns(*(local for local, _ in pairs)),
+    )
 
 
 def _semi_join_tree(
@@ -396,29 +420,16 @@ async def build_facets(
             *(base_filters or []),
             *(f for k, f in own_filters.items() if k != key),
         ]
-        joins = [*(base_joins or []), *rels]
-
-        if is_array:
-            unnested = apply_search_joins(
-                select(func.unnest(column).label("v")).select_from(model), joins
-            )
-            if filters:
-                unnested = unnested.where(and_(*filters))
-            unnested_sq = unnested.subquery()
-            v = unnested_sq.c.v
-            agg = (
-                select(func.array_agg(aggregate_order_by(distinct(v), v)))
-                .select_from(unnested_sq)
-                .where(v.isnot(None))
-            )
-        else:
-            agg = apply_search_joins(
-                select(
-                    func.array_agg(aggregate_order_by(distinct(column), column))
-                ).select_from(model),
-                joins,
-            )
-            agg = agg.where(and_(*filters, column.isnot(None)))
+        rows = _facet_rows(model, rels, filters, base_joins or [])
+        value = func.unnest(column) if is_array else column
+        values_sq = rows.with_only_columns(value.label("v")).subquery()
+        # DISTINCT in a subquery can hash in parallel workers, where
+        # array_agg(DISTINCT ...) always sorts every row in a single process.
+        distinct_sq = (
+            select(values_sq.c.v).where(values_sq.c.v.isnot(None)).distinct().subquery()
+        )
+        v = distinct_sq.c.v
+        agg = select(func.array_agg(aggregate_order_by(v, v))).select_from(distinct_sq)
 
         scalars.append(agg.scalar_subquery().label(key))
 
@@ -432,6 +443,40 @@ async def build_facets(
             for v in (values or [])
         ]
     return facets
+
+
+def _facet_rows(
+    model: type[DeclarativeBase],
+    rels: Sequence[Any],
+    filters: Sequence[Any],
+    base_joins: Sequence[Any],
+) -> Any:
+    """Select the rows of the facet column's table that relate to the filtered rows."""
+    joined = {str(rel) for rel in base_joins}
+    to_many = any(rel.property.uselist for rel in rels)
+    # Keep the join when:
+    # - the path cannot be expressed as subqueries;
+    # - the filters already join a to-many relationship on this path, since
+    #   they then constrain the same related row the facet reads;
+    # - a to-one path meets joined filters: the planner tends to probe the
+    #   lookup table with a nested loop that re-runs those joins per value.
+    if (
+        not all(_semi_joinable(rel) for rel in rels)
+        or any(rel.property.uselist and str(rel) in joined for rel in rels)
+        or (not to_many and base_joins)
+    ):
+        rows = apply_search_joins(select(model), [*base_joins, *rels])
+        return rows.where(and_(*filters)) if filters else rows
+
+    rows = apply_search_joins(select(model), base_joins)
+    if filters:
+        rows = rows.where(and_(*filters))
+    # Walk the path from the related side: each table is filtered on keys
+    # linked to the previous one, so a to-many path never fans out and a
+    # small lookup table is probed through the foreign key index.
+    for rel in rels:
+        rows = select(rel.property.entity).where(_related_to(rel, rows))
+    return rows
 
 
 _EQUALITY_TYPES = (String, Integer, Numeric, Date, DateTime, Time, Enum, Uuid)
