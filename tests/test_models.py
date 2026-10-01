@@ -45,7 +45,7 @@ from fastapi_toolsets.models.watched import (
 )
 from fastapi_toolsets.pytest import create_db_session
 
-from .conftest import DATABASE_URL
+from .conftest import DATABASE_URL, capture_sql
 
 
 class MixinBase(DeclarativeBase):
@@ -2553,3 +2553,58 @@ class TestDeferredFieldUpdates:
         change = _deferred_events[0]["changes"]["nickname"]
         assert change == {"old": None, "new": "set-now"}
         assert "old" in change  # distinguishable from the deferred case
+
+
+class TestCrudWritesWithMixins:
+    """Server-generated mixin columns and the post-write refresh."""
+
+    @pytest.mark.anyio
+    async def test_create_returns_server_values_without_a_refresh(
+        self, mixin_session_maker
+    ):
+        """The INSERT returns the id and the timestamp, so nothing is re-read."""
+        from pydantic import BaseModel
+
+        from fastapi_toolsets.crud import CrudFactory
+
+        class _Create(BaseModel):
+            name: str
+
+        crud = CrudFactory(FullMixinModel)
+        engine = mixin_session_maker.kw["bind"]
+        async with mixin_session_maker() as session:
+            with capture_sql(engine) as statements:
+                obj = await crud.create(session, _Create(name="a"))
+
+        assert not [sql for sql in statements if sql.startswith("SELECT")]
+        assert obj.id is not None
+        assert obj.updated_at is not None
+
+    @pytest.mark.anyio
+    async def test_update_re_reads_an_onupdate_column(self, mixin_session_maker):
+        """An UPDATE expires the ``onupdate`` column, which one refresh re-reads."""
+        from pydantic import BaseModel
+
+        from fastapi_toolsets.crud import CrudFactory
+
+        class _Create(BaseModel):
+            name: str
+
+        class _Update(BaseModel):
+            name: str | None = None
+
+        crud = CrudFactory(FullMixinModel)
+        engine = mixin_session_maker.kw["bind"]
+        async with mixin_session_maker() as session:
+            obj = await crud.create(session, _Create(name="a"))
+            first = obj.updated_at
+            with capture_sql(engine) as statements:
+                obj = await crud.update(
+                    session, _Update(name="b"), [FullMixinModel.id == obj.id]
+                )
+
+        write = next(i for i, sql in enumerate(statements) if "UPDATE" in sql)
+        after = [sql for sql in statements[write + 1 :] if sql.startswith("SELECT")]
+        assert len(after) == 1
+        assert obj.name == "b"
+        assert obj.updated_at > first

@@ -582,6 +582,39 @@ class TestDefaultLoadOptionsIntegration:
         assert [t.name for t in updated.tags] == ["python"]
 
     @pytest.mark.anyio
+    async def test_create_reads_the_row_back_only_when_expired(
+        self, engine, db_session_any: AsyncSession
+    ):
+        """Without options, a create() refreshes only after an expiring commit."""
+        expires = db_session_any.sync_session.expire_on_commit
+
+        with capture_sql(engine) as statements:
+            role = await RoleCrud.create(db_session_any, RoleCreate(name="admin"))
+
+        selects = [sql for sql in statements if sql.startswith("SELECT")]
+        assert len(selects) == (1 if expires else 0)
+        assert role.name == "admin"
+        assert role.id is not None
+
+    @pytest.mark.anyio
+    async def test_update_reads_the_row_back_only_when_expired(
+        self, engine, db_session_any: AsyncSession
+    ):
+        """Without options, an update() refreshes only after an expiring commit."""
+        expires = db_session_any.sync_session.expire_on_commit
+        role = await RoleCrud.create(db_session_any, RoleCreate(name="admin"))
+
+        with capture_sql(engine) as statements:
+            updated = await RoleCrud.update(
+                db_session_any, RoleUpdate(name="owner"), [Role.id == role.id]
+            )
+
+        write = next(i for i, sql in enumerate(statements) if "UPDATE" in sql)
+        selects = [sql for sql in statements[write + 1 :] if sql.startswith("SELECT")]
+        assert len(selects) == (1 if expires else 0)
+        assert updated.name == "owner"
+
+    @pytest.mark.anyio
     async def test_update_reflects_the_database_after_the_write(
         self, db_session: AsyncSession
     ):
