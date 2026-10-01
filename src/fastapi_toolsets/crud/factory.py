@@ -1533,7 +1533,9 @@ class AsyncCrud(Generic[ModelType]):
             # needed when a join can repeat rows: a to-many relationship join,
             # or a raw join whose cardinality cannot be inspected.
             if joins or _fans_out(agg_joins, None):
-                count_q = select(func.count(func.distinct(cls._pk_attrs()[0])))
+                pk_attrs = cls._pk_attrs()
+                key = pk_attrs[0] if len(pk_attrs) == 1 else tuple_(*pk_attrs)
+                count_q = select(func.count(func.distinct(key)))
             else:
                 count_q = select(func.count())
             count_q = count_q.select_from(cls.model)

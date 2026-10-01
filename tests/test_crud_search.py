@@ -39,6 +39,7 @@ from .conftest import (
     OrderCrud,
     OrderRead,
     OrderStatus,
+    Permission,
     Post,
     PostCrud,
     Role,
@@ -598,6 +599,14 @@ PostTagSearchCrud = CrudFactory(
 )
 
 PostTagFacetCrud = CrudFactory(Post, facet_fields=[(Post.tags, Tag.name)])
+PermissionCrud = CrudFactory(Permission)
+
+
+class _PermissionRead(PydanticBase):
+    subject: str
+    action: str
+
+
 PostCursorFacetCrud = CrudFactory(
     Post, facet_fields=[Post.title], cursor_column=Post.id
 )
@@ -991,6 +1000,31 @@ class TestPaginateToManyJoin:
         assert first.filter_attributes is not None
         assert len(first.filter_attributes["title"]) == _POST_COUNT
         assert second.filter_attributes == first.filter_attributes
+
+    @pytest.mark.anyio
+    async def test_count_distinct_covers_every_primary_key_column(
+        self, db_session: AsyncSession
+    ):
+        """With a composite key, DISTINCT must count whole keys, not the first column."""
+        db_session.add_all(
+            [
+                Permission(subject="users", action="read"),
+                Permission(subject="users", action="write"),
+                Permission(subject="posts", action="read"),
+            ]
+        )
+        db_session.add(Role(name="viewer"))
+        await db_session.flush()
+
+        result = await PermissionCrud.offset_paginate(
+            db_session,
+            # A raw join keeps the DISTINCT count.
+            joins=[(Role, Role.name.isnot(None))],
+            schema=_PermissionRead,
+        )
+
+        assert result.pagination.total_count == 3
+        assert len(result.data) == 3
 
     def test_grouped_order_only_aggregates_foreign_columns(self):
         """A base-table column is left alone; anything else collapses to min()."""
