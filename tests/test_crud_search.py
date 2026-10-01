@@ -598,6 +598,9 @@ PostTagSearchCrud = CrudFactory(
 )
 
 PostTagFacetCrud = CrudFactory(Post, facet_fields=[(Post.tags, Tag.name)])
+PostCursorFacetCrud = CrudFactory(
+    Post, facet_fields=[Post.title], cursor_column=Post.id
+)
 PostTagSiblingFacetCrud = CrudFactory(
     Post, facet_fields=[(Post.tags, Tag.name), (Post.tags, Tag.id)]
 )
@@ -967,6 +970,27 @@ class TestPaginateToManyJoin:
 
         assert len(result.data) == 5
         assert result.pagination.has_more is True
+
+    @pytest.mark.anyio
+    async def test_cursor_facets_do_not_depend_on_the_page(
+        self, db_session: AsyncSession
+    ):
+        """Facet values cover the whole result set, not what is left after the cursor."""
+        await _seed_posts_with_tags(db_session)
+
+        first = await PostCursorFacetCrud.cursor_paginate(
+            db_session, items_per_page=5, schema=_PostTitle
+        )
+        second = await PostCursorFacetCrud.cursor_paginate(
+            db_session,
+            cursor=first.pagination.next_cursor,
+            items_per_page=5,
+            schema=_PostTitle,
+        )
+
+        assert first.filter_attributes is not None
+        assert len(first.filter_attributes["title"]) == _POST_COUNT
+        assert second.filter_attributes == first.filter_attributes
 
     def test_grouped_order_only_aggregates_foreign_columns(self):
         """A base-table column is left alone; anything else collapses to min()."""
