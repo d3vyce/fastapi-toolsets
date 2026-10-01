@@ -5,11 +5,24 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import String, and_, any_, distinct, func, or_, select
+from sqlalchemy import (
+    Column,
+    String,
+    Table,
+    and_,
+    any_,
+    distinct,
+    func,
+    or_,
+    select,
+    tuple_,
+)
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm.attributes import InstrumentedAttribute
+from sqlalchemy.sql import operators, visitors
+from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.types import (
     ARRAY,
     Boolean,
@@ -98,6 +111,8 @@ def build_search_filters(
     search_fields: Sequence[SearchFieldType] | None = None,
     default_fields: Sequence[SearchFieldType] | None = None,
     search_column: str | None = None,
+    *,
+    to_many_subqueries: bool = False,
 ) -> tuple[list["ColumnElement[bool]"], list[InstrumentedAttribute[Any]]]:
     """Build SQLAlchemy filter conditions for search.
 
@@ -108,6 +123,9 @@ def build_search_filters(
         default_fields: Default fields (from ClassVar)
         search_column: Optional key to narrow search to a single field.
             Must match one of the resolved search field keys.
+        to_many_subqueries: Filter fields reached through a to-many
+            relationship with ``IN (subquery)`` instead of a join, so the
+            query does not fan out. Meant for COUNT and facet queries.
 
     Returns:
         Tuple of (filter_conditions, joins_needed)
@@ -143,33 +161,35 @@ def build_search_filters(
         fields = [index[search_column]]
 
     query = config.query.strip()
-    filters: list[ColumnElement[bool]] = []
+
+    entries = [(_field_rels(f), _search_condition(f, query, config)) for f in fields]
+    subquery_entries: list[tuple[tuple[Any, ...], ColumnElement[bool]]] = []
+    if to_many_subqueries:
+        to_many = [
+            entry for entry in entries if any(r.property.uselist for r in entry[0])
+        ]
+        # All or nothing, so the result matches the join form exactly.
+        if all(_semi_joinable(r) for rels, _ in to_many for r in rels):
+            subquery_entries = to_many
+            entries = [
+                entry
+                for entry in entries
+                if not any(r.property.uselist for r in entry[0])
+            ]
+
+    # Remaining relationship fields are outer-joined. A to-one join cannot
+    # fan out, and unlike a subquery it keeps the scan parallel and lets
+    # LIMIT stop early.
     joins: list[InstrumentedAttribute[Any]] = []
     added_joins: set[str] = set()
-
-    for field in fields:
-        if isinstance(field, tuple):
-            # Relationship: (User.role, Role.name) or deeper
-            for rel in field[:-1]:
-                rel_key = str(rel)
-                if rel_key not in added_joins:
-                    joins.append(rel)
-                    added_joins.add(rel_key)
-            column = field[-1]
-        else:
-            column = field
-
-        # Build the filter (cast to String only when needed, to preserve
-        # pg_trgm GIN index usability on already-String columns).
-        column_as_string = (
-            column
-            if isinstance(column.type, String) and not isinstance(column.type, Enum)
-            else column.cast(String)
-        )
-        if config.case_sensitive:
-            filters.append(column_as_string.like(f"%{query}%"))
-        else:
-            filters.append(column_as_string.ilike(f"%{query}%"))
+    for rels, _ in entries:
+        for rel in rels:
+            rel_key = str(rel)
+            if rel_key not in added_joins:
+                joins.append(rel)
+                added_joins.add(rel_key)
+    filters = [condition for _, condition in entries]
+    filters += _semi_join_tree(subquery_entries, config.match_mode)
 
     if not filters:  # pragma: no cover
         return [], []
@@ -179,6 +199,111 @@ def build_search_filters(
         return [or_(*filters)], joins
     else:
         return filters, joins
+
+
+def _field_rels(field: SearchFieldType) -> tuple[Any, ...]:
+    """Relationship path of a search field, empty for a direct column."""
+    return tuple(field[:-1]) if isinstance(field, tuple) else ()
+
+
+def _search_condition(
+    field: SearchFieldType, query: str, config: SearchConfig
+) -> "ColumnElement[bool]":
+    """LIKE/ILIKE condition on the field's column."""
+    column = field[-1] if isinstance(field, tuple) else field
+    # Cast to String only when needed, to preserve pg_trgm GIN index
+    # usability on already-String columns.
+    column_as_string = (
+        column
+        if isinstance(column.type, String) and not isinstance(column.type, Enum)
+        else column.cast(String)
+    )
+    if config.case_sensitive:
+        return column_as_string.like(f"%{query}%")
+    return column_as_string.ilike(f"%{query}%")
+
+
+def _is_plain_join(condition: Any, pairs: Sequence[tuple[Any, Any]]) -> bool:
+    """True if *condition* is exactly the column equalities listed in *pairs*."""
+    expected = {frozenset(map(hash, pair)) for pair in pairs}
+    found: set[frozenset[int]] = set()
+    for node in visitors.iterate(condition):
+        if isinstance(node, BinaryExpression):
+            if node.operator is not operators.eq or not (
+                isinstance(node.left, Column) and isinstance(node.right, Column)
+            ):
+                return False
+            found.add(frozenset((hash(node.left), hash(node.right))))
+    return found == expected
+
+
+def _semi_joinable(rel: Any) -> bool:
+    """True if *rel* can be filtered with an `IN (subquery)` instead of a join."""
+    prop = rel.property
+    # Aliased or subclass access, and inheritance targets, keep the join path:
+    # the subquery would miss the alias or the inheritance criteria.
+    if rel.parent is not prop.parent or prop.mapper.inherits is not None:
+        return False
+    if prop.secondary is not None:
+        return (
+            isinstance(prop.secondary, Table)
+            and _is_plain_join(prop.primaryjoin, prop.synchronize_pairs)
+            and _is_plain_join(prop.secondaryjoin, prop.secondary_synchronize_pairs)
+        )
+    return _is_plain_join(prop.primaryjoin, prop.local_remote_pairs)
+
+
+def _semi_join(rel: Any, condition: "ColumnElement[bool]") -> "ColumnElement[bool]":
+    """Express "some related row matches *condition*" as `local IN (subquery)`."""
+    prop = rel.property
+    if prop.secondary is not None:
+        pairs = prop.synchronize_pairs
+        sub = select(*(assoc for _, assoc in pairs)).where(
+            prop.secondaryjoin, condition
+        )
+    else:
+        pairs = prop.local_remote_pairs
+        sub = select(*(remote for _, remote in pairs)).where(condition)
+    # Never correlate: a self-referential relationship would otherwise lose
+    # its inner FROM to the outer query.
+    sub = sub.correlate(None)
+    local = [col for col, _ in pairs]
+    if len(local) == 1:
+        return local[0].in_(sub)
+    return tuple_(*local).in_(sub)
+
+
+def _semi_join_tree(
+    entries: Sequence[tuple[tuple[Any, ...], "ColumnElement[bool]"]],
+    match_mode: Literal["any", "all"],
+) -> list["ColumnElement[bool]"]:
+    """Turn (relationship path, condition) entries into conditions on the root model.
+
+    Fields sharing a relationship prefix go into one subquery, so with
+    ``match_mode="all"`` they must match the same related row, as with a join.
+    """
+    combine = or_ if match_mode == "any" else and_
+    parts: list[Any] = []
+    groups: dict[str, tuple[Any, list[Any]]] = {}
+    for rels, condition in entries:
+        if not rels:
+            parts.append(condition)
+            continue
+        key = str(rels[0])
+        if key not in groups:
+            groups[key] = (rels[0], [])
+            # Placeholder keeps the original field order.
+            parts.append(key)
+        groups[key][1].append((rels[1:], condition))
+    return [
+        _semi_join(
+            groups[part][0],
+            combine(*_semi_join_tree(groups[part][1], match_mode)),
+        )
+        if isinstance(part, str)
+        else part
+        for part in parts
+    ]
 
 
 def search_field_keys(fields: Sequence[SearchFieldType]) -> list[str]:
