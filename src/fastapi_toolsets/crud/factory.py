@@ -29,12 +29,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import DeclarativeBase, QueryableAttribute, selectinload
+from sqlalchemy.orm import DeclarativeBase, QueryableAttribute, aliased, selectinload
 from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.base import ExecutableOption
 from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.roles import WhereHavingRole
+from sqlalchemy.sql.util import ClauseAdapter
 
 from .._orm import loaded_relationships
 from ..db import transaction
@@ -60,10 +61,12 @@ from ..types import (
 from .search import (
     SearchConfig,
     apply_search_joins,
-    build_facets,
     build_filter_by,
     build_search_filters,
+    decode_facet,
     facet_keys,
+    facet_scalars,
+    facet_source_columns,
     search_field_keys,
 )
 
@@ -395,30 +398,93 @@ class AsyncCrud(Generic[ModelType]):
         return page_filters, page_joins, agg_filters, agg_joins
 
     @classmethod
-    async def _build_filter_attributes(
+    async def _aggregates(
         cls: type[Self],
         session: AsyncSession,
-        facet_fields: Sequence[FacetFieldType] | None,
+        *,
+        joins: JoinType | None,
+        outer_join: bool,
         filters: list[Any],
         search_joins: list[Any],
-        *,
-        include_facets: bool = True,
-        own_filters: dict[str, Any] | None = None,
-    ) -> dict[str, list[Any]] | None:
-        """Build facet filter_attributes, or None if disabled/no facet fields configured."""
-        if not include_facets:
-            return None
-        resolved = cls._resolve_facet_fields(facet_fields)
-        if not resolved:
-            return None
-        return await build_facets(
-            session,
-            cls.model,
-            resolved,
-            base_filters=filters,
-            base_joins=search_joins,
-            own_filters=own_filters,
+        fb_filters: dict[str, Any],
+        fb_joins: list[Any],
+        facet_fields: Sequence[FacetFieldType] | None,
+        include_total: bool,
+        include_facets: bool,
+    ) -> tuple[int | None, dict[str, list[Any]] | None]:
+        """Total and facets of the filtered rows, in one statement when both are wanted.
+
+        With facets to compute over filtered rows, the matching rows' keys
+        and facet columns are selected once into a CTE that the total and
+        every facet read, so the filters run once instead of once per
+        aggregate. A to-many search join keeps the join form, which lets a
+        facet on that path read the matched related row.
+        """
+        resolved = cls._resolve_facet_fields(facet_fields) if include_facets else None
+        if not include_total and not resolved:
+            return None, None
+        entity: Any = cls.model
+        pk_attrs: list[Any] = cls._pk_attrs()
+        agg_joins = [*fb_joins, *search_joins]
+        shared = bool(resolved and (filters or joins)) and not _fans_out(
+            search_joins, None
         )
+        if shared:
+            rows = select(*facet_source_columns(cls.model, resolved or []))
+            rows = rows.select_from(cls.model)
+            rows = apply_search_joins(
+                _apply_joins(rows, joins, outer_join), search_joins
+            )
+            if filters:
+                rows = rows.where(and_(*filters))
+            if joins:
+                rows = rows.distinct()
+            cte = rows.cte()
+            entity = aliased(cls.model, cte)
+            adapt = ClauseAdapter(cte)
+            mapper = cls.model.__mapper__
+            pk_attrs = [getattr(entity, attr.key) for attr in pk_attrs]
+            filters = []
+            fb_filters = {k: adapt.traverse(f) for k, f in fb_filters.items()}
+            agg_joins = [
+                getattr(entity, rel.key) if rel.parent.mapper is mapper else rel
+                for rel in fb_joins
+            ]
+            fans_out = _fans_out(fb_joins, None)
+        else:
+            # A raw join's cardinality cannot be inspected, so it counts as
+            # repeating rows.
+            fans_out = bool(joins) or _fans_out(agg_joins, None)
+        key = pk_attrs[0] if len(pk_attrs) == 1 else tuple_(*pk_attrs)
+
+        scalars: list[Any] = []
+        if include_total:
+            count_q = select(
+                func.count(func.distinct(key)) if fans_out else func.count()
+            )
+            count_q = count_q.select_from(entity)
+            if not shared:
+                count_q = _apply_joins(count_q, joins, outer_join)
+            count_q = apply_search_joins(count_q, agg_joins)
+            if filters or fb_filters:
+                count_q = count_q.where(and_(*filters, *fb_filters.values()))
+            if not resolved:
+                return (await session.execute(count_q)).scalar_one(), None
+            scalars.append(count_q.scalar_subquery())
+        facets = facet_scalars(
+            entity,
+            resolved or [],
+            base_filters=filters,
+            base_joins=agg_joins,
+            own_filters=fb_filters,
+        )
+        scalars.extend(scalar for _, scalar, _ in facets)
+        values = list((await session.execute(select(*scalars))).one())
+        total = values.pop(0) if include_total else None
+        return total, {
+            key: decode_facet(value, enum_class)
+            for (key, _, enum_class), value in zip(facets, values)
+        }
 
     @classmethod
     def _resolve_search_fields(
@@ -1486,12 +1552,10 @@ class AsyncCrud(Generic[ModelType]):
             cls._build_search(search, search_fields, search_column)
         )
         search_joins = [*fb_joins, *page_search_joins]
-        agg_joins = [*fb_joins, *agg_search_joins]
 
         # Facets combine these with each facet's own filter individually, so
         # fb_filters is applied to the queries below but excluded here.
         facet_base_filters = [*filters, *agg_search_filters]
-        agg_filters = [*facet_base_filters, *fb_filters.values()]
         filters.extend([*search_filters, *fb_filters.values()])
 
         # Build query with joins
@@ -1515,7 +1579,6 @@ class AsyncCrud(Generic[ModelType]):
         q = q.order_by(*order_clauses)
 
         fetch_limit = items_per_page if include_total else items_per_page + 1
-        total_count: int | None = None
         # A to-many join repeats each entity, so LIMIT would slice joined rows
         # and `.unique()` would shrink the page after the fact. A raw join's
         # cardinality cannot be inspected, so it is treated the same way.
@@ -1534,29 +1597,19 @@ class AsyncCrud(Generic[ModelType]):
         fetched = len(raw_items)
         raw_items = raw_items[:items_per_page]
 
-        if include_total:
-            # Count query (with same joins and filters). DISTINCT is only
-            # needed when a join can repeat rows: a to-many relationship join,
-            # or a raw join whose cardinality cannot be inspected.
-            if joins or _fans_out(agg_joins, None):
-                pk_attrs = cls._pk_attrs()
-                key = pk_attrs[0] if len(pk_attrs) == 1 else tuple_(*pk_attrs)
-                count_q = select(func.count(func.distinct(key)))
-            else:
-                count_q = select(func.count())
-            count_q = count_q.select_from(cls.model)
-
-            # Apply explicit joins to count query
-            count_q = _apply_joins(count_q, joins, outer_join)
-
-            # Same search as the page, without the to-many fan-out
-            count_q = apply_search_joins(count_q, agg_joins)
-
-            if agg_filters:
-                count_q = count_q.where(and_(*agg_filters))
-
-            count_result = await session.execute(count_q)
-            total_count = count_result.scalar_one()
+        total_count, filter_attributes = await cls._aggregates(
+            session,
+            joins=joins,
+            outer_join=outer_join,
+            filters=facet_base_filters,
+            search_joins=agg_search_joins,
+            fb_filters=fb_filters,
+            fb_joins=fb_joins,
+            facet_fields=facet_fields,
+            include_total=include_total,
+            include_facets=include_facets,
+        )
+        if total_count is not None:
             has_more = page * items_per_page < total_count
         else:
             # One extra row was fetched to detect a next page without COUNT
@@ -1564,14 +1617,6 @@ class AsyncCrud(Generic[ModelType]):
 
         items: list[Any] = [schema.model_validate(item) for item in raw_items]
 
-        filter_attributes = await cls._build_filter_attributes(
-            session,
-            facet_fields,
-            facet_base_filters,
-            agg_joins,
-            include_facets=include_facets,
-            own_filters=fb_filters,
-        )
         search_columns = cls._resolve_search_columns(search_fields)
         order_columns = cls._resolve_order_columns(order_fields)
 
@@ -1666,7 +1711,6 @@ class AsyncCrud(Generic[ModelType]):
             cls._build_search(search, search_fields, search_column)
         )
         search_joins = [*fb_joins, *page_search_joins]
-        agg_joins = [*fb_joins, *agg_search_joins]
 
         # Facets combine these with each facet's own filter individually, so
         # fb_filters is applied to the query below but excluded here.
@@ -1753,13 +1797,17 @@ class AsyncCrud(Generic[ModelType]):
 
         items: list[Any] = [schema.model_validate(item) for item in items_page]
 
-        filter_attributes = await cls._build_filter_attributes(
+        _, filter_attributes = await cls._aggregates(
             session,
-            facet_fields,
-            facet_base_filters,
-            agg_joins,
+            joins=joins,
+            outer_join=outer_join,
+            filters=facet_base_filters,
+            search_joins=agg_search_joins,
+            fb_filters=fb_filters,
+            fb_joins=fb_joins,
+            facet_fields=facet_fields,
+            include_total=False,
             include_facets=include_facets,
-            own_filters=fb_filters,
         )
         search_columns = cls._resolve_search_columns(search_fields)
         order_columns = cls._resolve_order_columns(order_fields)

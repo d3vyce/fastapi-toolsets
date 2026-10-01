@@ -16,6 +16,7 @@ from sqlalchemy import (
     select,
     tuple_,
 )
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
@@ -369,20 +370,40 @@ def facet_keys(facet_fields: Sequence[FacetFieldType]) -> list[str]:
     return keys
 
 
-async def build_facets(
-    session: "AsyncSession",
-    model: type[DeclarativeBase],
+def facet_source_columns(
+    model: type[DeclarativeBase], facet_fields: Sequence[FacetFieldType]
+) -> list[Any]:
+    """The model's columns the facets read: its key, direct facet columns and
+    the foreign keys of each relationship path's first hop."""
+    columns: dict[Any, Any] = {col.key: col for col in model.__mapper__.primary_key}
+    for field in facet_fields:
+        if not isinstance(field, tuple):
+            for col in field.property.columns:
+                columns.setdefault(col.key, col)
+            continue
+        prop = field[0].property
+        pairs = (
+            prop.synchronize_pairs
+            if prop.secondary is not None
+            else prop.local_remote_pairs
+        )
+        for local, _ in pairs:
+            columns.setdefault(local.key, local)
+    return list(columns.values())
+
+
+def facet_scalars(
+    model: Any,
     facet_fields: Sequence[FacetFieldType],
     *,
     base_filters: "list[ColumnElement[bool]] | None" = None,
     base_joins: list[InstrumentedAttribute[Any]] | None = None,
     own_filters: "dict[str, ColumnElement[bool]] | None" = None,
-) -> dict[str, list[Any]]:
-    """Return distinct values for each facet field, respecting current filters.
+) -> list[tuple[str, Any, Any]]:
+    """One ``(key, scalar subquery, enum class)`` per facet field.
 
     Args:
-        session: DB async session
-        model: SQLAlchemy model class
+        model: SQLAlchemy model class, or an alias of it holding the rows to facet
         facet_fields: Columns or relationship tuples to facet on
         base_filters: Filter conditions already applied to the main query (search + caller filters)
         base_joins: Relationship joins already applied to the main query
@@ -392,29 +413,23 @@ async def build_facets(
             just the filtered value.
 
     Returns:
-        Dict mapping column key to sorted list of distinct non-None values
+        The scalar subqueries selecting each facet's sorted distinct values.
     """
-    if not facet_fields:
-        return {}
-
-    keys = facet_keys(facet_fields)
     own_filters = own_filters or {}
+    scalars: list[tuple[str, Any, Any]] = []
 
-    scalars: list[Any] = []
-    enum_classes: dict[str, Any] = {}
-
-    for field, key in zip(facet_fields, keys):
+    for field, key in zip(facet_fields, facet_keys(facet_fields)):
+        # Read the model's own attributes from *model*, which may be an alias.
         if isinstance(field, tuple):
             # Relationship chain: (User.role, Role.name) — last element is the column
-            rels = field[:-1]
+            rels = (getattr(model, field[0].key), *field[1:-1])
             column = field[-1]
         else:
             rels = ()
-            column = field
+            column = getattr(model, field.key)
 
         col_type = column.property.columns[0].type
         is_array = isinstance(col_type, ARRAY)
-        enum_classes[key] = getattr(col_type, "enum_class", None)
 
         filters = [
             *(base_filters or []),
@@ -431,18 +446,49 @@ async def build_facets(
         v = distinct_sq.c.v
         agg = select(func.array_agg(aggregate_order_by(v, v))).select_from(distinct_sq)
 
-        scalars.append(agg.scalar_subquery().label(key))
+        enum_class = getattr(col_type, "enum_class", None)
+        scalars.append((key, agg.scalar_subquery().label(key), enum_class))
+    return scalars
 
-    row = (await session.execute(select(*scalars))).one()
 
-    facets: dict[str, list[Any]] = {}
-    for key, values in zip(keys, row):
-        enum_class = enum_classes[key]
-        facets[key] = [
-            v.name if (enum_class is not None and isinstance(v, enum_class)) else v
-            for v in (values or [])
-        ]
-    return facets
+def decode_facet(values: Any, enum_class: Any) -> list[Any]:
+    """The facet values of one row, enum members by name."""
+    return [
+        v.name if (enum_class is not None and isinstance(v, enum_class)) else v
+        for v in (values or [])
+    ]
+
+
+async def build_facets(
+    session: "AsyncSession",
+    model: type[DeclarativeBase],
+    facet_fields: Sequence[FacetFieldType],
+    *,
+    base_filters: "list[ColumnElement[bool]] | None" = None,
+    base_joins: list[InstrumentedAttribute[Any]] | None = None,
+    own_filters: "dict[str, ColumnElement[bool]] | None" = None,
+) -> dict[str, list[Any]]:
+    """Return distinct values for each facet field, respecting current filters.
+
+    See :func:`facet_scalars` for the arguments.
+
+    Returns:
+        Dict mapping column key to sorted list of distinct non-None values
+    """
+    if not facet_fields:
+        return {}
+    scalars = facet_scalars(
+        model,
+        facet_fields,
+        base_filters=base_filters,
+        base_joins=base_joins,
+        own_filters=own_filters,
+    )
+    row = (await session.execute(select(*(s for _, s, _ in scalars)))).one()
+    return {
+        key: decode_facet(values, enum_class)
+        for (key, _, enum_class), values in zip(scalars, row)
+    }
 
 
 def _facet_rows(
@@ -455,13 +501,17 @@ def _facet_rows(
     joined = {str(rel) for rel in base_joins}
     to_many = any(rel.property.uselist for rel in rels)
     # Keep the join when:
+    # - the rows were already filtered into a CTE (an alias): joining it is
+    #   bounded by its size, where the planner may loop a subquery over
+    #   the related table once per row;
     # - the path cannot be expressed as subqueries;
     # - the filters already join a to-many relationship on this path, since
     #   they then constrain the same related row the facet reads;
     # - a to-one path meets joined filters: the planner tends to probe the
     #   lookup table with a nested loop that re-runs those joins per value.
     if (
-        not all(_semi_joinable(rel) for rel in rels)
+        sa_inspect(model).is_aliased_class
+        or not all(_semi_joinable(rel) for rel in rels)
         or any(rel.property.uselist and str(rel) in joined for rel in rels)
         or (not to_many and base_joins)
     ):

@@ -231,7 +231,7 @@ The [`offset_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.Async
 
 !!! info "Added in `v2.4.1`"
 
-By default `offset_paginate` runs two queries: one for the page items and one `COUNT(*)` for `total_count`. On large tables the `COUNT` can be expensive. Pass `include_total=False` to `offset_paginate_params()` to skip it:
+By default `offset_paginate` runs two queries: one for the page items and one aggregate query for `total_count` and the facets. On large tables the `COUNT` can be expensive. Pass `include_total=False` to `offset_paginate_params()` to skip it:
 
 ```python
 @router.get("")
@@ -518,7 +518,7 @@ The distinct values for each facet field are returned in the `filter_attributes`
 
 !!! info "Added in `v5.1.0`"
 
-Facet values only change with the filters, not with the page. Pass `include_facets=False` to `offset_paginate_params()` / `cursor_paginate_params()` on pages 2..N to skip the facet queries entirely (`filter_attributes` will be `None`):
+Facet values only change with the filters, not with the page. Pass `include_facets=False` to `offset_paginate_params()` / `cursor_paginate_params()` on pages 2..N to skip the facets entirely (`filter_attributes` will be `None`). The total and the facets are computed in one query: with a search or caller filters, the matching keys are selected once and shared by every aggregate, so the cost no longer grows with the number of facet fields.
 
 ```python
 params: Annotated[dict, Depends(UserCrud.offset_paginate_params(include_facets=False))]
