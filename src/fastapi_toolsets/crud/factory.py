@@ -1511,8 +1511,9 @@ class AsyncCrud(Generic[ModelType]):
         fetch_limit = items_per_page if include_total else items_per_page + 1
         total_count: int | None = None
         # A to-many join repeats each entity, so LIMIT would slice joined rows
-        # and `.unique()` would shrink the page after the fact.
-        if _fans_out(search_joins, order_joins):
+        # and `.unique()` would shrink the page after the fact. A raw join's
+        # cardinality cannot be inspected, so it is treated the same way.
+        if joins or _fans_out(search_joins, order_joins):
             raw_items = await cls._page_entities(
                 session,
                 q,
@@ -1695,7 +1696,8 @@ class AsyncCrud(Generic[ModelType]):
         # One extra row detects whether another page exists in this direction.
         # Under a to-many join that extra row may be a duplicate of one already
         # on the page, which reads as "no next page" and ends traversal early.
-        if _fans_out(search_joins, order_joins):
+        # A raw join's cardinality cannot be inspected, so it counts as one.
+        if joins or _fans_out(search_joins, order_joins):
             raw_items = await cls._page_entities(
                 session,
                 q,

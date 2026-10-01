@@ -642,6 +642,9 @@ _fan_out = pytest.mark.parametrize(
 )
 
 
+_fan_out_raw = pytest.mark.parametrize("paginate", ["offset", "cursor"])
+
+
 class TestPaginateToManyJoin:
     """Searching a to-many relationship must not truncate or duplicate pages."""
 
@@ -937,6 +940,33 @@ class TestPaginateToManyJoin:
 
         assert "JOIN books" in sql
         assert "IN (SELECT" not in sql
+
+    @_fan_out_raw
+    @pytest.mark.anyio
+    async def test_raw_to_many_join_returns_full_pages(
+        self, db_session: AsyncSession, paginate: str
+    ):
+        """A caller-supplied to-many join must not shrink a page after LIMIT."""
+        await _seed_posts_with_tags(db_session)
+
+        if paginate == "offset":
+            result = await PostTagSearchCrud.offset_paginate(
+                db_session,
+                joins=[(post_tags, post_tags.c.post_id == Post.id)],
+                items_per_page=5,
+                schema=_PostTitle,
+            )
+            assert result.pagination.total_count == _POST_COUNT
+        else:
+            result = await PostTagSearchCrud.cursor_paginate(
+                db_session,
+                joins=[(post_tags, post_tags.c.post_id == Post.id)],
+                items_per_page=5,
+                schema=_PostTitle,
+            )
+
+        assert len(result.data) == 5
+        assert result.pagination.has_more is True
 
     def test_grouped_order_only_aggregates_foreign_columns(self):
         """A base-table column is left alone; anything else collapses to min()."""
