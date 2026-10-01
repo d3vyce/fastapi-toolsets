@@ -4,8 +4,16 @@ import inspect
 import uuid
 
 import pytest
+from sqlalchemy import ForeignKey, ForeignKeyConstraint, and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    aliased,
+    mapped_column,
+    relationship,
+    selectinload,
+)
 from sqlalchemy.sql.elements import ColumnElement, UnaryExpression
 
 from fastapi_toolsets.crud import (
@@ -361,18 +369,180 @@ class TestPaginateSearch:
         assert result.data[0].id == user_id
 
 
+class _LocalBase(DeclarativeBase):
+    """Models that are only compiled to SQL, never created in the database."""
+
+
+class _Node(_LocalBase):
+    __tablename__ = "nodes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("nodes.id"))
+
+    children: Mapped[list["_Node"]] = relationship()
+
+
+class _Shelf(_LocalBase):
+    __tablename__ = "shelves"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    active_books: Mapped[list["_Book"]] = relationship(
+        primaryjoin=lambda: and_(_Shelf.id == _Book.shelf_id, _Book.title != "old"),
+        viewonly=True,
+    )
+
+
+class _Book(_LocalBase):
+    __tablename__ = "books"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str]
+    shelf_id: Mapped[int] = mapped_column(ForeignKey("shelves.id"))
+
+
+class _CompositeOrder(_LocalBase):
+    __tablename__ = "composite_orders"
+
+    a: Mapped[int] = mapped_column(primary_key=True)
+    b: Mapped[int] = mapped_column(primary_key=True)
+
+    lines: Mapped[list["_Line"]] = relationship()
+
+
+class _Line(_LocalBase):
+    __tablename__ = "order_lines"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["order_a", "order_b"], ["composite_orders.a", "composite_orders.b"]
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str]
+    order_a: Mapped[int]
+    order_b: Mapped[int]
+
+
+def _sql(model, filters) -> str:
+    return str(select(*model.__mapper__.primary_key).where(*filters))
+
+
 class TestBuildSearchFilters:
     """Unit tests for build_search_filters."""
 
-    def test_deduplicates_relationship_join(self):
-        """Two tuple fields sharing the same relationship do not add the join twice."""
+    def test_to_many_field_is_joined_by_default(self):
+        """The default form keeps the outer join, for the page query."""
         from fastapi_toolsets.crud.search import build_search_filters
 
-        # Both fields traverse User.role — the second must not re-add the join.
+        _, joins = build_search_filters(
+            Post, "x", search_fields=[Post.title, (Post.tags, Tag.name)]
+        )
+
+        assert joins == [Post.tags]
+
+    def test_to_many_field_becomes_a_subquery_for_aggregates(self):
+        """The aggregate form selects owner keys through the association table."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, joins = build_search_filters(
+            Post,
+            "x",
+            search_fields=[Post.title, (Post.tags, Tag.name)],
+            to_many_subqueries=True,
+        )
+
+        assert joins == []
+        sql = _sql(Post, filters)
+        assert "posts.id IN (SELECT post_tags.post_id" in sql
+        assert "JOIN" not in sql
+
+    def test_to_one_field_stays_joined_for_aggregates(self):
+        """A to-one join cannot fan out, so it is kept."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
         filters, joins = build_search_filters(
             User,
             "admin",
             search_fields=[(User.role, Role.name), (User.role, Role.id)],
+            to_many_subqueries=True,
+        )
+
+        assert joins == [User.role]
+        assert "IN (SELECT" not in _sql(User, filters)
+
+    def test_fields_on_the_same_relationship_share_one_subquery(self):
+        """With match_mode="all", both conditions must hold for the same related row."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, _ = build_search_filters(
+            Post,
+            SearchConfig(query="x", match_mode="all"),
+            search_fields=[(Post.tags, Tag.name), (Post.tags, Tag.id)],
+            to_many_subqueries=True,
+        )
+
+        sql = _sql(Post, filters)
+        assert len(filters) == 1
+        assert sql.count("IN (SELECT") == 1
+        assert "tags.name" in sql and "CAST(tags.id AS VARCHAR)" in sql
+
+    def test_self_referential_subquery_keeps_its_from(self):
+        """The subquery is never correlated, even against its own table."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, _ = build_search_filters(
+            _Node,
+            "x",
+            search_fields=[(_Node.children, _Node.name)],
+            to_many_subqueries=True,
+        )
+
+        assert "nodes.id IN (SELECT nodes.parent_id \nFROM nodes \nWHERE" in _sql(
+            _Node, filters
+        )
+
+    def test_composite_key_relationship_uses_a_tuple(self):
+        """A multi-column foreign key compares a tuple against the subquery."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, _ = build_search_filters(
+            _CompositeOrder,
+            "x",
+            search_fields=[(_CompositeOrder.lines, _Line.sku)],
+            to_many_subqueries=True,
+        )
+
+        assert (
+            "(composite_orders.a, composite_orders.b) IN "
+            "(SELECT order_lines.order_a, order_lines.order_b"
+        ) in _sql(_CompositeOrder, filters)
+
+    def test_custom_join_condition_falls_back_to_joins(self):
+        """A relationship with extra join criteria keeps the outer-join path."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        filters, joins = build_search_filters(
+            _Shelf,
+            "x",
+            search_fields=[(_Shelf.active_books, _Book.title)],
+            to_many_subqueries=True,
+        )
+
+        assert joins == [_Shelf.active_books]
+        assert "IN (SELECT" not in _sql(_Shelf, filters)
+
+    def test_aliased_relationship_falls_back_to_joins(self):
+        """A relationship reached through an alias keeps the outer-join path."""
+        from fastapi_toolsets.crud.search import build_search_filters
+
+        post = aliased(Post)
+        _, joins = build_search_filters(
+            Post,
+            "x",
+            search_fields=[(post.tags, Tag.name)],
+            to_many_subqueries=True,
         )
 
         assert len(joins) == 1
@@ -441,11 +611,23 @@ async def _seed_posts_with_tags(session) -> None:
     await session.flush()
 
 
+# Search on a to-many field filters with a subquery, while ordering through a
+# to-many join still fans out and goes through `_page_entities`. Cover both.
+_fan_out = pytest.mark.parametrize(
+    "fan_out",
+    [{}, {"order_by": Tag.name, "order_joins": [Post.tags]}],
+    ids=["search", "order_join"],
+)
+
+
 class TestPaginateToManyJoin:
     """Searching a to-many relationship must not truncate or duplicate pages."""
 
+    @_fan_out
     @pytest.mark.anyio
-    async def test_offset_pages_are_full_and_complete(self, db_session: AsyncSession):
+    async def test_offset_pages_are_full_and_complete(
+        self, db_session: AsyncSession, fan_out: dict
+    ):
         """Every page is full and every post is returned exactly once."""
         await _seed_posts_with_tags(db_session)
 
@@ -456,6 +638,7 @@ class TestPaginateToManyJoin:
                 page=page,
                 items_per_page=5,
                 search="shared",
+                **fan_out,
                 schema=_PostTitle,
             )
             assert result.pagination.total_count == _POST_COUNT
@@ -464,9 +647,10 @@ class TestPaginateToManyJoin:
 
         assert len(set(seen)) == _POST_COUNT, "posts duplicated or missing"
 
+    @_fan_out
     @pytest.mark.anyio
     async def test_offset_without_total_reports_has_more(
-        self, db_session: AsyncSession
+        self, db_session: AsyncSession, fan_out: dict
     ):
         """``has_more`` counts entities, not joined rows."""
         await _seed_posts_with_tags(db_session)
@@ -476,6 +660,7 @@ class TestPaginateToManyJoin:
             page=1,
             items_per_page=5,
             search="shared",
+            **fan_out,
             include_total=False,
             schema=_PostTitle,
         )
@@ -487,14 +672,18 @@ class TestPaginateToManyJoin:
             page=2,
             items_per_page=5,
             search="shared",
+            **fan_out,
             include_total=False,
             schema=_PostTitle,
         )
         assert len(last.data) == 5
         assert last.pagination.has_more is False
 
+    @_fan_out
     @pytest.mark.anyio
-    async def test_cursor_traverses_every_row(self, db_session: AsyncSession):
+    async def test_cursor_traverses_every_row(
+        self, db_session: AsyncSession, fan_out: dict
+    ):
         """Cursor traversal must not stop early."""
         await _seed_posts_with_tags(db_session)
 
@@ -506,6 +695,7 @@ class TestPaginateToManyJoin:
                 cursor=cursor,
                 items_per_page=5,
                 search="shared",
+                **fan_out,
                 schema=_PostTitle,
             )
             seen += [p.title for p in result.data]
@@ -551,21 +741,30 @@ class TestPaginateToManyJoin:
 
         assert len(result.data) == 5
 
+    @_fan_out
     @pytest.mark.anyio
-    async def test_page_past_the_end_is_empty(self, db_session: AsyncSession):
+    async def test_page_past_the_end_is_empty(
+        self, db_session: AsyncSession, fan_out: dict
+    ):
         """No keys on the page means no second query and an empty result."""
         await _seed_posts_with_tags(db_session)
 
         result = await PostTagSearchCrud.offset_paginate(
-            db_session, page=99, items_per_page=5, search="shared", schema=_PostTitle
+            db_session,
+            page=99,
+            items_per_page=5,
+            search="shared",
+            schema=_PostTitle,
+            **fan_out,
         )
 
         assert result.data == []
         assert result.pagination.total_count == _POST_COUNT
 
+    @_fan_out
     @pytest.mark.anyio
     async def test_load_options_apply_on_the_fan_out_path(
-        self, db_session: AsyncSession
+        self, db_session: AsyncSession, fan_out: dict
     ):
         """The entity query still honours loader options."""
         await _seed_posts_with_tags(db_session)
@@ -575,6 +774,7 @@ class TestPaginateToManyJoin:
             page=1,
             items_per_page=5,
             search="shared",
+            **fan_out,
             load_options=[selectinload(Post.tags)],
             schema=_PostWithTags,
         )
@@ -598,6 +798,23 @@ class TestPaginateToManyJoin:
 
         assert len(rows) == 5
         assert len({r.id for r in rows}) == 5
+
+    @pytest.mark.anyio
+    async def test_total_matches_the_page_for_match_all(self, db_session: AsyncSession):
+        """COUNT (subquery form) and the page (join form) agree on match_mode="all"."""
+        await _seed_posts_with_tags(db_session)
+
+        # Every post has a tag containing "1", but only post01 has it in its title.
+        result = await PostTagSearchCrud.offset_paginate(
+            db_session,
+            items_per_page=20,
+            search=SearchConfig(query="1", match_mode="all"),
+            search_fields=[Post.title, (Post.tags, Tag.name)],
+            schema=_PostTitle,
+        )
+
+        assert [p.title for p in result.data] == ["post01"]
+        assert result.pagination.total_count == 1
 
     def test_grouped_order_only_aggregates_foreign_columns(self):
         """A base-table column is left alone; anything else collapses to min()."""

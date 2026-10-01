@@ -361,6 +361,31 @@ class AsyncCrud(Generic[ModelType]):
         return build_filter_by(filter_by, resolved or [])
 
     @classmethod
+    def _build_search(
+        cls: type[Self],
+        search: str | SearchConfig | None,
+        search_fields: Sequence[SearchFieldType] | None,
+        search_column: str | None,
+    ) -> tuple[list[Any], list[Any], list[Any], list[Any]]:
+        """Return search (filters, joins) for the page query, then for COUNT and facets.
+
+        The second pair filters to-many fields with subqueries, so the
+        aggregate queries do not scan one row per related row.
+        """
+        if not search:
+            return [], [], [], []
+        options: dict[str, Any] = {
+            "search_fields": search_fields,
+            "default_fields": cls.searchable_fields,
+            "search_column": search_column,
+        }
+        page_filters, page_joins = build_search_filters(cls.model, search, **options)
+        agg_filters, agg_joins = build_search_filters(
+            cls.model, search, **options, to_many_subqueries=True
+        )
+        return page_filters, page_joins, agg_filters, agg_joins
+
+    @classmethod
     async def _build_filter_attributes(
         cls: type[Self],
         session: AsyncSession,
@@ -1450,24 +1475,18 @@ class AsyncCrud(Generic[ModelType]):
         filters = list(filters) if filters else []
         offset = (page - 1) * items_per_page
 
-        fb_filters, search_joins = cls._prepare_filter_by(filter_by, facet_fields)
-
-        # Build search filters
-        if search:
-            search_filters, new_search_joins = build_search_filters(
-                cls.model,
-                search,
-                search_fields=search_fields,
-                default_fields=cls.searchable_fields,
-                search_column=search_column,
-            )
-            filters.extend(search_filters)
-            search_joins.extend(new_search_joins)
+        fb_filters, fb_joins = cls._prepare_filter_by(filter_by, facet_fields)
+        search_filters, page_search_joins, agg_search_filters, agg_search_joins = (
+            cls._build_search(search, search_fields, search_column)
+        )
+        search_joins = [*fb_joins, *page_search_joins]
+        agg_joins = [*fb_joins, *agg_search_joins]
 
         # Facets combine these with each facet's own filter individually, so
-        # fb_filters is applied to the query below but excluded here.
-        facet_base_filters = list(filters)
-        filters.extend(fb_filters.values())
+        # fb_filters is applied to the queries below but excluded here.
+        facet_base_filters = [*filters, *agg_search_filters]
+        agg_filters = [*facet_base_filters, *fb_filters.values()]
+        filters.extend([*search_filters, *fb_filters.values()])
 
         # Build query with joins
         q = select(cls.model)
@@ -1516,11 +1535,11 @@ class AsyncCrud(Generic[ModelType]):
             # Apply explicit joins to count query
             count_q = _apply_joins(count_q, joins, outer_join)
 
-            # Apply search joins to count query
-            count_q = apply_search_joins(count_q, search_joins)
+            # Same search as the page, without the to-many fan-out
+            count_q = apply_search_joins(count_q, agg_joins)
 
-            if filters:
-                count_q = count_q.where(and_(*filters))
+            if agg_filters:
+                count_q = count_q.where(and_(*agg_filters))
 
             count_result = await session.execute(count_q)
             total_count = count_result.scalar_one()
@@ -1535,7 +1554,7 @@ class AsyncCrud(Generic[ModelType]):
             session,
             facet_fields,
             facet_base_filters,
-            search_joins,
+            agg_joins,
             include_facets=include_facets,
             own_filters=fb_filters,
         )
@@ -1608,7 +1627,7 @@ class AsyncCrud(Generic[ModelType]):
         """
         filters = list(filters) if filters else []
 
-        fb_filters, search_joins = cls._prepare_filter_by(filter_by, facet_fields)
+        fb_filters, fb_joins = cls._prepare_filter_by(filter_by, facet_fields)
 
         if cls.cursor_column is None:
             raise ValueError(
@@ -1628,22 +1647,16 @@ class AsyncCrud(Generic[ModelType]):
             else:
                 filters.append(cursor_column > cursor_val)
 
-        # Build search filters
-        if search:
-            search_filters, new_search_joins = build_search_filters(
-                cls.model,
-                search,
-                search_fields=search_fields,
-                default_fields=cls.searchable_fields,
-                search_column=search_column,
-            )
-            filters.extend(search_filters)
-            search_joins.extend(new_search_joins)
+        search_filters, page_search_joins, agg_search_filters, agg_search_joins = (
+            cls._build_search(search, search_fields, search_column)
+        )
+        search_joins = [*fb_joins, *page_search_joins]
+        agg_joins = [*fb_joins, *agg_search_joins]
 
         # Facets combine these with each facet's own filter individually, so
         # fb_filters is applied to the query below but excluded here.
-        facet_base_filters = list(filters)
-        filters.extend(fb_filters.values())
+        facet_base_filters = [*filters, *agg_search_filters]
+        filters.extend([*search_filters, *fb_filters.values()])
 
         # Build query
         q = select(cls.model)
@@ -1727,7 +1740,7 @@ class AsyncCrud(Generic[ModelType]):
             session,
             facet_fields,
             facet_base_filters,
-            search_joins,
+            agg_joins,
             include_facets=include_facets,
             own_filters=fb_filters,
         )
