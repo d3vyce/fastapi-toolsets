@@ -2,11 +2,11 @@
 
 !!! info "Added in `v2.0`"
 
-Reusable SQLAlchemy 2.0 mixins for common column patterns, designed to be composed freely on any `DeclarativeBase` model.
+Reusable SQLAlchemy mixins for common column patterns, designed to be composed freely on any `DeclarativeBase` model.
 
 ## Overview
 
-The `models` module provides mixins that each add a single, well-defined column behaviour. They work with standard SQLAlchemy 2.0 declarative syntax and are fully compatible with `AsyncSession`.
+The `models` module provides mixins that each add a single, well-defined column behaviour. They work with the standard SQLAlchemy declarative syntax and are fully compatible with `AsyncSession`.
 
 ```python
 from fastapi_toolsets.models import UUIDMixin, TimestampMixin
@@ -51,6 +51,8 @@ print(user.id)  # UUID('...')
 !!! info "Added in `v2.3`"
 
 Adds a `id: UUID` primary key generated server-side by PostgreSQL using `uuidv7()`. It's a time-ordered UUID format that encodes a millisecond-precision timestamp in the most significant bits, making it naturally sortable and index-friendly.
+
+Because the values only increase, the default is declared with `monotonic=True`: SQLAlchemy inserts many new rows in a single `INSERT ... RETURNING` instead of one statement per row.
 
 !!! warning "Requires PostgreSQL 18+"
 
