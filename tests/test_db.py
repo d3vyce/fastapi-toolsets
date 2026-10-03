@@ -207,6 +207,37 @@ class TestConstruction:
         await db.engine.dispose()
 
 
+class TestSessionExecutionOptions:
+    """``session_execution_options`` apply to every statement of the sessions."""
+
+    @pytest.mark.anyio
+    async def test_options_reach_the_flush_and_the_queries(self, engine):
+        # The table exists only in the tenant schema, so a statement that
+        # missed the translation would fail.
+        tenant = {None: "tenant_a"}
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA IF EXISTS tenant_a CASCADE"))
+            await conn.execute(text("CREATE SCHEMA tenant_a"))
+            tenant_conn = await conn.execution_options(schema_translate_map=tenant)
+            await tenant_conn.run_sync(Base.metadata.tables["roles"].create)
+        db = Database(
+            engine=engine, session_execution_options={"schema_translate_map": tenant}
+        )
+        try:
+            async with db.begin() as session:
+                session.add(Role(name="tenant-role"))
+            async with db.session() as session:
+                names = (await session.execute(select(Role.name))).scalars().all()
+            async with engine.connect() as conn:
+                stored = await conn.execute(text("SELECT name FROM tenant_a.roles"))
+                stored_names = stored.scalars().all()
+        finally:
+            async with engine.begin() as conn:
+                await conn.execute(text("DROP SCHEMA tenant_a CASCADE"))
+
+        assert names == stored_names == ["tenant-role"]
+
+
 class TestSessionLifecycle:
     """What ``Depends(db)``, ``session()``, ``begin()`` and ``lock_tables()`` commit."""
 
