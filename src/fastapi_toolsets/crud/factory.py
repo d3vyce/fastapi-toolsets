@@ -1487,9 +1487,7 @@ class AsyncCrud(Generic[ModelType]):
         """
         async with transaction(session):
             result = await session.execute(select(cls.model).where(and_(*filters)))
-            objects = result.scalars().all()
-            for obj in objects:
-                await session.delete(obj)
+            await session.delete_all(result.scalars().all())
         if return_response:
             return Response(data=None)
         return None

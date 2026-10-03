@@ -361,6 +361,19 @@ class TestColumnMixins:
         assert a.id.version == version
 
     @pytest.mark.anyio
+    async def test_uuidv7_rows_are_inserted_in_one_statement(self, session):
+        objs = [UUIDv7Model(name=f"n{i}") for i in range(10)]
+        with capture_sql(session.bind) as statements:
+            session.add_all(objs)
+            await session.flush()
+
+        rows = dict(
+            (await session.execute(select(UUIDv7Model.id, UUIDv7Model.name))).all()
+        )
+        assert len([sql for sql in statements if sql.startswith("INSERT")]) == 1
+        assert {o.id: o.name for o in objs} == rows
+
+    @pytest.mark.anyio
     async def test_timestamps_are_set_on_insert_and_only_updated_at_moves(
         self, session
     ):
