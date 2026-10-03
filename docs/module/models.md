@@ -128,6 +128,47 @@ class Article(Base, UUIDMixin, TimestampMixin):
     title: Mapped[str]
 ```
 
+## Declarative base
+
+### [`TimezoneAwareMixin`](../reference/models.md#fastapi_toolsets.models.TimezoneAwareMixin)
+
+!!! info "Added in `v6.0`"
+
+A mixin for your declarative base, not for a model. Every `Mapped[datetime]` column of the models built on that base becomes a timezone-aware `TIMESTAMPTZ`, like the timestamp mixins above. Without it, SQLAlchemy maps `datetime` to `TIMESTAMP WITHOUT TIME ZONE`.
+
+```python
+from datetime import datetime
+
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from fastapi_toolsets.models import TimezoneAwareMixin
+
+
+class Base(TimezoneAwareMixin, DeclarativeBase):
+    pass
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    starts_at: Mapped[datetime]  # TIMESTAMPTZ
+```
+
+A `type_annotation_map` set on your base replaces the mixin's. Merge them to keep both:
+
+```python
+from sqlalchemy import Text
+
+
+class Base(TimezoneAwareMixin, DeclarativeBase):
+    type_annotation_map = {
+        **TimezoneAwareMixin.type_annotation_map,
+        str: Text,
+    }
+```
+
+Switching an existing base to this mixin changes the type of its `datetime` columns: generate a migration for them.
+
 ## Lifecycle events
 
 The event system provides lifecycle callbacks that fire **after commit**. If the transaction rolls back, no callback fires.

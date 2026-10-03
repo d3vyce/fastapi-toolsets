@@ -13,6 +13,7 @@ from fastapi_toolsets.models import (
     CreatedAtMixin,
     UpdatedAtMixin,
     TimestampMixin,
+    TimezoneAwareMixin,
     listens_for,
 )
 ```
@@ -30,5 +31,7 @@ from fastapi_toolsets.models import (
 ## ::: fastapi_toolsets.models.UpdatedAtMixin
 
 ## ::: fastapi_toolsets.models.TimestampMixin
+
+## ::: fastapi_toolsets.models.TimezoneAwareMixin
 
 ## ::: fastapi_toolsets.models.listens_for
