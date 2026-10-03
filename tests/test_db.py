@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import Depends, FastAPI, Security
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from httpx import ASGITransport, AsyncClient
 from pydantic import PostgresDsn
 from sqlalchemy import (
@@ -52,6 +52,7 @@ from fastapi_toolsets.exceptions import (
     LockTimeoutError,
     NotFoundError,
     PoolExhaustedError,
+    init_exceptions_handlers,
 )
 from fastapi_toolsets.pytest import create_async_client
 
@@ -1273,6 +1274,12 @@ def _build_app(db: Database) -> FastAPI:
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    @app.post("/roles-add")
+    async def add_only(body: RoleCreate, session: AsyncSession = Depends(db)) -> dict:
+        # Nothing is flushed here: a violation surfaces in the middleware's commit.
+        session.add(Role(name=body.name))
+        return {"ok": True}
+
     db.install(app)
     return app
 
@@ -1363,3 +1370,56 @@ class TestCommitIntegration:
         assert resp.status_code == 200
         assert "data: streamed" in resp.text
         assert await _role_exists(session_maker, "streamed")
+
+
+class TestCommitFailure:
+    """A failed commit answers through the app's exception handlers."""
+
+    @pytest.fixture
+    async def taken(self, session_maker) -> str:
+        async with session_maker.begin() as session:
+            session.add(Role(name="taken"))
+        return "taken"
+
+    @pytest.mark.parametrize(
+        "path", ["/roles", "/roles-add"], ids=["flush-in-route", "commit-only"]
+    )
+    @pytest.mark.anyio
+    async def test_duplicate_is_a_conflict_wherever_it_surfaces(
+        self, engine, taken, path
+    ):
+        app = init_exceptions_handlers(_build_app(Database(engine=engine)))
+
+        async with create_async_client(app) as client:
+            resp = await client.post(path, json={"name": taken})
+
+        assert resp.status_code == 409
+        assert resp.json()["error_code"] == "DB-409-UNIQUE"
+
+    @pytest.mark.anyio
+    async def test_a_sync_handler_of_the_app_answers_the_commit_failure(
+        self, engine, taken
+    ):
+        app = _build_app(Database(engine=engine))
+
+        def conflict(request: Request, exc: Exception) -> JSONResponse:
+            return JSONResponse({"handled": True}, status_code=409)
+
+        app.add_exception_handler(IntegrityError, conflict)
+
+        async with create_async_client(app) as client:
+            resp = await client.post("/roles-add", json={"name": taken})
+
+        assert (resp.status_code, resp.json()) == (409, {"handled": True})
+
+    @pytest.mark.anyio
+    async def test_without_a_handler_the_commit_failure_stays_a_server_error(
+        self, engine, taken
+    ):
+        app = _build_app(Database(engine=engine))
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/roles-add", json={"name": taken})
+
+        assert resp.status_code == 500
