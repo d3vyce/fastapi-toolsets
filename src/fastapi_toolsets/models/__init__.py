@@ -1,5 +1,6 @@
 """SQLAlchemy model mixins for common column patterns."""
 
+from .base import TimezoneAwareMixin
 from .columns import (
     CreatedAtMixin,
     TimestampMixin,
@@ -14,6 +15,7 @@ __all__ = [
     "EventSession",
     "ModelEvent",
     "TimestampMixin",
+    "TimezoneAwareMixin",
     "UUIDMixin",
     "UUIDv7Mixin",
     "UpdatedAtMixin",

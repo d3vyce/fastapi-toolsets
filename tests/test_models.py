@@ -5,6 +5,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import ANY, patch
@@ -12,7 +13,7 @@ from unittest.mock import ANY, patch
 import pytest
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
-from sqlalchemy import ForeignKey, String, select
+from sqlalchemy import ForeignKey, String, Text, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import (
@@ -31,6 +32,7 @@ from fastapi_toolsets.models import (
     EventSession,
     ModelEvent,
     TimestampMixin,
+    TimezoneAwareMixin,
     UpdatedAtMixin,
     UUIDMixin,
     UUIDv7Mixin,
@@ -406,6 +408,56 @@ class _StampedUpdate(BaseModel):
 
 
 StampedCrud = CrudFactory(StampedModel)
+
+
+def _dated_model(*bases: type, **namespace: Any) -> Any:
+    """A model with a required and an optional ``datetime`` on a fresh base."""
+
+    base: Any = type("Base", (*bases, DeclarativeBase), namespace)
+
+    class Dated(base):
+        __tablename__ = "dated"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        at: Mapped[datetime]
+        maybe: Mapped[datetime | None]
+        label: Mapped[str]
+
+    return Dated
+
+
+class TestTimezoneAwareMixin:
+    """The base mixin maps ``datetime`` annotations to ``TIMESTAMPTZ``."""
+
+    @pytest.mark.parametrize(
+        ("bases", "namespace", "aware", "label_type"),
+        [
+            ((), {}, False, String),
+            ((TimezoneAwareMixin,), {}, True, String),
+            ((TimezoneAwareMixin,), {"type_annotation_map": {str: Text}}, False, Text),
+            (
+                (TimezoneAwareMixin,),
+                {
+                    "type_annotation_map": {
+                        **TimezoneAwareMixin.type_annotation_map,
+                        str: Text,
+                    }
+                },
+                True,
+                Text,
+            ),
+        ],
+        ids=["plain-base", "mixin", "own-map-replaces-it", "merged-map"],
+    )
+    def test_datetime_columns_follow_the_base_type_map(
+        self, bases, namespace, aware, label_type
+    ):
+        columns = _dated_model(*bases, **namespace).__table__.c
+
+        assert columns["at"].type.timezone is aware
+        assert columns["maybe"].type.timezone is aware
+        assert columns["maybe"].nullable
+        assert type(columns["label"].type) is label_type
 
 
 class TestCrudWritesWithMixins:
