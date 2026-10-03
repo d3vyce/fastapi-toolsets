@@ -123,6 +123,9 @@ class Database:
         session_class: Session class for the sessionmaker (e.g. ``EventSession``).
         expire_on_commit: Expire attributes after commit. Defaults to ``False``.
         autoflush: Autoflush the session before queries. Defaults to ``True``.
+        session_execution_options: Execution options for every statement the
+            sessions run, flushes and eager loads included (e.g.
+            ``schema_translate_map``). Valid with *url* or *engine*.
         connect_args: DBAPI-level connection arguments forwarded to
             :func:`create_async_engine` (URL mode only).
         **engine_options: Extra keyword arguments forwarded to
@@ -156,6 +159,7 @@ class Database:
         session_class: type[AsyncSession] = AsyncSession,
         expire_on_commit: bool = False,
         autoflush: bool = True,
+        session_execution_options: dict[str, Any] | None = None,
         connect_args: dict[str, Any] | None = None,
         **engine_options: Any,
     ) -> None:
@@ -186,6 +190,7 @@ class Database:
             class_=session_class,
             expire_on_commit=expire_on_commit,
             autoflush=autoflush,
+            execution_options=session_execution_options or {},
         )
         # Private, per-instance state attribute; cannot collide with another
         # Database or be mismatched against the middleware.
