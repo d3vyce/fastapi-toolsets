@@ -74,6 +74,8 @@ The request is committed as a single transaction:
 - **Atomicity**: multi-write endpoints roll back as a unit on failure.
 - **Errors roll back**: on a raised exception the session rolls back and nothing is committed.
 
+If the commit itself fails, for example on a unique constraint that was never flushed in the endpoint, the middleware answers with the app's exception handler for that error, such as the [constraint violation handler](exceptions.md#constraint-violations) of `init_exceptions_handlers`. Without a handler for that error class, the request ends in a 500.
+
 Without `install`, the session commits in the dependency teardown, which runs after the response has been sent.
 
 !!! warning "Streaming / SSE endpoints"

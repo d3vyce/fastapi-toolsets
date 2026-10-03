@@ -10,9 +10,10 @@ from fastapi.exceptions import (
     ResponseValidationError,
 )
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 
 from ..schemas import ErrorResponse, ResponseStatus
-from .exceptions import ApiException
+from .exceptions import ApiException, from_integrity_error
 
 _VALIDATION_LOCATION_PARAMS: frozenset[str] = frozenset(
     {"body", "query", "path", "header", "cookie"}
@@ -40,17 +41,18 @@ def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiException)
     async def api_exception_handler(request: Request, exc: ApiException) -> Response:
         """Handle custom API exceptions with structured response."""
-        api_error = exc.api_error
-        error_response = ErrorResponse(
-            data=api_error.data,
-            message=api_error.msg,
-            description=api_error.desc,
-            error_code=api_error.err_code,
-        )
-        return JSONResponse(
-            status_code=api_error.code,
-            content=error_response.model_dump(),
-        )
+        return _api_error_response(exc)
+
+    @app.exception_handler(IntegrityError)
+    async def integrity_error_handler(
+        request: Request, exc: IntegrityError
+    ) -> Response:
+        """Answer a known constraint violation with its API error."""
+        api_exc = from_integrity_error(exc)
+        if api_exc is None:
+            # Left to the generic 500 handler, which also logs the traceback.
+            raise exc
+        return _api_error_response(api_exc)
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> Response:
@@ -92,6 +94,21 @@ def _register_exception_handlers(app: FastAPI) -> None:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=error_response.model_dump(),
         )
+
+
+def _api_error_response(exc: ApiException) -> JSONResponse:
+    """The structured response for an :class:`ApiException`."""
+    api_error = exc.api_error
+    error_response = ErrorResponse(
+        data=api_error.data,
+        message=api_error.msg,
+        description=api_error.desc,
+        error_code=api_error.err_code,
+    )
+    return JSONResponse(
+        status_code=api_error.code,
+        content=error_response.model_dump(),
+    )
 
 
 def _format_validation_error(
