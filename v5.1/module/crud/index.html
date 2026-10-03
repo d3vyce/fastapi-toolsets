@@ -2570,7 +2570,7 @@
 <div class="admonition info">
 <p class="admonition-title">Added in <code>v2.4.1</code></p>
 </div>
-<p>By default <code>offset_paginate</code> runs two queries: one for the page items and one <code>COUNT(*)</code> for <code>total_count</code>. On large tables the <code>COUNT</code> can be expensive. Pass <code>include_total=False</code> to <code>offset_paginate_params()</code> to skip it:</p>
+<p>By default <code>offset_paginate</code> runs two queries: one for the page items and one aggregate query for <code>total_count</code> and the facets. On large tables the <code>COUNT</code> can be expensive. Pass <code>include_total=False</code> to <code>offset_paginate_params()</code> to skip it:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nd">@router</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;&quot;</span><span class="p">)</span>
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_users</span><span class="p">(</span>
 </span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>    <span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">,</span>
@@ -2870,7 +2870,7 @@ everywhere they are accepted &mdash; <code>offset_paginate</code>, <code>cursor_
 <div class="admonition info">
 <p class="admonition-title">Added in <code>v5.1.0</code></p>
 </div>
-<p>Facet values only change with the filters, not with the page. Pass <code>include_facets=False</code> to <code>offset_paginate_params()</code> / <code>cursor_paginate_params()</code> on pages 2..N to skip the facet queries entirely (<code>filter_attributes</code> will be <code>None</code>):</p>
+<p>Facet values only change with the filters, not with the page. Pass <code>include_facets=False</code> to <code>offset_paginate_params()</code> / <code>cursor_paginate_params()</code> on pages 2..N to skip the facets entirely (<code>filter_attributes</code> will be <code>None</code>). The total and the facets come from one query: with a search or caller filters, the matching rows are selected once and every aggregate reads them.</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a><span class="n">params</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span><span class="nb">dict</span><span class="p">,</span> <span class="n">Depends</span><span class="p">(</span><span class="n">UserCrud</span><span class="o">.</span><span class="n">offset_paginate_params</span><span class="p">(</span><span class="n">include_facets</span><span class="o">=</span><span class="kc">False</span><span class="p">))]</span>
 </span></code></pre></div>
 <h2 id="sorting">Sorting<a class="headerlink" href="#sorting" title="Permanent link">&para;</a></h2>

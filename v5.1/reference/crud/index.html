@@ -6382,7 +6382,7 @@ See the cursor pagination docs for supported column types.</p>
 
 
 <h2 id="fastapi_toolsets.crud.search.build_search_filters" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">crud</span><span class="o">.</span><span class="n">search</span><span class="o">.</span><span class="n">build_search_filters</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">search</span><span class="p">,</span> <span class="n">search_fields</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">default_fields</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">search_column</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">crud</span><span class="o">.</span><span class="n">search</span><span class="o">.</span><span class="n">build_search_filters</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">search</span><span class="p">,</span> <span class="n">search_fields</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">default_fields</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">search_column</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">to_many_subqueries</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
 
 <a href="#fastapi_toolsets.crud.search.build_search_filters" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -6390,107 +6390,8 @@ See the cursor pagination docs for supported column types.</p>
     <div class="doc doc-contents first">
 
         <p>Build SQLAlchemy filter conditions for search.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>model</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#type">type</a>[<span title="sqlalchemy.orm.DeclarativeBase">DeclarativeBase</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>SQLAlchemy model class</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>search</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#str">str</a> | <a class="autorefs autorefs-internal" title="&lt;code&gt;fastapi_toolsets.crud.search.SearchConfig&lt;/code&gt;
-
-
-  &lt;span class=&quot;doc doc-labels&quot;&gt;
-      &lt;small class=&quot;doc doc-label doc-label-dataclass&quot;&gt;&lt;code&gt;dataclass&lt;/code&gt;&lt;/small&gt;
-  &lt;/span&gt;" href="./#fastapi_toolsets.crud.search.SearchConfig">SearchConfig</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Search string or SearchConfig</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>search_fields</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" title="collections.abc.Sequence" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence">Sequence</a>[<span title="fastapi_toolsets.types.SearchFieldType">SearchFieldType</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Fields specified per-call (takes priority)</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>default_fields</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" title="collections.abc.Sequence" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence">Sequence</a>[<span title="fastapi_toolsets.types.SearchFieldType">SearchFieldType</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Default fields (from ClassVar)</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>search_column</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#str">str</a> | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Optional key to narrow search to a single field.
-Must match one of the resolved search field keys.</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+<p>See :func:<code>build_search_plan</code> for the arguments. With
+<code>to_many_subqueries</code> the aggregate form is returned.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -6509,29 +6410,6 @@ Must match one of the resolved search field keys.</p>
             <td>
               <div class="doc-md-description">
                 <p>Tuple of (filter_conditions, joins_needed)</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-<p><span class="doc-section-title">Raises:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="&lt;code&gt;fastapi_toolsets.exceptions.exceptions.NoSearchableFieldsError&lt;/code&gt;" href="../exceptions/#fastapi_toolsets.exceptions.exceptions.NoSearchableFieldsError">NoSearchableFieldsError</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>If no searchable field has been configured</p>
               </div>
             </td>
           </tr>
