@@ -17,6 +17,13 @@ from fastapi_toolsets.exceptions import (
     InvalidOrderFieldError,
     PoolExhaustedError,
     LockTimeoutError,
+    IntegrityViolationError,
+    UniqueViolationError,
+    ForeignKeyViolationError,
+    ExclusionViolationError,
+    NotNullViolationError,
+    CheckViolationError,
+    from_integrity_error,
     generate_error_responses,
     init_exceptions_handlers,
 )
@@ -43,6 +50,20 @@ from fastapi_toolsets.exceptions import (
 ## ::: fastapi_toolsets.exceptions.exceptions.PoolExhaustedError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.LockTimeoutError
+
+## ::: fastapi_toolsets.exceptions.exceptions.IntegrityViolationError
+
+## ::: fastapi_toolsets.exceptions.exceptions.UniqueViolationError
+
+## ::: fastapi_toolsets.exceptions.exceptions.ForeignKeyViolationError
+
+## ::: fastapi_toolsets.exceptions.exceptions.ExclusionViolationError
+
+## ::: fastapi_toolsets.exceptions.exceptions.NotNullViolationError
+
+## ::: fastapi_toolsets.exceptions.exceptions.CheckViolationError
+
+## ::: fastapi_toolsets.exceptions.exceptions.from_integrity_error
 
 ## ::: fastapi_toolsets.exceptions.exceptions.generate_error_responses
 
