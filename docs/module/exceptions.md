@@ -24,6 +24,7 @@ This registers handlers for:
 - `HTTPException` — Starlette/FastAPI HTTP errors
 - `RequestValidationError` — Pydantic request validation (422)
 - `ResponseValidationError` — Pydantic response validation (422)
+- `IntegrityError`: database constraint violations (see [Constraint violations](#constraint-violations))
 - `Exception` — unhandled errors (500)
 
 It also patches `app.openapi()` to replace the default Pydantic 422 schema with a structured example matching the `ErrorResponse` format.
@@ -41,6 +42,41 @@ It also patches `app.openapi()` to replace the default Pydantic 422 schema with 
 | [`InvalidOrderFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError) | 422 | Invalid Order Field |
 | [`PoolExhaustedError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.PoolExhaustedError) | 503 | Service Unavailable |
 | [`LockTimeoutError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.LockTimeoutError) | 503 | Service Unavailable |
+
+### Constraint violations
+
+!!! info "Added in `v6.0`"
+
+When a write breaks a database constraint, SQLAlchemy raises `IntegrityError`. The handler answers the common PostgreSQL violations with an API error instead of a 500:
+
+| Exception | Status | Error code | PostgreSQL violation |
+|-----------|--------|------------|----------------------|
+| [`UniqueViolationError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.UniqueViolationError) | 409 | `DB-409-UNIQUE` | unique |
+| [`ForeignKeyViolationError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.ForeignKeyViolationError) | 409 | `DB-409-FK` | foreign key, restrict |
+| [`ExclusionViolationError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.ExclusionViolationError) | 409 | `DB-409-EXCLUSION` | exclusion |
+| [`NotNullViolationError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.NotNullViolationError) | 422 | `DB-422-NOTNULL` | not null |
+| [`CheckViolationError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.CheckViolationError) | 422 | `DB-422-CHECK` | check |
+
+Any other `IntegrityError` stays a 500. The response never includes the database's error detail, which can contain the submitted values. The violated `constraint`, `table` and `column` are available as attributes on the exception, for logging or for a handler of your own. PostgreSQL fills `column` only for not-null violations; the others name the `constraint`. [`from_integrity_error`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.from_integrity_error) does the translation:
+
+```python
+from sqlalchemy.exc import IntegrityError
+from fastapi_toolsets.exceptions import (
+    ConflictError,
+    UniqueViolationError,
+    from_integrity_error,
+)
+
+try:
+    await UserCrud.create(session, body)
+except IntegrityError as e:
+    api_exc = from_integrity_error(e)
+    if isinstance(api_exc, UniqueViolationError) and api_exc.constraint == "users_email_key":
+        raise ConflictError(detail="This email is already registered.") from e
+    raise
+```
+
+This also covers violations raised by the [commit middleware](db.md#committing-before-the-response).
 
 ### Per-instance overrides
 

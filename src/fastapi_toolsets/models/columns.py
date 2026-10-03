@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Uuid, text
+from sqlalchemy import DateTime, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -23,7 +23,7 @@ class UUIDv7Mixin:
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         primary_key=True,
-        server_default=text("uuidv7()"),
+        server_default=func.uuidv7(monotonic=True),
     )
 
 

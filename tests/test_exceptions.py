@@ -2,25 +2,33 @@
 
 import copy
 
+import asyncpg
 import pytest
 from fastapi import FastAPI
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
 from fastapi_toolsets.exceptions import (
     ApiException,
+    CheckViolationError,
     ConflictError,
+    ExclusionViolationError,
     ForbiddenError,
+    ForeignKeyViolationError,
     InvalidFacetFilterError,
     InvalidOrderFieldError,
     InvalidSearchColumnError,
     LockTimeoutError,
     NoSearchableFieldsError,
     NotFoundError,
+    NotNullViolationError,
     PoolExhaustedError,
     UnauthorizedError,
+    UniqueViolationError,
     UnsupportedFacetTypeError,
+    from_integrity_error,
     generate_error_responses,
     init_exceptions_handlers,
 )
@@ -435,3 +443,82 @@ class TestExceptionHandlers:
         schema = _patched_openapi(FastAPI(), lambda: {"paths": paths})
 
         assert schema["paths"] == original
+
+
+def _integrity_error(sqlstate: str, **fields: str) -> IntegrityError:
+    """An ``IntegrityError`` wrapping the asyncpg error for *sqlstate* and *fields*."""
+    driver_exc = asyncpg.PostgresError.new({"C": sqlstate, "M": "boom", **fields})
+    return IntegrityError("INSERT ...", {}, driver_exc)
+
+
+def _without_driver_error() -> IntegrityError:
+    """An ``IntegrityError`` that carries no driver error at all."""
+    error = IntegrityError("INSERT ...", {}, ValueError())
+    error.orig = None
+    return error
+
+
+class TestIntegrityErrors:
+    """Constraint violations become API errors; anything else stays a 500."""
+
+    @pytest.mark.parametrize(
+        ("sqlstate", "error_class", "code", "err_code"),
+        [
+            ("23505", UniqueViolationError, 409, "DB-409-UNIQUE"),
+            ("23503", ForeignKeyViolationError, 409, "DB-409-FK"),
+            ("23001", ForeignKeyViolationError, 409, "DB-409-FK"),
+            ("23P01", ExclusionViolationError, 409, "DB-409-EXCLUSION"),
+            ("23502", NotNullViolationError, 422, "DB-422-NOTNULL"),
+            ("23514", CheckViolationError, 422, "DB-422-CHECK"),
+        ],
+        ids=["unique", "foreign-key", "restrict", "exclusion", "not-null", "check"],
+    )
+    def test_known_violation_answers_with_its_api_error(
+        self, sqlstate, error_class, code, err_code
+    ):
+        error = _integrity_error(
+            sqlstate,
+            n="roles_name_key",
+            t="roles",
+            c="name",
+            D="Key (name)=(secret) already exists.",
+        )
+
+        api_exc = from_integrity_error(error)
+        response = _raising_client(error).get("/raise")
+
+        assert api_exc is not None and type(api_exc) is error_class
+        assert (api_exc.constraint, api_exc.table, api_exc.column) == (
+            "roles_name_key",
+            "roles",
+            "name",
+        )
+        assert response.status_code == code
+        body = response.json()
+        assert (body["error_code"], body["data"]) == (err_code, None)
+        assert "secret" not in response.text
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            _integrity_error("23000"),
+            IntegrityError("INSERT ...", {}, ValueError("no sqlstate")),
+            _without_driver_error(),
+        ],
+        ids=["unknown-sqlstate", "no-sqlstate", "no-driver-error"],
+    )
+    def test_unknown_violation_stays_a_server_error(self, error):
+        response = _raising_client(error).get("/raise")
+
+        assert from_integrity_error(error) is None
+        assert response.status_code == 500
+        assert response.json()["error_code"] == "SERVER-500"
+
+    def test_violation_errors_are_documented_like_any_api_error(self):
+        responses = generate_error_responses(
+            UniqueViolationError, NotNullViolationError
+        )
+
+        assert list(responses) == [409, 422]
+        examples = responses[409]["content"]["application/json"]["examples"]
+        assert list(examples) == ["DB-409-UNIQUE"]

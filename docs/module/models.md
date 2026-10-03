@@ -2,11 +2,11 @@
 
 !!! info "Added in `v2.0`"
 
-Reusable SQLAlchemy 2.0 mixins for common column patterns, designed to be composed freely on any `DeclarativeBase` model.
+Reusable SQLAlchemy mixins for common column patterns, designed to be composed freely on any `DeclarativeBase` model.
 
 ## Overview
 
-The `models` module provides mixins that each add a single, well-defined column behaviour. They work with standard SQLAlchemy 2.0 declarative syntax and are fully compatible with `AsyncSession`.
+The `models` module provides mixins that each add a single, well-defined column behaviour. They work with the standard SQLAlchemy declarative syntax and are fully compatible with `AsyncSession`.
 
 ```python
 from fastapi_toolsets.models import UUIDMixin, TimestampMixin
@@ -51,6 +51,8 @@ print(user.id)  # UUID('...')
 !!! info "Added in `v2.3`"
 
 Adds a `id: UUID` primary key generated server-side by PostgreSQL using `uuidv7()`. It's a time-ordered UUID format that encodes a millisecond-precision timestamp in the most significant bits, making it naturally sortable and index-friendly.
+
+Because the values only increase, the default is declared with `monotonic=True`: SQLAlchemy inserts many new rows in a single `INSERT ... RETURNING` instead of one statement per row.
 
 !!! warning "Requires PostgreSQL 18+"
 
@@ -125,6 +127,47 @@ class Article(Base, UUIDMixin, TimestampMixin):
 
     title: Mapped[str]
 ```
+
+## Declarative base
+
+### [`TimezoneAwareMixin`](../reference/models.md#fastapi_toolsets.models.TimezoneAwareMixin)
+
+!!! info "Added in `v6.0`"
+
+A mixin for your declarative base, not for a model. Every `Mapped[datetime]` column of the models built on that base becomes a timezone-aware `TIMESTAMPTZ`, like the timestamp mixins above. Without it, SQLAlchemy maps `datetime` to `TIMESTAMP WITHOUT TIME ZONE`.
+
+```python
+from datetime import datetime
+
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from fastapi_toolsets.models import TimezoneAwareMixin
+
+
+class Base(TimezoneAwareMixin, DeclarativeBase):
+    pass
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    starts_at: Mapped[datetime]  # TIMESTAMPTZ
+```
+
+A `type_annotation_map` set on your base replaces the mixin's. Merge them to keep both:
+
+```python
+from sqlalchemy import Text
+
+
+class Base(TimezoneAwareMixin, DeclarativeBase):
+    type_annotation_map = {
+        **TimezoneAwareMixin.type_annotation_map,
+        str: Text,
+    }
+```
+
+Switching an existing base to this mixin changes the type of its `datetime` columns: generate a migration for them.
 
 ## Lifecycle events
 

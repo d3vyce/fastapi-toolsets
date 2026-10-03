@@ -54,16 +54,12 @@ jobs:
         run: uv run ty check
 
   test:
-    name: Test (Python ${{ matrix.python-version }}, SQLAlchemy ${{ matrix.sqlalchemy }})
+    name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-        sqlalchemy: ["locked"]
-        include:
-          - python-version: "3.14"
-            sqlalchemy: "2.1"
 
     services:
       postgres:
@@ -92,21 +88,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
-      - name: Install SQLAlchemy ${{ matrix.sqlalchemy }}
-        if: matrix.sqlalchemy != 'locked'
-        run: uv pip install "sqlalchemy[asyncio]~=${{ matrix.sqlalchemy }}.0"
-
-      - name: Show SQLAlchemy version
-        run: uv run --no-sync python -c "import sqlalchemy; print(sqlalchemy.__version__)"
-
       - name: Run tests with coverage
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
         run: |
-          uv run --no-sync pytest --cov --cov-report=xml --cov-report=term-missing  --junitxml=junit.xml -o junit_family=legacy
+          uv run pytest --cov --cov-report=xml --cov-report=term-missing  --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.14' && matrix.sqlalchemy == 'locked'
+        if: matrix.python-version == '3.14'
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -115,7 +104,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload test results to Codecov
-        if: matrix.python-version == '3.14' && matrix.sqlalchemy == 'locked'
+        if: matrix.python-version == '3.14'
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

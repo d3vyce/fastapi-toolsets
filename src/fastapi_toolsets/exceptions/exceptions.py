@@ -2,6 +2,8 @@
 
 from typing import Any, ClassVar
 
+from sqlalchemy.exc import IntegrityError
+
 from ..schemas import ApiError, ErrorResponse, ResponseStatus
 
 
@@ -249,6 +251,117 @@ class LockTimeoutError(ApiException):
             "The resource is under heavy contention. Retry shortly."
         ),
         err_code="DB-503-LOCK",
+    )
+
+
+class IntegrityViolationError(ApiException, abstract=True):
+    """Base for errors raised when a write breaks a database constraint."""
+
+    def __init__(
+        self,
+        *,
+        constraint: str | None = None,
+        table: str | None = None,
+        column: str | None = None,
+    ) -> None:
+        """Initialize the exception.
+
+        Args:
+            constraint: Name of the violated constraint, if known.
+            table: Table the constraint belongs to, if known.
+            column: Column involved, if known.
+        """
+        self.constraint = constraint
+        self.table = table
+        self.column = column
+        super().__init__()
+
+
+class UniqueViolationError(IntegrityViolationError):
+    """HTTP 409 - A unique constraint was violated."""
+
+    api_error = ApiError(
+        code=409,
+        msg="Conflict",
+        desc="A resource with the same unique value already exists.",
+        err_code="DB-409-UNIQUE",
+    )
+
+
+class ForeignKeyViolationError(IntegrityViolationError):
+    """HTTP 409 - A foreign key constraint was violated."""
+
+    api_error = ApiError(
+        code=409,
+        msg="Conflict",
+        desc="The resource references, or is referenced by, another resource.",
+        err_code="DB-409-FK",
+    )
+
+
+class ExclusionViolationError(IntegrityViolationError):
+    """HTTP 409 - An exclusion constraint was violated."""
+
+    api_error = ApiError(
+        code=409,
+        msg="Conflict",
+        desc="The resource overlaps with an existing resource.",
+        err_code="DB-409-EXCLUSION",
+    )
+
+
+class NotNullViolationError(IntegrityViolationError):
+    """HTTP 422 - A required value is missing."""
+
+    api_error = ApiError(
+        code=422,
+        msg="Unprocessable Content",
+        desc="A required value is missing.",
+        err_code="DB-422-NOTNULL",
+    )
+
+
+class CheckViolationError(IntegrityViolationError):
+    """HTTP 422 - A check constraint was violated."""
+
+    api_error = ApiError(
+        code=422,
+        msg="Unprocessable Content",
+        desc="A value does not satisfy a database constraint.",
+        err_code="DB-422-CHECK",
+    )
+
+
+_INTEGRITY_ERRORS: dict[str, type[IntegrityViolationError]] = {
+    "23505": UniqueViolationError,
+    "23503": ForeignKeyViolationError,
+    "23001": ForeignKeyViolationError,  # restrict_violation
+    "23P01": ExclusionViolationError,
+    "23502": NotNullViolationError,
+    "23514": CheckViolationError,
+}
+
+
+def from_integrity_error(exc: IntegrityError) -> IntegrityViolationError | None:
+    """Translate a SQLAlchemy ``IntegrityError`` into an API error.
+
+    Args:
+        exc: The error raised by the flush or commit.
+
+    Returns:
+        The matching :class:`IntegrityViolationError`, or ``None`` when the
+        violation is not one of the known PostgreSQL classes.
+    """
+    if exc.orig is None:
+        return None
+    driver_exc = exc.driver_exception
+    error_class = _INTEGRITY_ERRORS.get(getattr(driver_exc, "sqlstate", None) or "")
+    if error_class is None:
+        return None
+    return error_class(
+        constraint=getattr(driver_exc, "constraint_name", None),
+        table=getattr(driver_exc, "table_name", None),
+        column=getattr(driver_exc, "column_name", None),
     )
 
 

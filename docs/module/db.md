@@ -64,6 +64,23 @@ from fastapi_toolsets.models import EventSession
 db = Database("postgresql+asyncpg://...", session_class=EventSession)
 ```
 
+### Session execution options
+
+!!! info "Added in `v6.0`"
+
+`session_execution_options` applies [execution options](https://docs.sqlalchemy.org/en/21/orm/queryguide/api.html#orm-queryguide-execution-options) to every statement the sessions run, including the flush and eager loads. It works with `url` and with `engine`, so several `Database` objects can share one engine with different options, for example one schema per tenant:
+
+```python
+engine = create_async_engine("postgresql+asyncpg://...")
+
+tenant_a = Database(
+    engine=engine,
+    session_execution_options={"schema_translate_map": {None: "tenant_a"}},
+)
+```
+
+Options passed as extra keywords in URL mode (`Database(url, execution_options=...)`) still configure the engine, not the sessions.
+
 ## Committing before the response
 
 [`db.install(app)`](../reference/db.md#fastapi_toolsets.db.Database) adds a middleware that commits the request's session when the response starts, after the endpoint returns and before the body is sent. The dependency commits only if the middleware did not: when a function-scoped dependency unwinds before the response, or when the response never passes through the middleware. Either way the request is committed exactly once.
@@ -73,6 +90,8 @@ The request is committed as a single transaction:
 - **Read-after-write**: a follow-up request sees the write.
 - **Atomicity**: multi-write endpoints roll back as a unit on failure.
 - **Errors roll back**: on a raised exception the session rolls back and nothing is committed.
+
+If the commit itself fails, for example on a unique constraint that was never flushed in the endpoint, the middleware answers with the app's exception handler for that error, such as the [constraint violation handler](exceptions.md#constraint-violations) of `init_exceptions_handlers`. Without a handler for that error class, the request ends in a 500.
 
 Without `install`, the session commits in the dependency teardown, which runs after the response has been sent.
 

@@ -1,5 +1,6 @@
 """The ``Database`` facade: session lifecycle, dependency, middleware, transactions."""
 
+import inspect
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
@@ -13,7 +14,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
+from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..exceptions import PoolExhaustedError
@@ -64,15 +67,46 @@ class _CommitOnResponseMiddleware:
             await self.app(scope, receive, send)
             return
 
+        replaced = False
+
         async def send_wrapper(message: Message) -> None:
+            nonlocal replaced
+            if replaced:
+                return
             if message["type"] == "http.response.start":
                 state = scope.get("state")
                 session = state.pop(self.state_attr, None) if state else None
                 if session is not None and session.in_transaction():
-                    await session.commit()
+                    try:
+                        await session.commit()
+                    except Exception as exc:
+                        # Starlette refuses to handle an exception once the
+                        # response has started, so answer with the app's own
+                        # handler here and drop the endpoint's response.
+                        response = await _handler_response(scope, exc)
+                        if response is None:
+                            raise
+                        replaced = True
+                        await response(scope, receive, send)
+                        return
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
+
+
+async def _handler_response(scope: Scope, exc: Exception) -> Response | None:
+    """The response of the app's handler for *exc*'s class, if one is registered."""
+    # Starlette's ExceptionMiddleware publishes its table here. It leaves out
+    # the catch-all ``Exception`` handler, so that error still reaches
+    # Starlette, which also logs it.
+    handlers, _ = scope.get("starlette.exception_handlers", ({}, {}))
+    handler = next((handlers[c] for c in type(exc).__mro__ if c in handlers), None)
+    if handler is None:
+        return None
+    request = Request(scope)
+    if inspect.iscoroutinefunction(handler):
+        return await handler(request, exc)
+    return await run_in_threadpool(handler, request, exc)
 
 
 class Database:
@@ -89,6 +123,9 @@ class Database:
         session_class: Session class for the sessionmaker (e.g. ``EventSession``).
         expire_on_commit: Expire attributes after commit. Defaults to ``False``.
         autoflush: Autoflush the session before queries. Defaults to ``True``.
+        session_execution_options: Execution options for every statement the
+            sessions run, flushes and eager loads included (e.g.
+            ``schema_translate_map``). Valid with *url* or *engine*.
         connect_args: DBAPI-level connection arguments forwarded to
             :func:`create_async_engine` (URL mode only).
         **engine_options: Extra keyword arguments forwarded to
@@ -122,6 +159,7 @@ class Database:
         session_class: type[AsyncSession] = AsyncSession,
         expire_on_commit: bool = False,
         autoflush: bool = True,
+        session_execution_options: dict[str, Any] | None = None,
         connect_args: dict[str, Any] | None = None,
         **engine_options: Any,
     ) -> None:
@@ -152,6 +190,7 @@ class Database:
             class_=session_class,
             expire_on_commit=expire_on_commit,
             autoflush=autoflush,
+            execution_options=session_execution_options or {},
         )
         # Private, per-instance state attribute; cannot collide with another
         # Database or be mismatched against the middleware.

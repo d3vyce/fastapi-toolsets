@@ -15,7 +15,6 @@ from sqlalchemy import (
     or_,
     select,
 )
-from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql import operators, visitors
@@ -436,7 +435,7 @@ def facet_scalars(
             select(values_sq.c.v).where(values_sq.c.v.isnot(None)).distinct().subquery()
         )
         v = distinct_sq.c.v
-        agg = select(func.array_agg(aggregate_order_by(v, v))).select_from(distinct_sq)
+        agg = select(func.array_agg(v).aggregate_order_by(v)).select_from(distinct_sq)
 
         enum_class = getattr(col_type, "enum_class", None)
         scalars.append((key, agg.scalar_subquery().label(key), enum_class))

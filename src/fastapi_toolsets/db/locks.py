@@ -18,7 +18,7 @@ _SessionT = TypeVar("_SessionT", bound=AsyncSession)
 
 def _is_lock_not_available(e: sa_exc.DBAPIError) -> bool:
     return e.orig is not None and isinstance(
-        e.orig.__cause__, asyncpg.exceptions.LockNotAvailableError
+        e.driver_exception, asyncpg.exceptions.LockNotAvailableError
     )
 
 
@@ -202,8 +202,7 @@ async def advisory_lock(
 
     # Lock management runs raw SQL on the caller's session. Guard it with
     # ``no_autoflush`` so acquiring or releasing the lock never flushes the
-    # caller's pending ORM changes; SQLAlchemy 2.1 autoflushes on raw
-    # ``text()`` too, where 2.0 did not.
+    # caller's pending ORM changes, raw ``text()`` included.
     try:
         with session.no_autoflush:
             if timeout is not None and not nowait:
