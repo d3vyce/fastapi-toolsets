@@ -287,14 +287,19 @@ Pass `next_cursor` as the `cursor` query parameter on the next request to advanc
 
 #### Choosing a cursor column
 
-The cursor column is set once on [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory) via the `cursor_column` parameter. It must be monotonically ordered for stable results:
+The cursor column is set once on [`CrudFactory`](../reference/crud.md#fastapi_toolsets.crud.factory.CrudFactory) via the `cursor_column` parameter. Pages follow its order, so pick a column whose order is meaningful to clients:
 
 - Auto-increment integer PKs
 - UUID v7 PKs
 - Timestamps
 
+The column does not have to be unique. When it is not (no primary key, unique constraint or unique index on it alone), rows sharing a value are ordered by primary key and the cursor carries that key too, so rows created in the same microsecond are never skipped. A composite `(cursor_column, pk)` index serves this order.
+
 !!! warning
-    Random UUID v4 PKs are **not** suitable as cursor columns because their ordering is non-deterministic.
+    Random UUID v4 PKs are **not** suitable as cursor columns: pages come back in random order, and rows inserted later land on pages already read.
+
+!!! note
+    Rows are always ordered by the cursor column and then the primary key, which leaves nothing for `order_by` to sort. It does not change the page order in `cursor_paginate`.
 
 !!! note
     `cursor_column` is required. Calling [`cursor_paginate`](../reference/crud.md#fastapi_toolsets.crud.factory.AsyncCrud.cursor_paginate) on a CRUD class that has no `cursor_column` configured raises a `ValueError`.
