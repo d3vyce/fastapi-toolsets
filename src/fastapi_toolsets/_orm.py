@@ -1,6 +1,6 @@
 """SQLAlchemy state and expression helpers."""
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from sqlalchemy import inspect as sa_inspect
@@ -10,6 +10,11 @@ from sqlalchemy import tuple_
 def key_expr(columns: Sequence[Any]) -> Any:
     """*columns* as one comparable expression: the column, or a tuple of them."""
     return columns[0] if len(columns) == 1 else tuple_(*columns)
+
+
+def is_to_many(rels: Iterable[Any]) -> bool:
+    """True if the relationship path *rels* crosses a collection."""
+    return any(rel.property.uselist for rel in rels)
 
 
 def is_expired(obj: Any) -> bool:
