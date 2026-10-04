@@ -33,6 +33,7 @@ from fastapi_toolsets.crud.search import (
     _coerce_bool,
     _facet_rows,
     build_search_filters,
+    build_search_plan,
     facet_keys,
 )
 from fastapi_toolsets.exceptions import (
@@ -58,6 +59,7 @@ from .conftest import (
     EventDateCursorCrud,
     EventDateTimeCursorCrud,
     EventRead,
+    IntRole,
     IntRoleCreate,
     IntRoleCursorCrud,
     IntRoleRead,
@@ -108,6 +110,9 @@ class _Node(_LocalBase):
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("nodes.id"))
 
     children: Mapped[list["_Node"]] = relationship()
+    parent: Mapped["_Node | None"] = relationship(
+        remote_side=lambda: _Node.id, viewonly=True
+    )
 
 
 class _Shelf(_LocalBase):
@@ -708,9 +713,9 @@ class TestSearch:
 
 
 class TestSearchFilters:
-    """build_search_filters: the page form and the aggregate form."""
+    """build_search_plan and build_search_filters: the page form and the aggregate form."""
 
-    def test_to_many_fields_are_joined_for_the_page_and_subqueried_for_aggregates(
+    def test_related_fields_are_joined_for_the_page_and_subqueried_for_aggregates(
         self,
     ):
         fields = [Post.title, (Post.tags, Tag.name)]
@@ -729,13 +734,13 @@ class TestSearchFilters:
         assert page_joins == [Post.tags] and "JOIN" not in _sql(Post, page_filters)
         assert agg_joins == []
         assert "posts.id IN (SELECT post_tags.post_id" in _sql(Post, agg_filters)
-        assert one_joins == [User.role]
-        assert "IN (SELECT" not in _sql(User, one_filters)
+        assert one_joins == []
+        assert "users.role_id IN (SELECT roles.id" in _sql(User, one_filters)
 
     def test_fields_on_one_relationship_share_a_subquery(self):
         filters, _ = build_search_filters(
             Post,
-            SearchConfig(query="x", match_mode="all"),
+            SearchConfig(query="1", match_mode="all"),
             search_fields=[(Post.tags, Tag.name), (Post.tags, Tag.id)],
             to_many_subqueries=True,
         )
@@ -778,13 +783,73 @@ class TestSearchFilters:
 
         assert len(joins) == 1
 
+    @pytest.mark.parametrize(
+        ("to_one", "kept_joined"),
+        [(_Node.parent, False), (aliased(_Node).parent, True)],
+        ids=["semi-joinable", "alias"],
+    )
+    def test_to_one_fields_are_subqueried_with_the_to_many_ones(
+        self, to_one, kept_joined
+    ):
+        fields = [(to_one, _Node.name), (_Node.children, _Node.name)]
+
+        plan = build_search_plan(_Node, "x", fields)
+
+        sql = _sql(_Node, plan.agg_filters)
+        assert plan.agg_joins == ([to_one] if kept_joined else [])
+        assert "nodes.id IN (SELECT nodes.parent_id" in sql
+        assert sql.count("IN (SELECT") == (1 if kept_joined else 2)
+
     def test_casts_only_non_string_columns(self):
         plain, _ = build_search_filters(User, "john", search_fields=[User.username])
-        cast, _ = build_search_filters(User, "john", search_fields=[User.id])
+        cast, _ = build_search_filters(User, "1a", search_fields=[User.id])
         enum, _ = build_search_filters(Order, "x", search_fields=[Order.status])
 
         assert "CAST" not in str(plain[0])
         assert "CAST" in str(cast[0]) and "CAST" in str(enum[0])
+
+    @pytest.mark.parametrize(
+        ("field", "search", "kept"),
+        [
+            (IntRole.id, "-12", True),
+            (IntRole.id, "a1", False),
+            (User.id, "AB-12", True),
+            (User.id, "xyz", False),
+            (User.id, "x%", True),
+            (User.id, "x_", True),
+            (User.id, SearchConfig(query="AB", case_sensitive=True), False),
+        ],
+        ids=[
+            "int-digits",
+            "int-letters",
+            "uuid-hex",
+            "uuid-non-hex",
+            "like-percent",
+            "like-underscore",
+            "case-sensitive",
+        ],
+    )
+    def test_skips_integer_and_uuid_fields_that_cannot_contain_the_query(
+        self, field, search, kept
+    ):
+        model = field.class_
+        filters, _ = build_search_filters(model, search, search_fields=[field])
+
+        sql = _sql(model, filters)
+        assert ("CAST" in sql) is kept
+        assert sql.endswith("WHERE false") is not kept
+
+    def test_a_skipped_field_drops_out_of_match_any_and_fails_match_all(self):
+        fields = [User.id, User.username]
+
+        any_filters, _ = build_search_filters(User, "john", search_fields=fields)
+        all_filters, _ = build_search_filters(
+            User, SearchConfig(query="john", match_mode="all"), search_fields=fields
+        )
+
+        any_sql = _sql(User, any_filters)
+        assert "CAST" not in any_sql and "users.username" in any_sql
+        assert _sql(User, all_filters).endswith("WHERE false")
 
 
 _fan_out = pytest.mark.parametrize(
@@ -1171,7 +1236,7 @@ class TestFacets:
 
         shared = _aggregates(statements)
         assert len(shared) == 1 and shared[0].startswith("WITH")
-        assert "count(" in shared[0] and shared[0].count("ILIKE") == 2
+        assert "count(" in shared[0] and shared[0].count("ILIKE") == 1
         assert result.pagination.total_count == _POST_COUNT
         assert result.filter_attributes is not None
         assert result.filter_attributes["is_published"] == [False]

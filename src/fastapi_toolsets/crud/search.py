@@ -11,6 +11,7 @@ from sqlalchemy import (
     Table,
     and_,
     any_,
+    false,
     func,
     or_,
     select,
@@ -32,7 +33,7 @@ from sqlalchemy.types import (
     Uuid,
 )
 
-from .._orm import key_expr
+from .._orm import is_to_many, key_expr
 from ..exceptions import (
     InvalidFacetFilterError,
     InvalidSearchColumnError,
@@ -120,6 +121,11 @@ class SearchPlan:
 
 
 _EMPTY_PLAN = SearchPlan([], [], [], [])
+_NO_MATCH_PLAN = SearchPlan([false()], [], [false()], [])
+
+_INTEGER_CHARS = frozenset("0123456789-")
+_UUID_CHARS = frozenset("0123456789abcdef-")
+_LIKE_SPECIAL = frozenset("%_\\")
 
 _Entry = tuple[tuple[Any, ...], "ColumnElement[bool]"]
 
@@ -165,16 +171,42 @@ def build_search_plan(
             raise InvalidSearchColumnError(search_column, sorted(index))
         fields = [index[search_column]]
 
-    entries = [(_field_rels(f), _search_condition(f, query, config)) for f in fields]
+    chars = set(query if config.case_sensitive else query.lower())
+    possible = [f for f in fields if _can_contain(_field_column(f), chars)]
+    if not possible or (config.match_mode == "all" and len(possible) < len(fields)):
+        return _NO_MATCH_PLAN
+
+    entries = [(_field_rels(f), _search_condition(f, query, config)) for f in possible]
     page = _render_search(entries, [], config.match_mode)
-    to_many = [e for e in entries if any(r.property.uselist for r in e[0])]
+    related = [e for e in entries if e[0]]
+    to_many = [e for e in related if is_to_many(e[0])]
     # All or nothing, so the aggregate form matches the page form exactly.
-    if to_many and all(_semi_joinable(r) for rels, _ in to_many for r in rels):
-        joined = [e for e in entries if e not in to_many]
+    if related and _all_semi_joinable(related):
+        agg = _render_search([], entries, config.match_mode)
+    elif to_many and _all_semi_joinable(to_many):
+        # Not `e not in to_many`: == on relationship attributes builds SQL.
+        joined = [e for e in entries if not is_to_many(e[0])]
         agg = _render_search(joined, to_many, config.match_mode)
     else:
         agg = page
     return SearchPlan(*page, *agg)
+
+
+def _can_contain(column: Any, chars: set[str]) -> bool:
+    """False when the text of an integer or UUID column can never contain *chars*."""
+    if chars & _LIKE_SPECIAL:
+        return True
+    col_type = column.type
+    if isinstance(col_type, Integer):
+        return chars <= _INTEGER_CHARS
+    if isinstance(col_type, Uuid):
+        return chars <= _UUID_CHARS
+    return True
+
+
+def _all_semi_joinable(entries: Sequence[_Entry]) -> bool:
+    """True if every relationship of *entries* can be filtered with a subquery."""
+    return all(_semi_joinable(rel) for rels, _ in entries for rel in rels)
 
 
 def _render_search(
@@ -221,11 +253,16 @@ def _field_rels(field: SearchFieldType) -> tuple[Any, ...]:
     return tuple(field[:-1]) if isinstance(field, tuple) else ()
 
 
+def _field_column(field: SearchFieldType) -> Any:
+    """Column a search field reads, at the end of its relationship path."""
+    return field[-1] if isinstance(field, tuple) else field
+
+
 def _search_condition(
     field: SearchFieldType, query: str, config: SearchConfig
 ) -> "ColumnElement[bool]":
     """LIKE/ILIKE condition on the field's column."""
-    column = field[-1] if isinstance(field, tuple) else field
+    column = _field_column(field)
     # Cast to String only when needed, to preserve pg_trgm GIN index
     # usability on already-String columns.
     column_as_string = (
@@ -252,6 +289,7 @@ def _is_plain_join(condition: Any, pairs: Sequence[tuple[Any, Any]]) -> bool:
     return found == expected
 
 
+@functools.lru_cache(maxsize=128)
 def _semi_joinable(rel: Any) -> bool:
     """True if *rel* can be filtered with an `IN (subquery)` instead of a join."""
     prop = rel.property
@@ -470,7 +508,7 @@ def _facet_rows(
         prefiltered
         or not all(_semi_joinable(rel) for rel in rels)
         or any(rel.property.uselist and str(rel) in joined for rel in rels)
-        or (base_joins and not any(rel.property.uselist for rel in rels))
+        or (base_joins and not is_to_many(rels))
     )
     joins = [*base_joins, *rels] if keep_join else base_joins
     rows = apply_search_joins(select(model), joins)

@@ -37,7 +37,7 @@ from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.roles import WhereHavingRole
 from sqlalchemy.sql.util import ClauseAdapter
 
-from .._orm import is_expired, key_expr, loaded_relationships
+from .._orm import is_expired, is_to_many, key_expr, loaded_relationships
 from ..db import transaction
 from ..exceptions import InvalidOrderFieldError, NotFoundError
 from ..schemas import (
@@ -152,9 +152,7 @@ def _repeats_rows(joins: JoinType | None, *rel_lists: Sequence[Any] | None) -> b
     A to-many relationship join yields one row per related row. A raw
     join's cardinality cannot be inspected, so it counts as repeating.
     """
-    return bool(joins) or any(
-        rel.property.uselist for rels in rel_lists for rel in (rels or ())
-    )
+    return bool(joins) or any(is_to_many(rels or ()) for rels in rel_lists)
 
 
 @dataclass
