@@ -21,10 +21,14 @@ from sqlalchemy import (
     Float,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
+    String,
+    UniqueConstraint,
     Uuid,
     and_,
     func,
     select,
+    tuple_,
 )
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import NoResultFound
@@ -89,23 +93,23 @@ class _CursorDirection(str, Enum):
 
 
 def _encode_cursor(
-    value: Any, *, direction: _CursorDirection = _CursorDirection.NEXT
+    value: Any,
+    *,
+    direction: _CursorDirection = _CursorDirection.NEXT,
+    key: Sequence[Any] = (),
 ) -> str:
-    """Encode a cursor column value and navigation direction as a URL-safe base64 string."""
-    return (
-        base64.urlsafe_b64encode(
-            json.dumps({"val": str(value), "dir": direction}).encode()
-        )
-        .decode()
-        .rstrip("=")
-    )
+    """Encode a cursor value, its row's tiebreak key and direction as URL-safe base64."""
+    payload: dict[str, Any] = {"val": str(value), "dir": direction}
+    if key:
+        payload["key"] = [str(v) for v in key]
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
 
-def _decode_cursor(cursor: str) -> tuple[str, _CursorDirection]:
-    """Decode a URL-safe base64 cursor string into ``(raw_value, direction)``."""
+def _decode_cursor(cursor: str) -> tuple[str, list[str] | None, _CursorDirection]:
+    """Decode a URL-safe base64 cursor string into ``(raw_value, raw_key, direction)``."""
     padded = cursor + "=" * (-len(cursor) % 4)
     payload = json.loads(base64.urlsafe_b64decode(padded).decode())
-    return payload["val"], _CursorDirection(payload["dir"])
+    return payload["val"], payload.get("key"), _CursorDirection(payload["dir"])
 
 
 def _page_size_query(default: int, max_size: int) -> int:
@@ -135,6 +139,27 @@ def _parse_cursor_value(raw_val: str, col_type: Any) -> Any:
         "Supported types: Integer, BigInteger, SmallInteger, Uuid, "
         "DateTime, Date, Float, Numeric."
     )
+
+
+def _parse_key_value(raw_val: str, col_type: Any) -> Any:
+    """Parse a raw tiebreak key value, which unlike a cursor value may be a string."""
+    if isinstance(col_type, String):
+        return raw_val
+    return _parse_cursor_value(raw_val, col_type)
+
+
+def _is_unique(column: Any) -> bool:
+    """True if a primary key, constraint or index makes *column* alone unique."""
+    if column.unique:
+        return True
+    table = column.table
+    keys = [
+        c.columns
+        for c in table.constraints
+        if isinstance(c, (PrimaryKeyConstraint, UniqueConstraint))
+    ]
+    keys += [i.columns for i in table.indexes if i.unique]
+    return any(len(cols) == 1 and next(iter(cols)) is column for cols in keys)
 
 
 def _apply_joins(q: Any, joins: JoinType | None, outer_join: bool) -> Any:
@@ -242,6 +267,16 @@ class AsyncCrud(Generic[ModelType]):
             for attr, col in zip(cls._pk_attrs(), cls.model.__mapper__.primary_key)
             if not any(e.compare(col) for e in ordered)
         ]
+
+    @classmethod
+    def _tiebreak_attrs(
+        cls: type[Self], cursor_column: Any
+    ) -> list[QueryableAttribute[Any]]:
+        """The primary key columns ordering rows that share a *cursor_column* value."""
+        column = cursor_column.property.columns[0]
+        if _is_unique(column):
+            return []
+        return [a for a in cls._pk_attrs() if a.property.columns[0] is not column]
 
     @classmethod
     async def _page_entities(
@@ -1731,7 +1766,8 @@ class AsyncCrud(Generic[ModelType]):
             outer_join: Use LEFT OUTER JOIN instead of INNER JOIN.
             load_options: SQLAlchemy loader options. Falls back to
                 ``default_load_options`` when not provided.
-            order_by: Additional ordering applied after the cursor column.
+            order_by: Additional ordering applied after the cursor column and
+                its primary key tiebreak, which already order rows fully.
             items_per_page: Number of items per page (default 20).
             search: Search query string or SearchConfig object.
             search_fields: Fields to search in (overrides class default).
@@ -1764,16 +1800,30 @@ class AsyncCrud(Generic[ModelType]):
             filter_by=filter_by,
             facet_fields=facet_fields,
         )
+        # Rows sharing a cursor value are ordered, and resumed, by primary key.
+        tiebreak = cls._tiebreak_attrs(cursor_column)
+
         # The cursor only positions the page: facets describe the whole result.
         direction = _CursorDirection.NEXT
         if cursor is not None:
-            raw_val, direction = _decode_cursor(cursor)
+            raw_val, raw_key, direction = _decode_cursor(cursor)
             col_type = cursor_column.property.columns[0].type
             cursor_val: Any = _parse_cursor_value(raw_val, col_type)
+            # Without a key (unique column, or a cursor from before keys) resume on the value.
+            bound: Any = cursor_column
+            if tiebreak and raw_key is not None:
+                bound = tuple_(cursor_column, *tiebreak)
+                cursor_val = (
+                    cursor_val,
+                    *(
+                        _parse_key_value(v, a.property.columns[0].type)
+                        for v, a in zip(raw_key, tiebreak, strict=True)
+                    ),
+                )
             if direction is _CursorDirection.PREV:
-                plan.filters.append(cursor_column < cursor_val)
+                plan.filters.append(bound < cursor_val)
             else:
-                plan.filters.append(cursor_column > cursor_val)
+                plan.filters.append(bound > cursor_val)
 
         q = select(cls.model)
         q = _apply_joins(q, joins, outer_join)
@@ -1783,13 +1833,11 @@ class AsyncCrud(Generic[ModelType]):
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
 
-        # Cursor column is always the primary sort; reverse direction for prev traversal
-        cursor_clause = (
-            cursor_column.desc()
-            if direction is _CursorDirection.PREV
-            else cursor_column
-        )
-        order_clauses: list[Any] = [cursor_clause]
+        # Cursor column then key is always the primary sort; reverse direction for prev traversal
+        order_clauses: list[Any] = [
+            col.desc() if direction is _CursorDirection.PREV else col
+            for col in (cursor_column, *tiebreak)
+        ]
         if order_by is not None:
             order_clauses.append(order_by)
         q = q.order_by(*order_clauses)
@@ -1810,21 +1858,22 @@ class AsyncCrud(Generic[ModelType]):
         if direction is _CursorDirection.PREV:
             items_page = list(reversed(items_page))
 
+        def _cursor_at(item: Any, to: _CursorDirection) -> str:
+            return _encode_cursor(
+                getattr(item, cursor_col_name),
+                direction=to,
+                key=[getattr(item, a.key) for a in tiebreak],
+            )
+
         # next_cursor: points past the last item in ascending order
         next_cursor: str | None = None
         if direction is _CursorDirection.NEXT:
             if has_more and items_page:
-                next_cursor = _encode_cursor(
-                    getattr(items_page[-1], cursor_col_name),
-                    direction=_CursorDirection.NEXT,
-                )
+                next_cursor = _cursor_at(items_page[-1], _CursorDirection.NEXT)
         else:
             # Going backward: always provide a next_cursor to allow returning forward
             if items_page:
-                next_cursor = _encode_cursor(
-                    getattr(items_page[-1], cursor_col_name),
-                    direction=_CursorDirection.NEXT,
-                )
+                next_cursor = _cursor_at(items_page[-1], _CursorDirection.NEXT)
 
         # prev_cursor: points before the first item in ascending order
         prev_cursor: str | None = None
@@ -1832,9 +1881,7 @@ class AsyncCrud(Generic[ModelType]):
             (direction is _CursorDirection.NEXT and cursor is not None)
             or (direction is _CursorDirection.PREV and has_more)
         ):
-            prev_cursor = _encode_cursor(
-                getattr(items_page[0], cursor_col_name), direction=_CursorDirection.PREV
-            )
+            prev_cursor = _cursor_at(items_page[0], _CursorDirection.PREV)
 
         items: list[Any] = [schema.model_validate(item) for item in items_page]
 

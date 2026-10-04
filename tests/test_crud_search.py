@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, and_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import ForeignKey, ForeignKeyConstraint, Index, String, and_, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -91,6 +91,7 @@ from .conftest import (
     capture_sql,
     create_role,
     create_user,
+    created_tables,
     post_tags,
     raises_if,
 )
@@ -164,6 +165,23 @@ class _Counter(_LocalBase):
     value: Mapped[int]
 
 
+class _Ranked(_LocalBase):
+    __tablename__ = "ranked"
+    __table_args__ = (Index("ranked_code", "code", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    score: Mapped[int]
+    rank: Mapped[int] = mapped_column(unique=True)
+    code: Mapped[int]
+
+
+class _Ticket(_LocalBase):
+    __tablename__ = "tickets"
+
+    code: Mapped[str] = mapped_column(String(20), primary_key=True)
+    priority: Mapped[int]
+
+
 class _Reserved(_LocalBase):
     __tablename__ = "reserved"
 
@@ -181,6 +199,11 @@ def _sql(model, filters) -> str:
 class _PostTitle(PydanticBase):
     id: uuid.UUID
     title: str
+
+
+class _TicketRead(PydanticBase):
+    code: str
+    priority: int
 
 
 class _PermissionRead(PydanticBase):
@@ -202,6 +225,11 @@ UserSearchCrud = CrudFactory(
 )
 PostTagSearchCrud = CrudFactory(
     Post, searchable_fields=[Post.title, (Post.tags, Tag.name)], cursor_column=Post.id
+)
+PostTagAuthorCursorCrud = CrudFactory(
+    Post,
+    searchable_fields=[Post.title, (Post.tags, Tag.name)],
+    cursor_column=Post.author_id,
 )
 PostFacetCrud = CrudFactory(
     Post,
@@ -472,6 +500,112 @@ class TestCursorPaginate:
         assert len(page1.data) == 3 and page1.pagination.has_more
         assert len(page2.data) == 2 and not page2.pagination.has_more
         assert {e.id for e in page1.data}.isdisjoint({e.id for e in page2.data})
+
+    @pytest.mark.anyio
+    async def test_rows_sharing_a_cursor_value_are_all_visited(self, db_session):
+        tied = datetime.datetime(2024, 1, 1)
+        for i, hour in enumerate([0, 1, 1, 1, 2]):
+            await EventCrud.create(
+                db_session,
+                EventCreate(
+                    name=f"e{i}",
+                    occurred_at=tied + datetime.timedelta(hours=hour),
+                    scheduled_date=datetime.date(2024, 1, 1),
+                ),
+            )
+
+        forward: list[uuid.UUID] = []
+        page = None
+        cursor = None
+        for _ in range(6):
+            page = await EventDateTimeCursorCrud.cursor_paginate(
+                db_session, cursor=cursor, items_per_page=1, schema=EventRead
+            )
+            forward += [e.id for e in page.data]
+            cursor = page.pagination.next_cursor
+            if cursor is None:
+                break
+
+        backward: list[uuid.UUID] = []
+        assert page is not None
+        cursor = page.pagination.prev_cursor
+        while cursor is not None:
+            page = await EventDateTimeCursorCrud.cursor_paginate(
+                db_session, cursor=cursor, items_per_page=1, schema=EventRead
+            )
+            backward += [e.id for e in page.data]
+            cursor = page.pagination.prev_cursor
+
+        assert len(forward) == len(set(forward)) == 5
+        assert backward == forward[-2::-1]
+
+    @pytest.mark.anyio
+    async def test_a_string_primary_key_resumes_ties(self, engine):
+        crud = CrudFactory(_Ticket, cursor_column=_Ticket.priority)
+        async with (
+            created_tables(engine, _LocalBase.metadata),
+            async_sessionmaker(engine, expire_on_commit=False)() as session,
+        ):
+            session.add_all(
+                _Ticket(code=code, priority=priority)
+                for code, priority in [("a", 1), ("c", 2), ("b", 2), ("d", 3)]
+            )
+            await session.commit()
+
+            forward: list[str] = []
+            cursor = None
+            for _ in range(5):
+                page = await crud.cursor_paginate(
+                    session, cursor=cursor, items_per_page=1, schema=_TicketRead
+                )
+                forward += [t.code for t in page.data]
+                cursor = page.pagination.next_cursor
+                if cursor is None:
+                    break
+
+            back = await crud.cursor_paginate(
+                session,
+                cursor=page.pagination.prev_cursor,
+                items_per_page=2,
+                schema=_TicketRead,
+            )
+
+        assert forward == ["a", "b", "c", "d"]
+        assert [t.code for t in back.data] == ["b", "c"]
+
+    @pytest.mark.anyio
+    async def test_cursor_without_a_key_resumes_on_the_value(self, db_session):
+        base = datetime.datetime(2024, 1, 1)
+        for i in range(3):
+            await EventCrud.create(
+                db_session,
+                EventCreate(
+                    name=f"e{i}",
+                    occurred_at=base + datetime.timedelta(hours=i),
+                    scheduled_date=datetime.date(2024, 1, 1),
+                ),
+            )
+
+        page = await EventDateTimeCursorCrud.cursor_paginate(
+            db_session, cursor=_encode_cursor(base), schema=EventRead
+        )
+
+        assert [e.name for e in page.data] == ["e1", "e2"]
+
+    @pytest.mark.parametrize(
+        "column, tiebreak",
+        [
+            (_Ranked.id, []),
+            (_Ranked.rank, []),
+            (_Ranked.code, []),
+            (_Ranked.score, ["id"]),
+            (_CompositeOrder.a, ["b"]),
+        ],
+    )
+    def test_only_a_non_unique_cursor_column_is_tiebroken(self, column, tiebreak):
+        crud = CrudFactory(column.class_, cursor_column=column)
+
+        assert [a.key for a in crud._tiebreak_attrs(column)] == tiebreak
 
     @pytest.mark.anyio
     async def test_unsupported_cursor_column_and_missing_column_raise(self, db_session):
@@ -917,16 +1051,19 @@ class TestToManyJoins:
 
     @pytest.mark.anyio
     @_fan_out
-    async def test_cursor_traverses_every_row(self, db_session, fan_out):
+    @pytest.mark.parametrize(
+        "crud", [PostTagSearchCrud, PostTagAuthorCursorCrud], ids=["pk", "tied"]
+    )
+    async def test_cursor_traverses_every_row(self, db_session, fan_out, crud):
         await _posts_with_tags(db_session)
         seen: list[str] = []
         cursor = None
 
         for _ in range(_POST_COUNT):
-            result = await PostTagSearchCrud.cursor_paginate(
+            result = await crud.cursor_paginate(
                 db_session,
                 cursor=cursor,
-                items_per_page=5,
+                items_per_page=3,
                 search="shared",
                 **fan_out,
                 schema=_PostTitle,
