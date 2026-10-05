@@ -1294,7 +1294,7 @@ class AsyncCrud(Generic[ModelType]):
                 ``"nowait"`` for ``FOR UPDATE NOWAIT``, ``"skip_locked"`` for
                 ``FOR UPDATE SKIP LOCKED``.
             load_options: SQLAlchemy loader options
-            order_by: Column or list of columns to order by
+            order_by: Column or expression to order by
             limit: Max number of rows to return
             offset: Rows to skip
 
@@ -1604,7 +1604,7 @@ class AsyncCrud(Generic[ModelType]):
             joins: List of (model, condition) tuples for joining related tables
             outer_join: Use LEFT OUTER JOIN instead of INNER JOIN
             load_options: SQLAlchemy loader options
-            order_by: Column or list of columns to order by
+            order_by: Column or expression to order by
             page: Page number (1-indexed)
             items_per_page: Number of items per page
             include_total: When ``False``, skip the ``COUNT`` query;
