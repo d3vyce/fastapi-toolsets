@@ -2136,7 +2136,7 @@
 </span></code></pre></div>
 <div class="admonition info">
 <p class="admonition-title">Callbacks fire on the outermost commit, not on savepoints.</p>
-<p>Savepoints created by <a href="../db/"><code>transaction</code></a> or <code>begin_nested()</code> do <strong>not</strong> trigger callbacks. All events accumulated across flushes are dispatched once when the outermost transaction commits, whether that is an explicit <code>await session.commit()</code> or the exit of a top-level <code>session.begin()</code> block.</p>
+<p>Savepoints created by <a href="../db/"><code>transaction</code></a> or <code>begin_nested()</code> do <strong>not</strong> trigger callbacks. All events accumulated across flushes are dispatched once when the outermost transaction commits, whether that is an explicit <code>await session.commit()</code>, the exit of a top-level <code>session.begin()</code> block, or <code>await trans.commit()</code> on a transaction opened with <code>trans = await session.begin()</code>.</p>
 </div>
 <h3 id="events">Events<a class="headerlink" href="#events" title="Permanent link">&para;</a></h3>
 <p>Three event types are available, each corresponding to a <a href="../../reference/models/#fastapi_toolsets.models.ModelEvent"><code>ModelEvent</code></a> value:</p>
