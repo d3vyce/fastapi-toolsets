@@ -285,12 +285,12 @@ class AsyncCrud(Generic[ModelType]):
         q: Any,
         *,
         order_clauses: Sequence[Any],
-        limit: int,
+        limit: int | None,
         offset: int | None = None,
         load_options: Sequence[ExecutableOption] | None = None,
         with_for_update: _ForUpdateMode = False,
     ) -> list[ModelType]:
-        """Return up to *limit* entities, paging over distinct primary keys."""
+        """Return up to *limit* (or all) entities, paging over distinct primary keys."""
         pk_attrs = cls._pk_attrs()
         table = cls.model.__table__
         grouped = [
@@ -335,14 +335,14 @@ class AsyncCrud(Generic[ModelType]):
         *,
         repeats: bool,
         order_clauses: Sequence[Any],
-        limit: int,
+        limit: int | None,
         offset: int | None = None,
         load_options: Sequence[ExecutableOption] | None = None,
         with_for_update: _ForUpdateMode = False,
     ) -> list[ModelType]:
         """Return up to *limit* entities of *q*, by key when a join *repeats* rows."""
         if repeats:
-            # LIMIT would slice joined rows and `.unique()` shrink the page.
+            # LIMIT and OFFSET would count joined rows, not entities.
             return await cls._page_entities(
                 session,
                 q,
@@ -1345,7 +1345,7 @@ class AsyncCrud(Generic[ModelType]):
         if order_by is not None:
             q = q.order_by(order_by)
 
-        if limit is not None:
+        if limit is not None or offset is not None:
             return await cls._fetch_page(
                 session,
                 q,
@@ -1358,10 +1358,6 @@ class AsyncCrud(Generic[ModelType]):
             )
 
         q = _apply_for_update(q, with_for_update)
-        if offset is not None:
-            q = q.order_by(
-                *cls._key_tiebreak([] if order_by is None else [order_by])
-            ).offset(offset)
         result = await session.execute(q)
         return cast(Sequence[ModelType], result.unique().scalars().all())
 
