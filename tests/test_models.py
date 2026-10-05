@@ -332,6 +332,15 @@ async def _block(maker: Any, enter: str) -> AsyncIterator[EventSession]:
             yield session
         return
     async with maker() as session:
+        if enter == "awaited":
+            trans = await session.begin()
+            try:
+                yield session
+            except BaseException:
+                await trans.rollback()
+                raise
+            await trans.commit()
+            return
         ctx = session.begin() if enter == "session.begin" else transaction(session)
         async with ctx:
             yield session
@@ -893,6 +902,9 @@ class TestTransactions:
             session.add(WatchedModel(status="first", other="x"))
         async with session.begin_nested():
             existing.status = "updated"
+        savepoint = await session.begin_nested()
+        session.add(WatchedModel(status="awaited", other="x"))
+        await savepoint.commit()
         with pytest.raises(ValueError, match="rollback"):
             async with transaction(session):
                 session.add(WatchedModel(status="doomed", other="y"))
@@ -902,12 +914,15 @@ class TestTransactions:
 
         await session.commit()
 
-        assert _kinds() == ["create", "update"]
-        assert _events[1]["changes"]["status"] == {"old": "initial", "new": "updated"}
+        assert _kinds() == ["create", "create", "update"]
+        assert _of("update")[0]["changes"]["status"] == {
+            "old": "initial",
+            "new": "updated",
+        }
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
-        "enter", ["session.begin", "sessionmaker.begin", "transaction"]
+        "enter", ["session.begin", "sessionmaker.begin", "transaction", "awaited"]
     )
     async def test_a_top_level_block_dispatches_on_exit(self, event_maker, enter):
         async with _block(event_maker, enter) as session:
@@ -964,12 +979,15 @@ class TestTransactions:
         assert _kinds() == ["create"]
 
     @pytest.mark.anyio
-    async def test_a_block_that_raises_dispatches_nothing(self, event_maker):
-        async with event_maker() as session:
-            with pytest.raises(RuntimeError, match="boom"):
-                async with session.begin():
-                    session.add(WatchedModel(status="active", other="x"))
-                    raise RuntimeError("boom")
+    @pytest.mark.parametrize(
+        "enter", ["session.begin", "sessionmaker.begin", "transaction", "awaited"]
+    )
+    async def test_a_block_that_raises_dispatches_nothing(self, event_maker, enter):
+        with pytest.raises(RuntimeError, match="boom"):
+            async with _block(event_maker, enter) as session:
+                session.add(WatchedModel(status="active", other="x"))
+                await session.flush()
+                raise RuntimeError("boom")
 
         assert _events == []
 
