@@ -307,6 +307,50 @@ class TestRead:
         assert {u.username for u in active} == {"alice", "charlie"}
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "read",
+        ["get_multi_limit", "get_multi_offset", "offset", "offset_joined"],
+    )
+    async def test_pages_break_ties_on_the_primary_key(self, engine, db_session, read):
+        users = [await create_user(db_session, f"u{i}") for i in range(4)]
+        by_key = sorted(u.id for u in users)
+        joins: list[Any] = [(Role, User.role_id == Role.id)]
+
+        async def page(n: int) -> list[Any]:
+            if read == "get_multi_limit":
+                rows = await UserCrud.get_multi(
+                    db_session, order_by=User.is_active, limit=1, offset=n
+                )
+            elif read == "get_multi_offset":
+                rows = (
+                    await UserCrud.get_multi(
+                        db_session, order_by=User.is_active, offset=n
+                    )
+                )[:1]
+            else:
+                result = await UserCrud.offset_paginate(
+                    db_session,
+                    order_by=User.is_active,
+                    joins=joins if read == "offset_joined" else None,
+                    outer_join=True,
+                    page=n + 1,
+                    items_per_page=1,
+                    include_total=False,
+                    include_facets=False,
+                    schema=UserRead,
+                )
+                rows = result.data
+            return [u.id for u in rows]
+
+        with capture_sql(engine) as statements:
+            walked = [uid for n in range(len(users)) for uid in await page(n)]
+
+        assert walked == by_key
+        paging = [s for s in statements if "LIMIT" in s or "OFFSET" in s]
+        assert len(paging) == len(users)
+        assert all("users.id" in s.split("ORDER BY")[1] for s in paging)
+
+    @pytest.mark.anyio
     @pytest.mark.parametrize("outer", [False, True], ids=["inner", "outer"])
     async def test_raw_joins_filter_rows_on_every_read(self, db_session, outer):
         role = await create_role(db_session, "member")

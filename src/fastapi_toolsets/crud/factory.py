@@ -167,10 +167,16 @@ class _QueryPlan:
     fb_joins: list[Any]
 
 
-def _grouped_order(clause: Any, table: Any) -> Any:
-    """Recast an order clause for a query grouped by the entity's key."""
+def _order_expr(clause: Any) -> tuple[Any, Any]:
+    """Split an order clause into its sorted operand and that operand's SQL expression."""
     inner = clause.element if isinstance(clause, UnaryExpression) else clause
     expr = inner.__clause_element__() if hasattr(inner, "__clause_element__") else inner
+    return inner, expr
+
+
+def _grouped_order(clause: Any, table: Any) -> Any:
+    """Recast an order clause for a query grouped by the entity's key."""
+    inner, expr = _order_expr(clause)
     tables = {
         t
         for c in getattr(expr, "base_columns", ())
@@ -228,6 +234,16 @@ class AsyncCrud(Generic[ModelType]):
         ]
 
     @classmethod
+    def _key_tiebreak(cls: type[Self], order_clauses: Sequence[Any]) -> list[Any]:
+        """The primary key columns *order_clauses* leave out, so ties keep one order."""
+        ordered = [_order_expr(c)[1] for c in order_clauses]
+        return [
+            attr
+            for attr, col in zip(cls._pk_attrs(), cls.model.__mapper__.primary_key)
+            if not any(e.compare(col) for e in ordered)
+        ]
+
+    @classmethod
     async def _page_entities(
         cls: type[Self],
         session: AsyncSession,
@@ -242,8 +258,10 @@ class AsyncCrud(Generic[ModelType]):
         """Return up to *limit* entities, paging over distinct primary keys."""
         pk_attrs = cls._pk_attrs()
         table = cls.model.__table__
-        # Fall back to the primary key so the page boundary is deterministic.
-        grouped = [_grouped_order(c, table) for c in order_clauses] or [pk_attrs[0]]
+        grouped = [
+            *(_grouped_order(c, table) for c in order_clauses),
+            *cls._key_tiebreak(order_clauses),
+        ]
         id_q = (
             q.order_by(None)
             .with_only_columns(*pk_attrs)
@@ -299,6 +317,7 @@ class AsyncCrud(Generic[ModelType]):
                 load_options=load_options,
                 with_for_update=with_for_update,
             )
+        q = q.order_by(*cls._key_tiebreak(order_clauses))
         q = _apply_for_update(q, with_for_update)
         if offset:
             q = q.offset(offset)
@@ -1305,7 +1324,9 @@ class AsyncCrud(Generic[ModelType]):
 
         q = _apply_for_update(q, with_for_update)
         if offset is not None:
-            q = q.offset(offset)
+            q = q.order_by(
+                *cls._key_tiebreak([] if order_by is None else [order_by])
+            ).offset(offset)
         result = await session.execute(q)
         return cast(Sequence[ModelType], result.unique().scalars().all())
 
