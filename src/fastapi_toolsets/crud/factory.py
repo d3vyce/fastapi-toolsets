@@ -1182,6 +1182,7 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
+        order_by: OrderByClause | None = None,
         schema: type[SchemaType],
     ) -> Response[SchemaType] | None: ...
 
@@ -1196,6 +1197,7 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
+        order_by: OrderByClause | None = None,
         schema: None = ...,
     ) -> ModelType | None: ...
 
@@ -1209,6 +1211,7 @@ class AsyncCrud(Generic[ModelType]):
         outer_join: bool = False,
         with_for_update: _ForUpdateMode = False,
         load_options: Sequence[ExecutableOption] | None = None,
+        order_by: OrderByClause | None = None,
         schema: type[BaseModel] | None = None,
     ) -> ModelType | Response[Any] | None:
         """Get the first matching record, or None.
@@ -1220,6 +1223,8 @@ class AsyncCrud(Generic[ModelType]):
             outer_join: Use LEFT OUTER JOIN instead of INNER JOIN
             with_for_update: Lock the row for update
             load_options: SQLAlchemy loader options (e.g., selectinload)
+            order_by: Column or expression deciding which match comes first.
+                Without it, any matching row may be returned.
             schema: Pydantic schema to serialize the result into. When provided,
                 the result is automatically wrapped in a ``Response[schema]``.
 
@@ -1233,6 +1238,8 @@ class AsyncCrud(Generic[ModelType]):
             q = q.where(and_(*filters))
         if resolved := cls._resolve_load_options(load_options):
             q = q.options(*resolved)
+        if order_by is not None:
+            q = q.order_by(order_by)
         q = _apply_for_update(q, with_for_update)
         result = await session.execute(q.limit(1))
         item = result.unique().scalars().first()
