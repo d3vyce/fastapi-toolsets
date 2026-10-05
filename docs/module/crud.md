@@ -601,9 +601,12 @@ The dependency adds two query parameters to the endpoint:
 | `order`    | `asc` or `desc` |
 
 ```
-GET /users?order_by=name&order=asc         → ORDER BY users.name ASC
-GET /users?order_by=role__name&order=desc  → LEFT JOIN roles ON ... ORDER BY roles.name DESC
+GET /users?order_by=name&order=asc         → ORDER BY users.name ASC, users.id
+GET /users?order_by=role__name&order=desc  → LEFT JOIN roles ON ... ORDER BY roles.name DESC, users.id
 ```
+
+!!! info "Pages always end on the primary key."
+    Paged reads (`get_multi` with `limit` or `offset`, and the paginators) append the primary key to the sort. Rows sharing a sort value keep one order, so they never repeat or go missing between pages.
 
 !!! info "Relationship tuples are joined automatically."
     When a relation field is selected, the related table is LEFT OUTER JOINed automatically. An unknown `order_by` value raises [`InvalidOrderFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError) (HTTP 422).
