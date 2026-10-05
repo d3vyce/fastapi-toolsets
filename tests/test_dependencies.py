@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, Callable
 from typing import Annotated, Any, cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.params import Depends
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,8 @@ from fastapi_toolsets.dependencies import (
     PathDependency,
     _unwrap_session_dep,
 )
+from fastapi_toolsets.exceptions import init_exceptions_handlers
+from fastapi_toolsets.pytest import create_async_client
 
 from .conftest import Role, RoleCreate, RoleCrud, User, create_role, create_user
 
@@ -206,3 +209,73 @@ class TestFetch:
         """
         with pytest.raises(ValueError, match="bound to Role, not User"):
             _path(crud=cast(Any, RoleCrud))
+
+
+def _app(session: AsyncSession) -> FastAPI:
+    """An app reading ``user_id`` from the path on GET and from the body on POST."""
+
+    async def get_db() -> AsyncGenerator[AsyncSession, None]:
+        yield session
+
+    app = init_exceptions_handlers(FastAPI())
+    by_path = PathDependency(User, User.id, session_dep=get_db)
+    by_body = BodyDependency(User, User.id, session_dep=get_db, body_field="user_id")
+
+    @app.get("/users/{user_id}")
+    async def read(user: User = by_path) -> dict[str, str]:
+        return {"username": user.username}
+
+    @app.post("/assign")
+    async def assign(user: User = by_body) -> dict[str, str]:
+        return {"username": user.username}
+
+    return app
+
+
+class TestHttp:
+    """Through a real app, each factory reads its value where it is documented."""
+
+    @staticmethod
+    async def _request(client: Any, where: str, user_id: uuid.UUID) -> Any:
+        if where == "path":
+            return await client.get(f"/users/{user_id}")
+        return await client.post("/assign", json={"user_id": str(user_id)})
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("where", ["path", "body"])
+    async def test_fetches_the_row_or_answers_404(
+        self, db_session: AsyncSession, where: str
+    ):
+        user = await create_user(db_session, "http")
+
+        async with create_async_client(_app(db_session)) as client:
+            found = await self._request(client, where, user.id)
+            missing = await self._request(client, where, uuid.uuid4())
+
+        assert found.status_code == 200
+        assert found.json() == {"username": "http"}
+        assert missing.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_a_body_field_sent_in_the_query_is_rejected(
+        self, db_session: AsyncSession
+    ):
+        user = await create_user(db_session, "http")
+
+        async with create_async_client(_app(db_session)) as client:
+            response = await client.post("/assign", params={"user_id": str(user.id)})
+
+        assert response.status_code == 422
+
+    def test_openapi_documents_each_location(self):
+        schema = _app(cast(AsyncSession, None)).openapi()
+        read = schema["paths"]["/users/{user_id}"]["get"]
+        assign = schema["paths"]["/assign"]["post"]
+        ref = assign["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        body = schema["components"]["schemas"][ref.rsplit("/", 1)[1]]
+
+        assert [(p["name"], p["in"]) for p in read["parameters"]] == [
+            ("user_id", "path")
+        ]
+        assert "parameters" not in assign
+        assert list(body["properties"]) == ["user_id"]

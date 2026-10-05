@@ -62,6 +62,15 @@ async def create_user(body: UserCreateSchema, role: Role = RoleDep):
     ...
 ```
 
+The value is read from the JSON body under `body_field`. As with any FastAPI endpoint that has several body parameters, each one sits under its own name, so the request above sends:
+
+```json
+{"body": {"username": "alice"}, "role_id": "4f6c..."}
+```
+
+!!! warning "Read from the body since `v5.1.7`"
+    Earlier versions read `body_field` from the query string and documented it there. Clients sending `?role_id=...` must move it into the body.
+
 ## Eager loading
 
 By default both factories fetch through a bare `CrudFactory(model)`, so relationships are not loaded. Pass `load_options` for a one-off, or `crud` to reuse a CRUD class you already configured:
