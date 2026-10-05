@@ -5,7 +5,7 @@ import typing
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
-from fastapi import Depends
+from fastapi import Body, Depends, Path
 from fastapi.params import Depends as DependsClass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.base import ExecutableOption
@@ -31,10 +31,14 @@ def _fetch_dependency(
     *,
     session_dep: SessionDependency,
     param_name: str,
+    source: Any,
     crud: type[AsyncCrud[ModelType]] | None,
     load_options: Sequence[ExecutableOption] | None,
 ) -> ModelType:
-    """Build a Depends() that fetches one row by ``field == <param_name>``."""
+    """Build a Depends() that fetches one row by ``field == <param_name>``.
+
+    *source* (``Path()`` or ``Body()``) tells FastAPI where the value comes from.
+    """
     session_callable = _unwrap_session_dep(session_dep)
     if crud is not None and crud.model is not model:
         raise ValueError(
@@ -57,6 +61,7 @@ def _fetch_dependency(
                 param_name,
                 inspect.Parameter.KEYWORD_ONLY,
                 annotation=field.type.python_type,
+                default=source,
             ),
             inspect.Parameter(
                 "session",
@@ -112,6 +117,7 @@ def PathDependency(
         field,
         session_dep=session_dep,
         param_name=param_name or f"{model.__name__.lower()}_{field.key}",
+        source=Path(),
         crud=crud,
         load_options=load_options,
     )
@@ -132,7 +138,8 @@ def BodyDependency(
         model: SQLAlchemy model class
         field: Model field to filter by (e.g., User.id)
         session_dep: Session dependency function (e.g., get_db)
-        body_field: Name of the field in the request body
+        body_field: Key of the JSON request body holding the value. Other body
+            parameters of the endpoint then sit under their own names.
         crud: Existing CRUD class to fetch with, so its ``default_load_options``
             apply. Defaults to a bare ``CrudFactory(model)``.
         load_options: SQLAlchemy loader options for the fetch. Overrides the CRUD's
@@ -161,6 +168,7 @@ def BodyDependency(
         field,
         session_dep=session_dep,
         param_name=body_field,
+        source=Body(embed=True),
         crud=crud,
         load_options=load_options,
     )
