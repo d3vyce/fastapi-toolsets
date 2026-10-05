@@ -45,6 +45,7 @@ from .conftest import (
     create_role,
     create_user,
     following,
+    post_tags,
     selects,
 )
 
@@ -346,9 +347,23 @@ class TestRead:
             walked = [uid for n in range(len(users)) for uid in await page(n)]
 
         assert walked == by_key
-        paging = [s for s in statements if "LIMIT" in s or "OFFSET" in s]
+        paging = [s for s in statements if "ORDER BY" in s]
         assert len(paging) == len(users)
         assert all("users.id" in s.split("ORDER BY")[1] for s in paging)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("limit", [None, 10], ids=["offset_only", "with_limit"])
+    async def test_offset_through_a_repeating_join_skips_entities(
+        self, db_session, limit
+    ):
+        author = await create_user(db_session, "author")
+        tags = await _tags(db_session, "python", "fastapi", "sqlalchemy")
+        posts = [await _post(db_session, author, tags) for _ in range(3)]
+        joins: list[Any] = [(post_tags, post_tags.c.post_id == Post.id)]
+
+        found = await PostCrud.get_multi(db_session, joins=joins, offset=1, limit=limit)
+
+        assert [p.id for p in found] == sorted(p.id for p in posts)[1:]
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("outer", [False, True], ids=["inner", "outer"])
