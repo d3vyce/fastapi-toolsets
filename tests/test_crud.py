@@ -248,8 +248,12 @@ class TestRead:
     async def test_first_returns_one_entity_with_a_limit(self, engine, db_session):
         author = await create_user(db_session, "author")
         tags = await _tags(db_session, "python", "fastapi", "sqlalchemy")
-        await _post(db_session, author, tags)
-        await _post(db_session, author, tags[:1])
+        posts = [
+            await _post(db_session, author, tags),
+            await _post(db_session, author, tags[:1]),
+        ]
+        tag_counts = {posts[0].id: 3, posts[1].id: 1}
+        lowest, highest = sorted(tag_counts)
 
         with capture_sql(engine) as statements:
             post = await PostCrud.first(
@@ -262,6 +266,18 @@ class TestRead:
         assert isinstance(post, Response) and post.data is not None
         assert len(post.data.tags) in (1, 3)
         assert len(statements) == 1 and "LIMIT" in statements[0]
+        assert "ORDER BY" not in statements[0]
+        for order_by, expected in ((Post.id, lowest), (Post.id.desc(), highest)):
+            with capture_sql(engine) as statements:
+                found = await PostCrud.first(
+                    db_session,
+                    [Post.title == "Hello"],
+                    load_options=[joinedload(Post.tags)],
+                    order_by=order_by,
+                )
+            assert found is not None and found.id == expected
+            assert len(found.tags) == tag_counts[expected]
+            assert "ORDER BY" in statements[0]
         assert await PostCrud.first(db_session, [Post.title == "none"]) is None
         assert (
             await PostCrud.first(

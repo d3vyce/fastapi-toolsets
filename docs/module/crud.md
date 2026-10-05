@@ -145,6 +145,18 @@ Use `first` when you only care about any one match and don't need uniqueness:
 user = await UserCrud.first(session=session, filters=[User.is_active == True])
 ```
 
+!!! info "`order_by` on `first` added in `v5.1.7`"
+
+Without `order_by`, `first` returns whichever match the database yields. Pass `order_by` to pick which one:
+
+```python
+newest = await UserCrud.first(
+    session=session,
+    filters=[User.is_active == True],
+    order_by=User.created_at.desc(),
+)
+```
+
 ## Row locking
 
 `get`, `get_or_none`, `first`, `get_multi`, and `update` all accept a `with_for_update` parameter that appends a `FOR UPDATE` clause to the underlying `SELECT`, preventing concurrent transactions from modifying the matched rows until the current transaction commits.
