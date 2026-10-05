@@ -154,7 +154,7 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=EventSe
 ```
 
 !!! info "Callbacks fire on the outermost commit, not on savepoints."
-    Savepoints created by [`transaction`](db.md) or `begin_nested()` do **not** trigger callbacks. All events accumulated across flushes are dispatched once when the outermost transaction commits, whether that is an explicit `await session.commit()` or the exit of a top-level `session.begin()` block.
+    Savepoints created by [`transaction`](db.md) or `begin_nested()` do **not** trigger callbacks. All events accumulated across flushes are dispatched once when the outermost transaction commits, whether that is an explicit `await session.commit()`, the exit of a top-level `session.begin()` block, or `await trans.commit()` on a transaction opened with `trans = await session.begin()`.
 
 ### Events
 

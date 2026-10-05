@@ -289,21 +289,29 @@ async def _batch_reload(
 
 
 class _EventSessionTransaction(AsyncSessionTransaction):
-    """Transaction context manager that dispatches on a real commit."""
+    """Transaction that dispatches on a real commit, on block exit or ``commit()``."""
 
     __slots__ = ()
 
-    async def __aexit__(self, type_: object, value: object, traceback: object) -> None:
+    def _committing_session(self) -> "EventSession | None":
+        """The EventSession a commit of this transaction would really commit."""
         session = self.session
-        commits = (
-            type_ is None
-            and not self.nested
-            and isinstance(session, EventSession)
-            and self.is_active
-        )
-        preloaded = _snapshot_loaded_relationships(session) if commits else {}
+        if self.nested or not self.is_active or not isinstance(session, EventSession):
+            return None
+        return session
+
+    async def __aexit__(self, type_: object, value: object, traceback: object) -> None:
+        session = self._committing_session() if type_ is None else None
+        preloaded = {} if session is None else _snapshot_loaded_relationships(session)
         await super().__aexit__(type_, value, traceback)
-        if commits:
+        if session is not None:
+            await session._dispatch_pending(preloaded)
+
+    async def commit(self) -> None:
+        session = self._committing_session()
+        preloaded = {} if session is None else _snapshot_loaded_relationships(session)
+        await super().commit()
+        if session is not None:
             await session._dispatch_pending(preloaded)
 
 
