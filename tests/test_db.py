@@ -2,7 +2,7 @@
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -614,7 +614,7 @@ _Change = Callable[[AsyncSession, _Polls], Awaitable[None]]
 @asynccontextmanager
 async def _changing_between_polls(
     engine: AsyncEngine, change: _Change
-) -> AsyncIterator[None]:
+) -> AsyncGenerator[None, None]:
     """Run *change* in its own session once the watcher's first poll completed."""
     with _Polls(engine) as polls:
 
@@ -635,7 +635,7 @@ async def _changing_between_polls(
 @asynccontextmanager
 async def _connection_bound(
     engine: AsyncEngine,
-) -> AsyncIterator[tuple[AsyncTransaction, AsyncSession]]:
+) -> AsyncGenerator[tuple[AsyncTransaction, AsyncSession], None]:
     """A session over a connection whose outer transaction the caller owns."""
     async with engine.connect() as conn:
         outer = await conn.begin()

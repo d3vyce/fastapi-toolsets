@@ -1,7 +1,7 @@
 """Field-change monitoring via SQLAlchemy session events."""
 
 import inspect
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from enum import Enum
 from typing import Any
@@ -245,7 +245,7 @@ def _snapshot_loaded_relationships(session: Any) -> dict[int, set[str]]:
 
 
 @contextmanager
-def _suspended_trans_ctx(session: AsyncSession) -> Iterator[None]:
+def _suspended_trans_ctx(session: AsyncSession) -> Generator[None, None, None]:
     """Allow post-commit SQL while an outer ``session.begin()`` block is open."""
     sync_session = session.sync_session
     ctx = getattr(sync_session, "_trans_context_manager", None)

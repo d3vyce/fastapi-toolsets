@@ -4,7 +4,7 @@ import builtins
 import contextlib
 import importlib
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import Any
 from unittest.mock import patch
 
@@ -18,7 +18,7 @@ def _under(key: str, module_path: str) -> bool:
 
 
 @contextlib.contextmanager
-def _without_package(module_path: str, blocked: str) -> Iterator[None]:
+def _without_package(module_path: str, blocked: str) -> Generator[None, None, None]:
     """Re-import *module_path* from scratch while imports of *blocked* fail.
 
     The evicted modules are put back in ``sys.modules`` on exit, so the rest
