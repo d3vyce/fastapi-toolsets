@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -325,7 +325,7 @@ async def _load_with_target(session: AsyncSession, owner_id: uuid.UUID) -> RelOw
 
 
 @asynccontextmanager
-async def _block(maker: Any, enter: str) -> AsyncIterator[EventSession]:
+async def _block(maker: Any, enter: str) -> AsyncGenerator[EventSession, None]:
     """A session inside a top-level transaction block, entered *enter*'s way."""
     if enter == "sessionmaker.begin":
         async with maker.begin() as session:

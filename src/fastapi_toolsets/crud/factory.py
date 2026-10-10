@@ -323,9 +323,7 @@ class AsyncCrud(Generic[ModelType]):
             values = tuple(getattr(obj, a.key) for a in pk_attrs)
             return values[0] if len(pk_attrs) == 1 else values
 
-        return cast(
-            list[ModelType], sorted(found, key=lambda o: rank.get(_key(o), len(ids)))
-        )
+        return sorted(found, key=lambda o: rank.get(_key(o), len(ids)))
 
     @classmethod
     async def _fetch_page(
