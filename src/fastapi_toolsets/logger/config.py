@@ -221,14 +221,15 @@ def _build_otel_handler(config: LoggingConfig) -> logging.Handler | None:
 
 
 def configure_logging(
-    config: LoggingConfig | None = None, **overrides: Any
+    config: LoggingConfig | LogLevel | int | None = None, **overrides: Any
 ) -> logging.Logger:
     """Configure the root logger, third-party loggers, and the OpenTelemetry bridge.
 
     Calling it again replaces the handlers it installed.
 
     Args:
-        config: Settings to apply. Defaults to ``LoggingConfig()``.
+        config: Settings to apply, or a level applied to ``LoggingConfig()``.
+            Defaults to ``LoggingConfig()``.
         **overrides: Fields replacing those of ``config``.
 
     Returns:
@@ -245,6 +246,9 @@ def configure_logging(
         configure_logging(LoggingConfig.from_env(), level="DEBUG")
         ```
     """
+    if config is not None and not isinstance(config, LoggingConfig):
+        overrides = {"level": config, **overrides}
+        config = None
     config = replace(config or LoggingConfig(), **overrides)
 
     built = (

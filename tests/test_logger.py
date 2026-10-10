@@ -174,8 +174,19 @@ class TestConfigureLogging:
             (None, {"level": "DEBUG"}, logging.DEBUG),
             (None, {"level": logging.ERROR}, logging.ERROR),
             (LoggingConfig(level="ERROR"), {"level": "DEBUG"}, logging.DEBUG),
+            ("DEBUG", {}, logging.DEBUG),
+            (logging.ERROR, {}, logging.ERROR),
+            ("ERROR", {"level": "DEBUG"}, logging.DEBUG),
         ],
-        ids=["info-by-default", "level-name", "level-int", "override-beats-config"],
+        ids=[
+            "info-by-default",
+            "level-name",
+            "level-int",
+            "override-beats-config",
+            "positional-level-name",
+            "positional-level-int",
+            "override-beats-positional-level",
+        ],
     )
     def test_sets_the_level_of_the_root_logger(self, config, kwargs, level):
         root = configure_logging(config, otel=False, **kwargs)
