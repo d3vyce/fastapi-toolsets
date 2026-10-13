@@ -32,6 +32,7 @@ from fastapi_toolsets.crud.factory import _CursorDirection, _encode_cursor
 from fastapi_toolsets.crud.search import (
     _coerce_bool,
     _facet_rows,
+    build_filter_by,
     build_search_filters,
     build_search_plan,
     facet_keys,
@@ -189,6 +190,34 @@ class _Reserved(_LocalBase):
     search: Mapped[str]
 
 
+class _Team(_LocalBase):
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+
+    players: Mapped[list["_Player"]] = relationship()
+
+
+class _Player(_LocalBase):
+    __tablename__ = "players"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+
+
+class _Match(_LocalBase):
+    __tablename__ = "matches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    home_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    away_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+
+    home: Mapped[_Team] = relationship(foreign_keys=[home_id])
+    away: Mapped[_Team] = relationship(foreign_keys=[away_id])
+
+
 def _sql(model, filters) -> str:
     return str(select(*model.__mapper__.primary_key).where(*filters))
 
@@ -209,6 +238,10 @@ class _TicketRead(PydanticBase):
 class _PermissionRead(PydanticBase):
     subject: str
     action: str
+
+
+class _MatchRead(PydanticBase):
+    id: int
 
 
 class _UserFilter(BaseModel):
@@ -830,6 +863,64 @@ class TestSearch:
         assert overridden.order_columns == ["email", "username"]
         assert plain.search_columns == ["id"] and plain.order_columns is None
 
+    @pytest.mark.anyio
+    @_methods
+    async def test_relationships_to_one_table_are_searched_filtered_and_faceted(
+        self, engine, method
+    ):
+        home, away = (_Match.home, _Team.name), (_Match.away, _Team.name)
+        crud = CrudFactory(
+            _Match,
+            searchable_fields=[home, away],
+            facet_fields=[home, away],
+            cursor_column=_Match.id,
+        )
+        async with (
+            created_tables(engine, _LocalBase.metadata),
+            async_sessionmaker(engine, expire_on_commit=False)() as session,
+        ):
+            session.add_all(
+                _Team(id=i, name=name) for i, name in enumerate(["ab", "bc", "ca"])
+            )
+            await session.flush()
+            session.add_all(
+                _Match(id=i, home_id=h, away_id=a)
+                for i, (h, a) in enumerate([(0, 1), (2, 0), (1, 2)])
+            )
+            await session.commit()
+
+            async def ids(**kwargs: Any) -> list[int]:
+                page = await _paginate(
+                    crud, method, session, schema=_MatchRead, **kwargs
+                )
+                return [m.id for m in page.data]
+
+            searched = await ids(search="ab")
+            filtered = await ids(filter_by={"home__name": "ab", "away__name": "bc"})
+            mixed = await _paginate(
+                crud,
+                method,
+                session,
+                search="ca",
+                filter_by={"away__name": "ab"},
+                schema=_MatchRead,
+            )
+            ordered = await ids(
+                search="a",
+                search_fields=[home],
+                order_by=_Team.name,
+                order_joins=[_Match.away],
+            )
+
+        assert searched == [0, 1]
+        assert filtered == [0]
+        assert [m.id for m in mixed.data] == [1]
+        assert mixed.filter_attributes == {
+            "home__name": ["ca"],
+            "away__name": ["ab", "ca"],
+        }
+        assert sorted(ordered) == [0, 1]
+
     def test_searchable_fields_are_detected_from_the_mapper(self):
         user_fields = get_searchable_fields(User)
         role_fields = get_searchable_fields(Role)
@@ -984,6 +1075,58 @@ class TestSearchFilters:
         any_sql = _sql(User, any_filters)
         assert "CAST" not in any_sql and "users.username" in any_sql
         assert _sql(User, all_filters).endswith("WHERE false")
+
+    def test_joins_that_would_repeat_a_table_are_subqueried(self):
+        fields = [(_Match.home, _Team.name), (_Match.away, _Team.name)]
+
+        plan = build_search_plan(_Match, "x", fields)
+        own_team = build_search_plan(_Match, "x", fields[:1])
+        after_filter = build_search_plan(
+            _Match, "x", fields[:1], other_joins=[_Match.away]
+        )
+        self_ref = build_search_plan(
+            _Node, "x", [(_Node.parent, _Node.name), (_Node.children, _Node.name)]
+        )
+
+        sql = _sql(_Match, plan.page_filters)
+        assert plan.page_joins == [] and sql.count("IN (SELECT teams.id") == 2
+        assert own_team.page_joins == [_Match.home]
+        assert after_filter.page_joins == []
+        assert self_ref.page_joins == [] and self_ref.agg_joins == []
+
+    def test_filter_by_joins_that_would_repeat_a_table_are_subqueried(self):
+        facets = [(_Match.home, _Team.name), (_Match.away, _Team.name)]
+
+        both, both_joins = build_filter_by(
+            {"home__name": "a", "away__name": "b"}, facets
+        )
+        one, one_joins = build_filter_by({"home__name": "a"}, facets)
+        _, ordered_joins = build_filter_by(
+            {"home__name": "a"}, facets, other_joins=[_Match.away]
+        )
+
+        assert both_joins == []
+        assert all("IN (SELECT" in str(f) for f in both.values())
+        assert one_joins == [_Match.home]
+        assert "IN (SELECT" not in str(one["home__name"])
+        assert ordered_joins == []
+
+    def test_to_many_filters_stay_joined_when_other_filters_move(self):
+        players = (_Match.home, _Team.players)
+        facets = [
+            (*players, _Player.name),
+            (*players, _Player.id),
+            (_Match.away, _Team.name),
+        ]
+
+        filters, joins = build_filter_by(
+            {"home__players__name": "a", "home__players__id": 1, "away__name": "b"},
+            facets,
+        )
+
+        assert joins == list(players)
+        assert "IN (SELECT" not in str(filters["home__players__name"])
+        assert "IN (SELECT" in str(filters["away__name"])
 
 
 _fan_out = pytest.mark.parametrize(
@@ -1193,7 +1336,10 @@ class TestToManyJoins:
         assert aggregate.count("FROM permissions") == 1
 
     def test_a_facet_with_a_custom_join_condition_keeps_the_join(self):
-        sql = str(_facet_rows(_Shelf, [_Shelf.active_books], [], [], prefiltered=False))
+        rows, _ = _facet_rows(
+            _Shelf, [_Shelf.active_books], _Book.title, [], [], prefiltered=False
+        )
+        sql = str(rows)
 
         assert "JOIN books" in sql and "IN (SELECT" not in sql
 

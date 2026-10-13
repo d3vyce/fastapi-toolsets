@@ -459,6 +459,8 @@ class AsyncCrud(Generic[ModelType]):
         cls: type[Self],
         filter_by: dict[str, Any] | BaseModel | None,
         facet_fields: Sequence[FacetFieldType] | None,
+        *,
+        other_joins: Sequence[Any] = (),
     ) -> tuple[dict[str, Any], list[Any]]:
         """Normalize filter_by and return ({facet_key: filter}, joins) to apply to the query."""
         if isinstance(filter_by, BaseModel):
@@ -466,7 +468,7 @@ class AsyncCrud(Generic[ModelType]):
         if not filter_by:
             return {}, []
         resolved = cls._resolve_facet_fields(facet_fields)
-        return build_filter_by(filter_by, resolved or [])
+        return build_filter_by(filter_by, resolved or [], other_joins=other_joins)
 
     @classmethod
     def _query_plan(
@@ -478,6 +480,7 @@ class AsyncCrud(Generic[ModelType]):
         search_column: str | None,
         filter_by: dict[str, Any] | BaseModel | None,
         facet_fields: Sequence[FacetFieldType] | None,
+        order_joins: Sequence[Any] | None,
     ) -> _QueryPlan:
         """Combine the caller's filters, the search and ``filter_by`` into a plan.
 
@@ -485,10 +488,18 @@ class AsyncCrud(Generic[ModelType]):
         individually, so ``fb_filters`` is left out of ``facet_base``.
         """
         filters = list(filters) if filters else []
-        fb_filters, fb_joins = cls._prepare_filter_by(filter_by, facet_fields)
+        order_joins = order_joins or ()
+        fb_filters, fb_joins = cls._prepare_filter_by(
+            filter_by, facet_fields, other_joins=order_joins
+        )
         plan = (
             build_search_plan(
-                cls.model, search, search_fields, cls.searchable_fields, search_column
+                cls.model,
+                search,
+                search_fields,
+                cls.searchable_fields,
+                search_column,
+                other_joins=[*order_joins, *fb_joins],
             )
             if search
             else None
@@ -1660,6 +1671,7 @@ class AsyncCrud(Generic[ModelType]):
             search_column=search_column,
             filter_by=filter_by,
             facet_fields=facet_fields,
+            order_joins=order_joins,
         )
         q = select(cls.model)
         q = _apply_joins(q, joins, outer_join)
@@ -1791,6 +1803,7 @@ class AsyncCrud(Generic[ModelType]):
             search_column=search_column,
             filter_by=filter_by,
             facet_fields=facet_fields,
+            order_joins=order_joins,
         )
         # Rows sharing a cursor value are ordered, and resumed, by primary key.
         tiebreak = cls._tiebreak_attrs(cursor_column)

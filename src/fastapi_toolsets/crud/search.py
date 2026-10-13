@@ -16,7 +16,7 @@ from sqlalchemy import (
     or_,
     select,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, aliased
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql import operators, visitors
 from sqlalchemy.sql.elements import BinaryExpression
@@ -110,7 +110,8 @@ class SearchPlan:
     The page form joins every relationship field: a to-one join cannot fan
     out, and a join keeps the scan parallel and lets LIMIT stop early. The
     aggregate form filters to-many fields with ``IN (subquery)`` instead,
-    so COUNT and facets do not fan out.
+    so COUNT and facets do not fan out. Both forms subquery the fields
+    whose joins would bring a table in twice.
     """
 
     page_filters: list["ColumnElement[bool]"]
@@ -135,6 +136,8 @@ def build_search_plan(
     search_fields: Sequence[SearchFieldType] | None = None,
     default_fields: Sequence[SearchFieldType] | None = None,
     search_column: str | None = None,
+    *,
+    other_joins: Sequence[Any] = (),
 ) -> SearchPlan:
     """Build the search conditions once, in both forms.
 
@@ -145,6 +148,7 @@ def build_search_plan(
         default_fields: Default fields (from ClassVar)
         search_column: Optional key to narrow search to a single field.
             Must match one of the resolved search field keys.
+        other_joins: Relationships the query joins besides the search.
 
     Raises:
         NoSearchableFieldsError: If no searchable field has been configured
@@ -176,7 +180,7 @@ def build_search_plan(
         return _NO_MATCH_PLAN
 
     entries = [(_field_rels(f), _search_condition(f, query, config)) for f in possible]
-    page = _render_search(entries, [], config.match_mode)
+    page = _render_search(*_untangle(entries, [], other_joins), config.match_mode)
     related = [e for e in entries if e[0]]
     to_many = [e for e in related if is_to_many(e[0])]
     # All or nothing, so the aggregate form matches the page form exactly.
@@ -185,10 +189,52 @@ def build_search_plan(
     elif to_many and _all_semi_joinable(to_many):
         # Not `e not in to_many`: == on relationship attributes builds SQL.
         joined = [e for e in entries if not is_to_many(e[0])]
-        agg = _render_search(joined, to_many, config.match_mode)
+        agg = _render_search(
+            *_untangle(joined, to_many, other_joins), config.match_mode
+        )
     else:
         agg = page
     return SearchPlan(*page, *agg)
+
+
+def _joins_collide(paths: Sequence[Sequence[Any]], other_joins: Sequence[Any]) -> bool:
+    """True if joining *paths* after *other_joins* would repeat a table."""
+    seen = {t for rels in paths if rels for t in rels[0].property.parent.tables}
+    for rel in unique_relationships(
+        [*other_joins, *(r for rels in paths for r in rels)]
+    ):
+        prop = rel.property
+        tables = [*prop.mapper.tables]
+        if prop.secondary is not None:
+            tables.append(prop.secondary)
+        if seen.intersection(tables):
+            return True
+        seen.update(tables)
+    return False
+
+
+def _moves(entries: Sequence[_Entry], other_joins: Sequence[Any]) -> list[bool]:
+    """Per entry, whether it leaves the joins for a subquery."""
+    if not _joins_collide([rels for rels, _ in entries], other_joins):
+        return [False] * len(entries)
+    to_many = _all_semi_joinable([e for e in entries if is_to_many(e[0])])
+    return [
+        bool(rels)
+        and all(map(_semi_joinable, rels))
+        and (to_many or not is_to_many(rels))
+        for rels, _ in entries
+    ]
+
+
+def _untangle(
+    joined: Sequence[_Entry],
+    subqueries: Sequence[_Entry],
+    other_joins: Sequence[Any],
+) -> tuple[list[_Entry], list[_Entry]]:
+    """Move *joined* entries to *subqueries* when their joins would repeat a table."""
+    moves = _moves(joined, other_joins)
+    kept = [e for e, move in zip(joined, moves) if not move]
+    return kept, [*subqueries, *(e for e, move in zip(joined, moves) if move)]
 
 
 def _can_contain(column: Any, chars: set[str]) -> bool:
@@ -464,7 +510,9 @@ def facet_scalars(
 
         col_type = column.property.columns[0].type
         filters = [*base_filters, *(f for k, f in own_filters.items() if k != key)]
-        rows = _facet_rows(model, rels, filters, base_joins, prefiltered=prefiltered)
+        rows, column = _facet_rows(
+            model, rels, column, filters, base_joins, prefiltered=prefiltered
+        )
         value = func.unnest(column) if isinstance(col_type, ARRAY) else column
         values_sq = rows.with_only_columns(value.label("v")).subquery()
         # DISTINCT in a subquery can hash in parallel workers, where
@@ -491,12 +539,13 @@ def decode_facet(values: Any, enum_class: Any) -> list[Any]:
 def _facet_rows(
     model: Any,
     rels: Sequence[Any],
+    column: Any,
     filters: Sequence[Any],
     base_joins: Sequence[Any],
     *,
     prefiltered: bool,
-) -> Any:
-    """Select the rows of the facet column's table that relate to the filtered rows."""
+) -> tuple[Any, Any]:
+    """Rows of the facet column's table related to the filtered rows, and the column."""
     joined = {str(rel) for rel in base_joins}
     # Join the path when the rows are prefiltered (a subquery over the related
     # table may be looped once per row otherwise), when it cannot be expressed
@@ -509,18 +558,27 @@ def _facet_rows(
         or any(rel.property.uselist and str(rel) in joined for rel in rels)
         or (base_joins and not is_to_many(rels))
     )
-    joins = [*base_joins, *rels] if keep_join else base_joins
+    # A joined path that repeats a table is joined through aliases.
+    aliased_path = keep_join and _joins_collide([rels], base_joins)
+    joins = [*base_joins, *rels] if keep_join and not aliased_path else base_joins
     rows = apply_search_joins(select(model), joins)
+    if aliased_path:
+        entity = model
+        for rel in rels:
+            target = aliased(rel.property.entity)
+            rows = rows.outerjoin(getattr(entity, rel.key).of_type(target))
+            entity = target
+        column = getattr(entity, column.key)
     if filters:
         rows = rows.where(and_(*filters))
     if keep_join:
-        return rows
+        return rows, column
     # Walk the path from the related side: each table is filtered on keys
     # linked to the previous one, so a to-many path never fans out and a
     # small lookup table is probed through the foreign key index.
     for rel in rels:
         rows = select(rel.property.entity).where(_related_to(rel, rows))
-    return rows
+    return rows, column
 
 
 _EQUALITY_TYPES = (String, Integer, Numeric, Date, DateTime, Time, Enum, Uuid)
@@ -542,12 +600,15 @@ def _coerce_bool(value: Any) -> bool:
 def build_filter_by(
     filter_by: dict[str, Any],
     facet_fields: Sequence[FacetFieldType],
+    *,
+    other_joins: Sequence[Any] = (),
 ) -> tuple["dict[str, ColumnElement[bool]]", list[InstrumentedAttribute[Any]]]:
     """Translate a {column_key: value} dict into SQLAlchemy filter conditions.
 
     Args:
         filter_by: Mapping of column key to scalar value or list of values
         facet_fields: Declared facet fields to validate keys against
+        other_joins: Relationships the query joins besides the filters
 
     Returns:
         Tuple of ({facet_key: filter_condition}, joins_needed). One filter
@@ -557,28 +618,19 @@ def build_filter_by(
     Raises:
         InvalidFacetFilterError: If a key in filter_by is not a declared facet field
     """
-    index: dict[
-        str, tuple[InstrumentedAttribute[Any], list[InstrumentedAttribute[Any]]]
-    ] = {}
-    for key, field in zip(facet_keys(facet_fields), facet_fields):
-        if isinstance(field, tuple):
-            rels = list(field[:-1])
-            column = field[-1]
-        else:
-            rels = []
-            column = field
-        index[key] = (column, rels)
+    index: dict[str, tuple[InstrumentedAttribute[Any], tuple[Any, ...]]] = {
+        key: (_field_column(field), _field_rels(field))
+        for key, field in zip(facet_keys(facet_fields), facet_fields)
+    }
 
     valid_keys = set(index)
     filters: dict[str, ColumnElement[bool]] = {}
-    joins: list[InstrumentedAttribute[Any]] = []
 
     for key, value in filter_by.items():
         if key not in index:
             raise InvalidFacetFilterError(key, valid_keys)
 
-        column, rels = index[key]
-        joins.extend(rels)
+        column, _ = index[key]
 
         col_type = column.property.columns[0].type
         if isinstance(col_type, Boolean):
@@ -618,4 +670,12 @@ def build_filter_by(
         else:
             raise UnsupportedFacetTypeError(key, type(col_type).__name__)
 
+    paths = {key: index[key][1] for key in filters}
+    to_one = [key for key in filters if not is_to_many(paths[key])]
+    to_many = [rel for key in filters if key not in to_one for rel in paths[key]]
+    moves = _moves([(paths[k], filters[k]) for k in to_one], [*other_joins, *to_many])
+    moved = {key for key, move in zip(to_one, moves) if move}
+    for key in moved:
+        filters[key] = _semi_join_tree([(paths[key], filters[key])], "all")[0]
+    joins = [rel for key in filters if key not in moved for rel in paths[key]]
     return filters, unique_relationships(joins)
