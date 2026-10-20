@@ -21,7 +21,7 @@ __all__ = [
 _log_context: ContextVar[dict[str, Any] | None] = ContextVar(
     "fastapi_toolsets_log_context", default=None
 )
-# The fields bound for the whole request, shared with ``_log_context`` there.
+# The fields the request was opened with, before the app binds its own.
 _request_context: ContextVar[dict[str, Any] | None] = ContextVar(
     "fastapi_toolsets_request_context", default=None
 )
@@ -80,7 +80,7 @@ def request_log_context(**values: Any) -> Generator[None, None, None]:
         **values: Fields to bind.
     """
     with log_context(**values):
-        token = _request_context.set(_log_context.get())
+        token = _request_context.set(current_log_context())
         try:
             yield
         finally:

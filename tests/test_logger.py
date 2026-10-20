@@ -626,12 +626,12 @@ class TestFormatters:
 
         assert line.endswith("hello [r1] user=u2 job=export step=2")
 
-    def test_console_defers_fields_bound_on_the_request_to_the_access_line(self):
-        with request_log_context(request_id="r1"):
+    def test_console_shows_fields_bound_on_the_request_on_every_line(self):
+        with request_log_context(request_id="r1", client_ip="127.0.0.1"):
             bind_log_context(user_id="u1")
             line = ConsoleFormatter().format(_record(**current_log_context()))
 
-        assert line.endswith("hello [r1]")
+        assert line.endswith("hello [r1] user=u1")
 
     def test_console_shows_bound_fields_on_every_line_outside_a_request(self):
         with log_context(job="nightly", run_id="0123456789"):
@@ -835,7 +835,7 @@ class TestRequestLoggingMiddleware:
         [
             (
                 "/items/3",
-                " myapp  reading [{id}]",
+                " myapp  reading [{id}] user=u1",
                 r" access  GET /items/3 200 [\d.]+ms \[{id}\] user=u1 ip=127\.0\.0\.1$",
             ),
             (

@@ -120,21 +120,16 @@ You then get validation and `.env` files from pydantic, and the settings can liv
 On a terminal, a request logs short lines:
 
 ```text
-18:00:59.934 INFO  myapp.auth  Flag submitted challenge_id=42 correct=False [2fd09820]
+18:00:59.934 INFO  myapp.auth  Flag submitted challenge_id=42 correct=False [2fd09820] user=3f2a9c1e
 18:00:59.934 INFO  access  GET /api/challenges/42 200 0.5ms [2fd09820] user=3f2a9c1e ip=127.0.0.1
 ```
 
-- Each line shows fields passed through `extra=`, then the first characters of the request id in brackets.
-- The access line shows the fields bound for the whole request once, shortened: `*_id` fields lose their suffix and are cut to the request id length, and `client_ip` becomes `ip`. `trace_id` and `span_id` are treated the same way.
+- Each line shows fields passed through `extra=`, the first characters of the request id in brackets, then the fields you [bound](#request-context).
+- The client IP and the trace ids are shown on the access line only. The request id links the other lines to it.
+- Bound fields are shortened: `*_id` fields lose their suffix and are cut to the request id length, and `client_ip` becomes `ip`.
 - The access line leaves out `method`, `path`, `route`, `status` and `duration_ms`, which its message already shows.
 
-Fields bound with `log_context` inside a handler end before the access line, so they are shown, shortened the same way, on the lines logged within the block:
-
-```text
-18:00:59.934 INFO  myapp.export  Export started [2fd09820] job=nightly-export
-```
-
-Outside a request, bound fields are shown on every line. JSON and OpenTelemetry output always keep every field and the full ids.
+Outside a request, every bound field is shown on every line. JSON and OpenTelemetry output always keep every field and the full ids.
 
 | Field | Purpose | Default |
 | --- | --- | --- |
@@ -181,7 +176,7 @@ async def current_user(...) -> User:
     return user
 ```
 
-The field stays bound until the request ends, including on its access line. It works from sync dependencies too.
+The field stays bound until the request ends, so it is on every line logged after the bind, access line included. It works from sync dependencies too.
 
 To bind fields for a block only, use [`log_context`](../reference/logger.md#fastapi_toolsets.logger.log_context):
 
