@@ -114,6 +114,12 @@ def _decode_cursor(cursor: str) -> tuple[str, list[str] | None, _CursorDirection
 
 def _page_size_query(default: int, max_size: int) -> int:
     """Return a FastAPI ``Query`` for the ``items_per_page`` parameter."""
+    # FastAPI >= 0.148 no longer validates defaults, so ge/le would not catch this.
+    if not 1 <= default <= max_size:
+        raise ValueError(
+            f"default_page_size must be between 1 and max_page_size ({max_size}), "
+            f"got {default}"
+        )
     return Query(
         default,
         ge=1,
@@ -683,7 +689,7 @@ class AsyncCrud(Generic[ModelType]):
                             default=Query(
                                 default=None,
                                 description="Restrict search to a single column",
-                                enum=search_keys,
+                                json_schema_extra={"enum": search_keys},
                             ),
                         ),
                     ]
@@ -729,7 +735,7 @@ class AsyncCrud(Generic[ModelType]):
                             default=Query(
                                 None,
                                 description=f"Field to order by. Valid values: {order_valid_keys}",
-                                enum=order_valid_keys,
+                                json_schema_extra={"enum": order_valid_keys},
                             ),
                         ),
                         inspect.Parameter(
@@ -982,7 +988,8 @@ class AsyncCrud(Generic[ModelType]):
                 inspect.Parameter.KEYWORD_ONLY,
                 annotation=PaginationType,
                 default=Query(
-                    default_pagination_type, description="Pagination strategy"
+                    PaginationType(default_pagination_type),
+                    description="Pagination strategy",
                 ),
             ),
             inspect.Parameter(
