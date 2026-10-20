@@ -95,8 +95,8 @@ class JsonFormatter(logging.Formatter):
 class ConsoleFormatter(logging.Formatter):
     """Render a record as one short line for reading in a terminal.
 
-    Within a request, the fields bound for the whole request are replaced by
-    a short request id tag and shown only on the access line.
+    Within a request, the fields it was opened with and the trace ids are
+    replaced by a short request id tag and shown only on the access line.
 
     Args:
         colors: Color the level and dim the logger name and fields.
