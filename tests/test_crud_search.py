@@ -1715,6 +1715,30 @@ class TestParams:
         assert size.default == 42
         assert next(m.le for m in size.metadata if hasattr(m, "le")) == 50
 
+    @pytest.mark.parametrize(
+        "factory",
+        ["offset_paginate_params", "cursor_paginate_params", "paginate_params"],
+    )
+    @pytest.mark.parametrize("default_page_size", [0, 51])
+    def test_default_page_size_outside_bounds_is_rejected(
+        self, factory, default_page_size
+    ):
+        with pytest.raises(ValueError, match="default_page_size"):
+            getattr(RoleCursorCrud, factory)(
+                default_page_size=default_page_size, max_page_size=50
+            )
+
+    def test_default_pagination_type_is_coerced_to_the_enum(self):
+        dep = RoleCursorCrud.paginate_params(
+            default_pagination_type="cursor",  # ty:ignore[invalid-argument-type]
+            search=False,
+            filter=False,
+            order=False,
+        )
+        default = inspect.signature(dep).parameters["pagination_type"].default
+
+        assert default.default is PaginationType.CURSOR
+
     @pytest.mark.anyio
     async def test_fixed_options_are_forwarded_not_exposed(self):
         offset = RoleCrud.offset_paginate_params(
