@@ -1,7 +1,9 @@
 """Tests for ``fastapi_toolsets.pytest``: generated fixtures, clients and databases."""
 
+import asyncio
 import uuid
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import pytest
@@ -294,6 +296,105 @@ class TestCreateAsyncClient:
             assert response.json() == {"x-custom": "sentinel"}
 
         assert client.is_closed
+
+
+def _lifespan_app(events: list[str], *, fail_on: str | None = None) -> FastAPI:
+    """An app whose lifespan logs to *events*, seeds state and may raise."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        events.append("startup")
+        if fail_on == "startup":
+            raise ValueError("startup boom")
+        yield {"greeting": "hello"}
+        events.append("shutdown")
+        if fail_on == "shutdown":
+            raise ValueError("shutdown boom")
+
+    app = FastAPI(lifespan=lifespan)
+
+    @app.get("/state")
+    async def state_endpoint(request: Request):
+        touched = getattr(request.state, "touched", False)
+        request.state.touched = True
+        return {"greeting": request.state.greeting, "touched": touched}
+
+    return app
+
+
+class TestLifespan:
+    """``lifespan=True`` runs the app's startup and shutdown around the client."""
+
+    @pytest.mark.anyio
+    async def test_startup_state_and_shutdown(self):
+        """State reaches requests as a per-request copy; shutdown waits for exit."""
+        events: list[str] = []
+
+        async with create_async_client(_lifespan_app(events), lifespan=True) as client:
+            assert events == ["startup"]
+            for _ in range(2):
+                response = await client.get("/state")
+                assert response.json() == {"greeting": "hello", "touched": False}
+
+        assert events == ["startup", "shutdown"]
+
+    @pytest.mark.anyio
+    async def test_off_by_default(self):
+        events: list[str] = []
+
+        async with create_async_client(_lifespan_app(events)):
+            pass
+
+        assert events == []
+
+    @pytest.mark.anyio
+    async def test_startup_failure_raises_and_restores_overrides(self):
+        events: list[str] = []
+        app = _lifespan_app(events, fail_on="startup")
+        original = _dep("original")
+
+        with pytest.raises(ValueError, match="startup boom"):
+            async with create_async_client(
+                app, dependency_overrides={original: _dep("x")}, lifespan=True
+            ):
+                pass  # pragma: no cover
+
+        assert events == ["startup"]
+        assert original not in app.dependency_overrides
+
+    @pytest.mark.anyio
+    async def test_shutdown_failure_raises(self):
+        events: list[str] = []
+
+        with pytest.raises(ValueError, match="shutdown boom"):
+            async with create_async_client(
+                _lifespan_app(events, fail_on="shutdown"), lifespan=True
+            ):
+                pass
+
+        assert events == ["startup", "shutdown"]
+
+    @pytest.mark.anyio
+    async def test_error_in_block_is_not_wrapped_and_shutdown_runs(self):
+        events: list[str] = []
+
+        with pytest.raises(KeyError):
+            async with create_async_client(_lifespan_app(events), lifespan=True):
+                raise KeyError("test failure")
+
+        assert events == ["startup", "shutdown"]
+
+    @pytest.mark.anyio
+    async def test_enter_and_exit_in_different_tasks(self):
+        """pytest-asyncio runs fixture setup and teardown in separate tasks."""
+        events: list[str] = []
+        context = create_async_client(_lifespan_app(events), lifespan=True)
+
+        client = await asyncio.create_task(context.__aenter__())
+        assert (await client.get("/state")).json()["greeting"] == "hello"
+        await asyncio.create_task(context.__aexit__(None, None, None))
+
+        assert events == ["startup", "shutdown"]
 
 
 class TestDependencyOverrides:
