@@ -40,6 +40,7 @@ from fastapi_toolsets.logger import (
     init_logging,
     log_context,
 )
+from fastapi_toolsets.logger import config as config_module
 from fastapi_toolsets.logger import context as context_module
 from fastapi_toolsets.logger.config import DEFAULT_QUIET_LOGGERS, owned_handlers
 from fastapi_toolsets.logger.context import request_log_context
@@ -67,6 +68,7 @@ def _reset_logging():
         root.removeHandler(handler)
         handler.close()
     root.setLevel(logging.WARNING)
+    config_module._applied = None
     for name in _TOUCHED_LOGGERS:
         logging.getLogger(name).setLevel(logging.NOTSET)
 
@@ -89,6 +91,15 @@ _UVICORN_LOG_CONFIG = {
         "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
     },
 }
+
+
+async def _run_lifespan(app: FastAPI) -> None:
+    """Start and stop *app* through its middleware, as a server does."""
+    received: asyncio.Queue[Message] = asyncio.Queue()
+    received.put_nowait({"type": "lifespan.startup"})
+    received.put_nowait({"type": "lifespan.shutdown"})
+    scope = {"type": "lifespan", "asgi": {"version": "3.0"}, "state": {}}
+    await app(scope, received.get, asyncio.Queue().put)
 
 
 def _json_lines(text: str) -> list[dict]:
@@ -1112,18 +1123,24 @@ class TestRequestLoggingMiddleware:
         assert len(_access_lines(capsys.readouterr().out)) == access_lines_logged
         assert logging.getLogger("uvicorn.access").level == uvicorn_access_level
 
+    @pytest.mark.parametrize("setup", ["init_logging", "manual"])
     @pytest.mark.anyio
     async def test_startup_undoes_the_log_config_uvicorn_loads_after_the_app(
-        self, capsys
+        self, capsys, setup
     ):
         # ``fastapi run`` imports the app before uvicorn loads its config.
-        app = _app()
+        if setup == "init_logging":
+            app = _app()
+        else:
+            app = FastAPI()
+            configure_logging(_JSON, access_log=True)
+            app.add_middleware(RequestLoggingMiddleware)
         logging.config.dictConfig(_UVICORN_LOG_CONFIG)
 
-        async with app.router.lifespan_context(app):
-            logging.getLogger("uvicorn.error").info("started")
-            logging.getLogger("uvicorn.access").info("GET / 200")
-            await _get(app, "/openapi.json")
+        await _run_lifespan(app)
+        logging.getLogger("uvicorn.error").info("started")
+        logging.getLogger("uvicorn.access").info("GET / 200")
+        await _get(app, "/openapi.json")
 
         out, err = capsys.readouterr()
         lines = _json_lines(out)
@@ -1138,8 +1155,9 @@ class TestRequestLoggingMiddleware:
         # As ``caplog.set_level`` does in a test.
         logging.getLogger().setLevel(logging.DEBUG)
 
-        async with app.router.lifespan_context(app):
-            assert logging.getLogger().level == logging.DEBUG
+        await _run_lifespan(app)
+
+        assert logging.getLogger().level == logging.DEBUG
 
     @pytest.mark.anyio
     async def test_non_http_scopes_pass_through_untouched(self):

@@ -158,6 +158,10 @@ _ENV_PARSERS: dict[str, Callable[[str], Any]] = {
 }
 
 
+# The config of the last ``configure_logging`` call, for ``_tune_loggers``.
+_applied: LoggingConfig | None = None
+
+
 def owned_handlers() -> list[logging.Handler]:
     """Return the root handlers installed by ``configure_logging``."""
     return [h for h in logging.getLogger().handlers if getattr(h, _OWNED, False)]
@@ -269,12 +273,18 @@ def configure_logging(
     for new in handlers:
         root.addHandler(new)
     root.setLevel(config.level)
-    tune_loggers(config)
+
+    global _applied
+    _applied = config
+    _tune_loggers()
     return root
 
 
-def tune_loggers(config: LoggingConfig) -> None:
-    """Apply the ``propagate`` and level options of *config* to the named loggers."""
+def _tune_loggers() -> None:
+    """Apply the logger options of the last ``configure_logging`` call."""
+    config = _applied
+    if config is None:
+        return
     for name in config.propagate:
         third_party = logging.getLogger(name)
         third_party.handlers.clear()
