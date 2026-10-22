@@ -9,11 +9,17 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
+    SmallInteger,
     String,
+    Time,
     and_,
     select,
 )
@@ -108,6 +114,7 @@ from .conftest import (
     create_user,
     created_tables,
     post_tags,
+    raises_if,
 )
 
 # Models only compiled to SQL, never created in the database.
@@ -1874,6 +1881,7 @@ class TestFilterBy:
             ((User.role, Role.id), ["not-a-uuid"]),
             (Event.scheduled_date, "tomorrow"),
             (_Crate.sizes, ["x"]),
+            (IntRole.id, "2147483648"),
         ],
         ids=[
             "int-enum-plain-int",
@@ -1885,6 +1893,7 @@ class TestFilterBy:
             "uuid",
             "date",
             "array",
+            "integer-out-of-range",
         ],
     )
     def test_invalid_value_raises(self, field, value):
@@ -1915,6 +1924,32 @@ class TestFilterBy:
             )
 
         assert sorted(c.id for c in page.data) == expected
+
+    @pytest.mark.parametrize(
+        ("col_type", "value", "fits"),
+        [
+            (SmallInteger(), "32767", True),
+            (SmallInteger(), "32768", False),
+            (Integer(), "-2147483648", True),
+            (Integer(), "-2147483649", False),
+            (BigInteger(), str(2**63 - 1), True),
+            (BigInteger(), str(2**63), False),
+            (Numeric(5, 2), "999.994", True),
+            (Numeric(5, 2), "-999.995", False),
+            (Numeric(5, 2), "Infinity", False),
+            (Numeric(), "1e400", True),
+            (Float(10), "1e30", True),
+            (DateTime(), "2024-01-01T00:00:00", True),
+            (DateTime(), "2024-01-01T00:00:00+01:00", False),
+            (DateTime(timezone=True), "2024-01-01T00:00:00Z", True),
+            (DateTime(timezone=True), "2024-01-01T00:00:00", False),
+            (Time(), "10:00:00Z", False),
+            (Time(timezone=True), "10:00:00", False),
+        ],
+    )
+    def test_values_must_fit_the_column(self, col_type, value, fits):
+        with raises_if(ValueError, not fits):
+            _coercer(col_type)(value)
 
     def test_array_items_follow_the_item_type_rules(self):
         assert _coercer(ARRAY(Order.color.type))("RED") is Color.RED
