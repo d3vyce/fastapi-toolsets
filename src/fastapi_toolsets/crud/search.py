@@ -3,6 +3,7 @@
 import functools
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal, localcontext
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import TypeAdapter
@@ -24,12 +25,15 @@ from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.sql.selectable import FromClause
 from sqlalchemy.types import (
     ARRAY,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
     Enum,
+    Float,
     Integer,
     Numeric,
+    SmallInteger,
     Time,
     Uuid,
 )
@@ -592,6 +596,9 @@ def _facet_rows(
 _EQUALITY_TYPES = (String, Integer, Numeric, Date, DateTime, Time, Enum, Uuid)
 """Column types that support equality / IN filtering in build_filter_by."""
 
+_INTEGER_BITS = ((BigInteger, 64), (SmallInteger, 16))
+"""Integer column widths besides the 32-bit default."""
+
 
 def _coerce_bool(value: Any) -> bool:
     """Coerce a string value to a Python bool for Boolean column filtering."""
@@ -616,6 +623,37 @@ def _validator(python_type: type) -> Callable[[Any], Any]:
     return TypeAdapter(python_type).validate_python
 
 
+def _coerce_int(bits: int, value: Any) -> int:
+    """*value* as an int that fits a signed *bits*-bit column."""
+    number = _validator(int)(value)
+    if not -(2 ** (bits - 1)) <= number < 2 ** (bits - 1):
+        raise ValueError(f"{number} does not fit a {bits}-bit integer")
+    return number
+
+
+def _numeric_limit(precision: int, scale: int) -> Decimal:
+    """Smallest magnitude that overflows ``NUMERIC(precision, scale)``."""
+    # Postgres rounds half away from zero to the scale, then checks the size.
+    with localcontext(prec=precision + 2):
+        return Decimal(10) ** (precision - scale) - Decimal(5).scaleb(-scale - 1)
+
+
+def _coerce_decimal(limit: Decimal, value: Any) -> Decimal:
+    """*value* as a Decimal whose magnitude stays below *limit*."""
+    number = _validator(Decimal)(value)
+    if not number.is_finite() or abs(number) >= limit:
+        raise ValueError(f"{number} does not fit the numeric column")
+    return number
+
+
+def _coerce_moment(python_type: type, timezone: bool, value: Any) -> Any:
+    """*value* as a datetime or time, with an offset exactly when the column has one."""
+    moment = _validator(python_type)(value)
+    if (moment.tzinfo is not None) != timezone:
+        raise ValueError(f"{value!r} does not match the column's timezone")
+    return moment
+
+
 def _coercer(col_type: Any) -> Callable[[Any], Any]:
     """Convert a filter value, often a query string, to the column's Python type."""
     if isinstance(col_type, Boolean):
@@ -626,6 +664,17 @@ def _coercer(col_type: Any) -> Callable[[Any], Any]:
         return _coercer(col_type.item_type)
     if isinstance(col_type, String) or not isinstance(col_type, _EQUALITY_TYPES):
         return lambda value: value
+    if isinstance(col_type, Integer):
+        bits = next((b for t, b in _INTEGER_BITS if isinstance(col_type, t)), 32)
+        return functools.partial(_coerce_int, bits)
+    # Float subclasses Numeric, but counts its precision in binary digits.
+    numeric = isinstance(col_type, Numeric) and not isinstance(col_type, Float)
+    if numeric and col_type.precision is not None:
+        limit = _numeric_limit(col_type.precision, col_type.scale or 0)
+        return functools.partial(_coerce_decimal, limit)
+    if isinstance(col_type, (DateTime, Time)):
+        timezone = bool(col_type.timezone)
+        return functools.partial(_coerce_moment, col_type.python_type, timezone)
     return _validator(col_type.python_type)
 
 
