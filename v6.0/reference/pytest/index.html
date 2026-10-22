@@ -2014,7 +2014,7 @@ Dependencies are resolved via pytest fixture dependencies.</p>
 
 
 <h2 id="fastapi_toolsets.pytest.utils.create_async_client" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_async_client</span><span class="p">(</span><span class="n">app</span><span class="p">,</span> <span class="n">base_url</span><span class="o">=</span><span class="s1">&#39;http://test&#39;</span><span class="p">,</span> <span class="n">dependency_overrides</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+            <code class="highlight language-python"><span class="n">fastapi_toolsets</span><span class="o">.</span><span class="n">pytest</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">create_async_client</span><span class="p">(</span><span class="n">app</span><span class="p">,</span> <span class="n">base_url</span><span class="o">=</span><span class="s1">&#39;http://test&#39;</span><span class="p">,</span> <span class="n">dependency_overrides</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">lifespan</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-async"><code>async</code></small>
@@ -2087,6 +2087,24 @@ before yielding and restored to their previous state after.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>lifespan</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Run the app's startup before yielding and its shutdown
+after, through <code>app.router.lifespan_context</code>. State yielded by
+the lifespan is exposed on <code>request.state</code>. Defaults to False.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -2171,6 +2189,15 @@ before yielding and restored to their previous state after.</p>
 </span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        <span class="n">app</span><span class="p">,</span> <span class="n">dependency_overrides</span><span class="o">=</span><span class="p">{</span><span class="n">get_db</span><span class="p">:</span> <span class="n">override</span><span class="p">}</span>
 </span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">c</span><span class="p">:</span>
 </span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        <span class="k">yield</span> <span class="n">c</span>
+</span></code></pre></div>
+</details>
+
+<details class="example-with-the-app-lifespan" open>
+  <summary>Example with the app lifespan</summary>
+  <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">client</span><span class="p">():</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">create_async_client</span><span class="p">(</span><span class="n">app</span><span class="p">,</span> <span class="n">lifespan</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="k">as</span> <span class="n">c</span><span class="p">:</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>        <span class="k">yield</span> <span class="n">c</span>
 </span></code></pre></div>
 </details>
 
