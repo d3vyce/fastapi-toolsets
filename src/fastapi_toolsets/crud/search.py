@@ -168,7 +168,7 @@ def build_search_plan(
             else search
         )
     query = config.query.strip() if config.query else ""
-    if not query:
+    if not query and search_column is None:
         return _EMPTY_PLAN
 
     fields = config.fields or default_fields or get_searchable_fields(model)
@@ -179,6 +179,8 @@ def build_search_plan(
         if search_column not in index:
             raise InvalidSearchColumnError(search_column, sorted(index))
         fields = [index[search_column]]
+    if not query:
+        return _EMPTY_PLAN
 
     chars = set(query if config.case_sensitive else query.lower())
     possible = [f for f in fields if _can_contain(_field_column(f), chars)]
