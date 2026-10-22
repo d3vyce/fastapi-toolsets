@@ -23,6 +23,7 @@ from sqlalchemy.sql.elements import UnaryExpression
 from fastapi_toolsets.crud import (
     CrudFactory,
     InvalidFacetFilterError,
+    InvalidFacetValueError,
     InvalidSearchColumnError,
     SearchConfig,
     UnsupportedFacetTypeError,
@@ -96,7 +97,6 @@ from .conftest import (
     create_user,
     created_tables,
     post_tags,
-    raises_if,
 )
 
 # Models only compiled to SQL, never created in the database.
@@ -1665,8 +1665,6 @@ class TestFilterBy:
             ({"priority": 3}, {"order-2"}),
             ({"priority": "3"}, {"order-2"}),
             ({"priority": ["1", "3"]}, {"order-1", "order-2", "order-3"}),
-            ({"status": 1}, KeyError),
-            ({"status": [1, 3]}, KeyError),
         ],
         ids=[
             "int-enum-member",
@@ -1679,18 +1677,16 @@ class TestFilterBy:
             "integer-with-int",
             "integer-with-str",
             "integer-with-strs",
-            "int-enum-plain-int",
-            "int-enum-plain-list",
         ],
     )
     async def test_enum_and_integer_filters(self, db_session, filter_by, expected):
         await _orders(db_session)
 
-        with raises_if(KeyError, expected is KeyError):
-            result = await OrderFacetCrud.offset_paginate(
-                db_session, filter_by=filter_by, schema=OrderRead
-            )
-            assert {o.name for o in result.data} == expected
+        result = await OrderFacetCrud.offset_paginate(
+            db_session, filter_by=filter_by, schema=OrderRead
+        )
+
+        assert {o.name for o in result.data} == expected
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -1731,6 +1727,37 @@ class TestFilterBy:
         )
 
         assert {row.name for row in result.data} == expected
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            (Order.status, 1),
+            (Order.status, [1, 3]),
+            (Order.status, "LOST"),
+            (Order.priority, "high"),
+            (Order.priority, ["1", "1.5"]),
+            (User.is_active, "maybe"),
+            ((User.role, Role.id), ["not-a-uuid"]),
+            (Event.scheduled_date, "tomorrow"),
+        ],
+        ids=[
+            "int-enum-plain-int",
+            "int-enum-plain-list",
+            "int-enum-unknown-name",
+            "integer-not-a-number",
+            "integer-list-with-float",
+            "bool",
+            "uuid",
+            "date",
+        ],
+    )
+    def test_invalid_value_raises(self, field, value):
+        key = facet_keys([field])[0]
+
+        with pytest.raises(InvalidFacetValueError) as exc:
+            build_filter_by({key: value}, [field])
+
+        assert exc.value.key == key and exc.value.value == value
 
 
 class TestParams:

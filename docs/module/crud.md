@@ -529,7 +529,7 @@ The distinct values for each facet field are returned in the `filter_attributes`
 ```
 
 !!! info "Key format uses `__` as a separator for relationship chains."
-    A direct column `User.status` produces `"status"`. A relationship tuple `(User.role, Role.name)` produces `"role__name"`. A deeper chain `(User.role, Role.permission, Permission.name)` produces `"role__permission__name"`. An unknown `filter_by` key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) (HTTP 422).
+    A direct column `User.status` produces `"status"`. A relationship tuple `(User.role, Role.name)` produces `"role__name"`. A deeper chain `(User.role, Role.permission, Permission.name)` produces `"role__permission__name"`. An unknown `filter_by` key raises [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) (HTTP 400). Values are converted to the column type, so query strings like `"42"` or `"2026-01-02"` work on integer and date columns; a value that does not convert raises [`InvalidFacetValueError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetValueError) (HTTP 400).
 
 #### Skipping facet queries
 

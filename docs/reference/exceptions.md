@@ -14,6 +14,7 @@ from fastapi_toolsets.exceptions import (
     NoSearchableFieldsError,
     InvalidSearchColumnError,
     InvalidFacetFilterError,
+    InvalidFacetValueError,
     InvalidOrderFieldError,
     PoolExhaustedError,
     LockTimeoutError,
@@ -44,6 +45,8 @@ from fastapi_toolsets.exceptions import (
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidSearchColumnError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError
+
+## ::: fastapi_toolsets.exceptions.exceptions.InvalidFacetValueError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError
 

@@ -2,6 +2,7 @@
 
 from ..exceptions import (
     InvalidFacetFilterError,
+    InvalidFacetValueError,
     InvalidSearchColumnError,
     NoSearchableFieldsError,
     UnsupportedFacetTypeError,
@@ -23,6 +24,7 @@ __all__ = [
     "CrudFactory",
     "FacetFieldType",
     "InvalidFacetFilterError",
+    "InvalidFacetValueError",
     "InvalidSearchColumnError",
     "JoinType",
     "M2MFieldType",
