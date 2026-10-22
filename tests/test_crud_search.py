@@ -315,6 +315,20 @@ async def _orders(session: AsyncSession) -> None:
         )
 
 
+async def _league(session: AsyncSession, *players: tuple[str, int]) -> None:
+    """Teams ab, bc, ca, *players* as (name, team), matches ab-bc, ca-ab, bc-ca."""
+    session.add_all(_Team(id=i, name=name) for i, name in enumerate(["ab", "bc", "ca"]))
+    await session.flush()
+    session.add_all(
+        _Player(id=i, name=name, team_id=team) for i, (name, team) in enumerate(players)
+    )
+    session.add_all(
+        _Match(id=i, home_id=h, away_id=a)
+        for i, (h, a) in enumerate([(0, 1), (2, 0), (1, 2)])
+    )
+    await session.commit()
+
+
 async def _products(session: AsyncSession, count: int) -> None:
     """Products p0, p1, ... priced 1.99, 2.99, ..."""
     for i in range(count):
@@ -892,15 +906,7 @@ class TestSearch:
             created_tables(engine, _LocalBase.metadata),
             async_sessionmaker(engine, expire_on_commit=False)() as session,
         ):
-            session.add_all(
-                _Team(id=i, name=name) for i, name in enumerate(["ab", "bc", "ca"])
-            )
-            await session.flush()
-            session.add_all(
-                _Match(id=i, home_id=h, away_id=a)
-                for i, (h, a) in enumerate([(0, 1), (2, 0), (1, 2)])
-            )
-            await session.commit()
+            await _league(session)
 
             async def ids(**kwargs: Any) -> list[int]:
                 page = await _paginate(
@@ -933,6 +939,36 @@ class TestSearch:
             "away__name": ["ab", "ca"],
         }
         assert sorted(ordered) == [0, 1]
+
+    @pytest.mark.anyio
+    @_methods
+    async def test_to_many_filter_with_order_on_the_same_table(self, engine, method):
+        players = (_Match.home, _Team.players, _Player.name)
+        crud = CrudFactory(
+            _Match,
+            searchable_fields=[players],
+            facet_fields=[players],
+            cursor_column=_Match.id,
+        )
+        async with (
+            created_tables(engine, _LocalBase.metadata),
+            async_sessionmaker(engine, expire_on_commit=False)() as session,
+        ):
+            await _league(session, ("ann", 0), ("bob", 1), ("bea", 2))
+
+            page = await _paginate(
+                crud,
+                method,
+                session,
+                search="b",
+                filter_by={"home__players__name": ["bob"]},
+                order_by=_Team.name,
+                order_joins=[_Match.away],
+                schema=_MatchRead,
+            )
+
+        assert [m.id for m in page.data] == [2]
+        assert page.filter_attributes == {"home__players__name": ["bea", "bob"]}
 
     def test_searchable_fields_are_detected_from_the_mapper(self):
         user_fields = get_searchable_fields(User)
@@ -1140,6 +1176,23 @@ class TestSearchFilters:
         assert joins == list(players)
         assert "IN (SELECT" not in str(filters["home__players__name"])
         assert "IN (SELECT" in str(filters["away__name"])
+
+    def test_to_many_filters_move_when_they_would_repeat_a_table(self):
+        facets = [(_Match.home, _Team.players, _Player.name), (_Match.away, _Team.name)]
+
+        filters, joins = build_filter_by(
+            {"home__players__name": "a"}, facets, other_joins=[_Match.away]
+        )
+        both, both_joins = build_filter_by(
+            {"home__players__name": "a", "away__name": "b"},
+            facets,
+            other_joins=[_Match.away],
+        )
+
+        assert joins == []
+        assert "IN (SELECT" in str(filters["home__players__name"])
+        assert both_joins == [_Match.away]
+        assert "IN (SELECT" not in str(both["away__name"])
 
 
 _fan_out = pytest.mark.parametrize(
