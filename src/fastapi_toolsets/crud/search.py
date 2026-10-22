@@ -127,7 +127,6 @@ _NO_MATCH_PLAN = SearchPlan([false()], [], [false()], [])
 
 _INTEGER_CHARS = frozenset("0123456789-")
 _UUID_CHARS = frozenset("0123456789abcdef-")
-_LIKE_SPECIAL = frozenset("%_\\")
 
 _Entry = tuple[tuple[Any, ...], "ColumnElement[bool]"]
 
@@ -241,8 +240,6 @@ def _untangle(
 
 def _can_contain(column: Any, chars: set[str]) -> bool:
     """False when the text of an integer or UUID column can never contain *chars*."""
-    if chars & _LIKE_SPECIAL:
-        return True
     col_type = column.type
     if isinstance(col_type, Integer):
         return chars <= _INTEGER_CHARS
@@ -317,9 +314,11 @@ def _search_condition(
         if isinstance(column.type, String) and not isinstance(column.type, Enum)
         else column.cast(String)
     )
+    # Backslash is the default LIKE escape, so the query matches literally.
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     if config.case_sensitive:
-        return column_as_string.like(f"%{query}%")
-    return column_as_string.ilike(f"%{query}%")
+        return column_as_string.like(f"%{escaped}%")
+    return column_as_string.ilike(f"%{escaped}%")
 
 
 def _is_plain_join(condition: Any, pairs: Sequence[tuple[Any, Any]]) -> bool:

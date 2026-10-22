@@ -991,6 +991,25 @@ class TestSearch:
         assert [m.id for m in page.data] == [2]
         assert page.filter_attributes == {"home__players__name": ["bea", "bob"]}
 
+    @pytest.mark.anyio
+    async def test_like_wildcards_match_literally(self, db_session):
+        crud = CrudFactory(Role, searchable_fields=[Role.name])
+        for name in ["50% off", "a_b", "c\\d", "500 off", "axb"]:
+            await create_role(db_session, name)
+
+        async def names(search: str) -> list[str]:
+            page = await crud.offset_paginate(
+                db_session, search=search, schema=RoleRead
+            )
+            return [r.name for r in page.data]
+
+        assert {s: await names(s) for s in ["%", "_", "\\", "0%"]} == {
+            "%": ["50% off"],
+            "_": ["a_b"],
+            "\\": ["c\\d"],
+            "0%": ["50% off"],
+        }
+
     def test_searchable_fields_are_detected_from_the_mapper(self):
         user_fields = get_searchable_fields(User)
         role_fields = get_searchable_fields(Role)
@@ -1110,8 +1129,8 @@ class TestSearchFilters:
             (IntRole.id, "a1", False),
             (User.id, "AB-12", True),
             (User.id, "xyz", False),
-            (User.id, "x%", True),
-            (User.id, "x_", True),
+            (User.id, "1%", False),
+            (User.id, "1_", False),
             (User.id, SearchConfig(query="AB", case_sensitive=True), False),
         ],
         ids=[
