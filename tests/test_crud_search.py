@@ -201,6 +201,7 @@ class _Reserved(_LocalBase):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     search: Mapped[str]
+    order: Mapped[int]
 
 
 class _Team(_LocalBase):
@@ -2102,6 +2103,13 @@ class TestParams:
             CrudFactory(
                 _Reserved, facet_fields=[_Reserved.search]
             ).offset_paginate_params()
+        with pytest.raises(ValueError, match="conflicts with a reserved"):
+            CrudFactory(
+                _Reserved, facet_fields=[_Reserved.order], order_fields=[_Reserved.id]
+            ).offset_paginate_params()
+        unordered = CrudFactory(_Reserved, facet_fields=[_Reserved.order])
+        params = inspect.signature(unordered.offset_paginate_params()).parameters
+        assert "order" in params
 
     @pytest.mark.anyio
     async def test_awaiting_the_dependency_collects_the_values(self):
