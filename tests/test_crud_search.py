@@ -8,7 +8,16 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, Index, String, and_, select
+from sqlalchemy import (
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    and_,
+    select,
+)
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -32,6 +41,7 @@ from fastapi_toolsets.crud import (
 from fastapi_toolsets.crud.factory import _CursorDirection, _encode_cursor
 from fastapi_toolsets.crud.search import (
     _coerce_bool,
+    _coercer,
     _facet_rows,
     build_filter_by,
     build_search_filters,
@@ -220,6 +230,13 @@ class _Match(_LocalBase):
     away: Mapped[_Team] = relationship(foreign_keys=[away_id])
 
 
+class _Crate(_LocalBase):
+    __tablename__ = "crates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sizes: Mapped[list[int]] = mapped_column(ARRAY(Integer))
+
+
 def _sql(model, filters) -> str:
     return str(select(*model.__mapper__.primary_key).where(*filters))
 
@@ -243,6 +260,10 @@ class _PermissionRead(PydanticBase):
 
 
 class _MatchRead(PydanticBase):
+    id: int
+
+
+class _CrateRead(PydanticBase):
     id: int
 
 
@@ -1792,6 +1813,7 @@ class TestFilterBy:
             (User.is_active, "maybe"),
             ((User.role, Role.id), ["not-a-uuid"]),
             (Event.scheduled_date, "tomorrow"),
+            (_Crate.sizes, ["x"]),
         ],
         ids=[
             "int-enum-plain-int",
@@ -1802,6 +1824,7 @@ class TestFilterBy:
             "bool",
             "uuid",
             "date",
+            "array",
         ],
     )
     def test_invalid_value_raises(self, field, value):
@@ -1811,6 +1834,31 @@ class TestFilterBy:
             build_filter_by({key: value}, [field])
 
         assert exc.value.key == key and exc.value.value == value
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(["1", "4"], [0, 1]), ("3", [1])],
+        ids=["overlap", "contains"],
+    )
+    async def test_array_values_coerced_to_item_type(self, engine, value, expected):
+        crud = CrudFactory(_Crate, facet_fields=[_Crate.sizes])
+        async with (
+            created_tables(engine, _LocalBase.metadata),
+            async_sessionmaker(engine, expire_on_commit=False)() as session,
+        ):
+            session.add_all([_Crate(id=0, sizes=[1, 2]), _Crate(id=1, sizes=[3, 4])])
+            await session.commit()
+
+            page = await crud.offset_paginate(
+                session, filter_by={"sizes": value}, schema=_CrateRead
+            )
+
+        assert sorted(c.id for c in page.data) == expected
+
+    def test_array_items_follow_the_item_type_rules(self):
+        assert _coercer(ARRAY(Order.color.type))("RED") is Color.RED
+        assert _coercer(ARRAY(User.is_active.type))("true") is True
 
 
 class TestParams:
