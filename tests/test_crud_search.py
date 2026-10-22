@@ -29,6 +29,7 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.sql.elements import UnaryExpression
 
+from fastapi_toolsets._orm import joined_tables
 from fastapi_toolsets.crud import (
     CrudFactory,
     InvalidFacetFilterError,
@@ -1010,6 +1011,28 @@ class TestSearch:
             "0%": ["50% off"],
         }
 
+    @pytest.mark.anyio
+    @_methods
+    async def test_caller_joins_on_a_searched_and_filtered_table(
+        self, db_session, method
+    ):
+        admin = await create_role(db_session, "admin")
+        await _users(db_session, "alice", role=admin)
+        await _users(db_session, "bob")
+
+        page = await _paginate(
+            UserSearchCrud,
+            method,
+            db_session,
+            joins=[(Role, User.role_id == Role.id)],
+            search="adm",
+            filter_by={"role__name": ["admin"]},
+            schema=UserRead,
+        )
+
+        assert [u.username for u in page.data] == ["alice"]
+        assert page.filter_attributes["role__name"] == ["admin"]
+
     def test_searchable_fields_are_detected_from_the_mapper(self):
         user_fields = get_searchable_fields(User)
         role_fields = get_searchable_fields(Role)
@@ -1182,6 +1205,23 @@ class TestSearchFilters:
         assert own_team.page_joins == [_Match.home]
         assert after_filter.page_joins == []
         assert self_ref.page_joins == [] and self_ref.agg_joins == []
+
+    def test_tables_joined_by_the_caller_count_as_joined(self):
+        facets = [(_Match.home, _Team.name)]
+
+        filters, joins = build_filter_by(
+            {"home__name": "a"}, facets, other_joins=joined_tables([_Team])
+        )
+        plan = build_search_plan(
+            _Match, "x", facets, other_joins=joined_tables([_Team.__table__])
+        )
+        aliased_team, _ = build_filter_by(
+            {"home__name": "a"}, facets, other_joins=joined_tables([aliased(_Team)])
+        )
+
+        assert joins == [] and "IN (SELECT" in str(filters["home__name"])
+        assert plan.page_joins == []
+        assert "IN (SELECT" not in str(aliased_team["home__name"])
 
     def test_filter_by_joins_that_would_repeat_a_table_are_subqueried(self):
         facets = [(_Match.home, _Team.name), (_Match.away, _Team.name)]

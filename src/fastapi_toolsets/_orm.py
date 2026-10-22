@@ -3,13 +3,29 @@
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from sqlalchemy import Table, tuple_
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import tuple_
+from sqlalchemy.orm import Mapper
 
 
 def key_expr(columns: Sequence[Any]) -> Any:
     """*columns* as one comparable expression: the column, or a tuple of them."""
     return columns[0] if len(columns) == 1 else tuple_(*columns)
+
+
+def joined_tables(targets: Iterable[Any]) -> list[Any]:
+    """Tables that joining *targets*, mapped classes or tables, brings in.
+
+    An aliased target is left out: it can never repeat a table.
+    """
+    tables: list[Any] = []
+    for target in targets:
+        info = sa_inspect(target, raiseerr=False)
+        if isinstance(info, Mapper):
+            tables.extend(info.tables)
+        elif isinstance(info, Table):
+            tables.append(info)
+    return tables
 
 
 def is_to_many(rels: Iterable[Any]) -> bool:

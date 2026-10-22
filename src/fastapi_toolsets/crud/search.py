@@ -21,6 +21,7 @@ from sqlalchemy.orm import DeclarativeBase, aliased
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql import operators, visitors
 from sqlalchemy.sql.elements import BinaryExpression
+from sqlalchemy.sql.selectable import FromClause
 from sqlalchemy.types import (
     ARRAY,
     Boolean,
@@ -149,7 +150,7 @@ def build_search_plan(
         default_fields: Default fields (from ClassVar)
         search_column: Optional key to narrow search to a single field.
             Must match one of the resolved search field keys.
-        other_joins: Relationships the query joins besides the search.
+        other_joins: Relationships, or tables, the query joins besides the search.
 
     Raises:
         NoSearchableFieldsError: If no searchable field has been configured
@@ -199,15 +200,21 @@ def build_search_plan(
 
 
 def _joins_collide(paths: Sequence[Sequence[Any]], other_joins: Sequence[Any]) -> bool:
-    """True if joining *paths* after *other_joins* would repeat a table."""
+    """True if joining *paths* after *other_joins* would repeat a table.
+
+    *other_joins* holds relationships, and tables the query joins directly.
+    """
     seen = {t for rels in paths if rels for t in rels[0].property.parent.tables}
-    for rel in unique_relationships(
+    for join in unique_relationships(
         [*other_joins, *(r for rels in paths for r in rels)]
     ):
-        prop = rel.property
-        tables = [*prop.mapper.tables]
-        if prop.secondary is not None:
-            tables.append(prop.secondary)
+        if isinstance(join, FromClause):
+            tables = [join]
+        else:
+            prop = join.property
+            tables = [*prop.mapper.tables]
+            if prop.secondary is not None:
+                tables.append(prop.secondary)
         if seen.intersection(tables):
             return True
         seen.update(tables)
@@ -649,7 +656,7 @@ def build_filter_by(
     Args:
         filter_by: Mapping of column key to scalar value or list of values
         facet_fields: Declared facet fields to validate keys against
-        other_joins: Relationships the query joins besides the filters
+        other_joins: Relationships, or tables, the query joins besides the filters
 
     Returns:
         Tuple of ({facet_key: filter_condition}, joins_needed). One filter
