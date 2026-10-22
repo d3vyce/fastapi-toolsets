@@ -675,9 +675,17 @@ def build_filter_by(
 
     paths = {key: index[key][1] for key in filters}
     to_one = [key for key in filters if not is_to_many(paths[key])]
-    to_many = [rel for key in filters if key not in to_one for rel in paths[key]]
-    moves = _moves([(paths[k], filters[k]) for k in to_one], [*other_joins, *to_many])
-    moved = {key for key, move in zip(to_one, moves) if move}
+    to_many = [key for key in filters if key not in to_one]
+
+    def moving(keys: list[str], joins: Sequence[Any]) -> set[str]:
+        moves = _moves([(paths[k], filters[k]) for k in keys], joins)
+        return {key for key, move in zip(keys, moves) if move}
+
+    # To-many paths stay joined, so their filters match the same related
+    # row, unless the join would repeat a table.
+    moved = moving(to_many, other_joins)
+    joined = [rel for key in to_many if key not in moved for rel in paths[key]]
+    moved |= moving(to_one, [*other_joins, *joined])
     for key in moved:
         filters[key] = _semi_join_tree([(paths[key], filters[key])], "all")[0]
     joins = [rel for key in filters if key not in moved for rel in paths[key]]
