@@ -549,6 +549,12 @@ class TestFormatters:
         assert payload["timestamp"].endswith("Z")
         assert "service" not in payload
 
+    def test_uvicorn_color_message_is_rendered_by_neither_formatter(self):
+        record = _record(color_message="\033[36mhello\033[0m")
+
+        assert "color_message" not in json.loads(JsonFormatter().format(record))
+        assert "color_message" not in ConsoleFormatter().format(record)
+
     def test_exception_and_stack_are_rendered_by_both_formatters(self):
         try:
             raise RuntimeError("boom")
