@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import AsyncGenerator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -59,6 +59,28 @@ def _pop_overrides(app: Any, overrides: dict[Any, Any], owner: Any) -> None:
             del layers[key]
     if not layers:
         del _override_layers[app]
+
+
+@asynccontextmanager
+async def _run_lifespan(app: Any) -> AsyncGenerator[Any, None]:
+    """Run *app*'s lifespan around the block and yield *app* bound to its state."""
+    context = app.router.lifespan_context(app)
+    state = await context.__aenter__() or {}
+    try:
+        yield _with_state(app, state)
+    finally:
+        # Like a server, shut down cleanly even when the block raised.
+        await context.__aexit__(None, None, None)
+
+
+def _with_state(app: Any, state: dict[str, Any]) -> Any:
+    """Wrap *app* so each request scope gets a copy of the lifespan *state*."""
+
+    async def wrapped(scope: Any, receive: Any, send: Any) -> None:
+        scope["state"] = state.copy()
+        await app(scope, receive, send)
+
+    return wrapped
 
 
 def _get_xdist_worker(default_test_db: str) -> str:
@@ -201,6 +223,8 @@ async def create_async_client(
     app: Any,
     base_url: str = "http://test",
     dependency_overrides: dict[Callable[..., Any], Callable[..., Any]] | None = None,
+    *,
+    lifespan: bool = False,
     **kwargs: Any,
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create an async httpx client for testing FastAPI applications.
@@ -211,6 +235,9 @@ async def create_async_client(
         dependency_overrides: Optional mapping of original dependencies to
             their test replacements. Applied via ``app.dependency_overrides``
             before yielding and restored to their previous state after.
+        lifespan: Run the app's startup before yielding and its shutdown
+            after, through ``app.router.lifespan_context``. State yielded by
+            the lifespan is exposed on ``request.state``. Defaults to False.
         **kwargs: Additional keyword arguments forwarded to
             :class:`httpx.AsyncClient` (e.g. ``headers``, ``cookies``,
             ``auth``, ``timeout``).
@@ -255,17 +282,27 @@ async def create_async_client(
             ) as c:
                 yield c
         ```
+
+    Example with the app lifespan:
+        ```python
+        @pytest.fixture
+        async def client():
+            async with create_async_client(app, lifespan=True) as c:
+                yield c
+        ```
     """
     overrides = dependency_overrides or {}
     owner = object()
 
-    transport = ASGITransport(app=app)
     try:
         if overrides:
             _push_overrides(app, overrides, owner)
-        async with AsyncClient(
-            transport=transport, base_url=base_url, **kwargs
-        ) as client:
+        async with (
+            _run_lifespan(app) if lifespan else nullcontext(app) as asgi_app,
+            AsyncClient(
+                transport=ASGITransport(app=asgi_app), base_url=base_url, **kwargs
+            ) as client,
+        ):
             yield client
     finally:
         if overrides:

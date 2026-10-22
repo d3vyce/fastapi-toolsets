@@ -52,6 +52,37 @@ async with create_async_client(
     ...
 ```
 
+### Lifespan
+
+The client does not run the app's lifespan by default. Pass `lifespan=True` to run startup before the client opens and shutdown after it closes:
+
+```python
+@asynccontextmanager
+async def lifespan(app):
+    yield {"cache": {}}
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/cache")
+async def read_cache(request: Request):
+    return request.state.cache
+
+
+@pytest.fixture
+async def http_client():
+    async with create_async_client(app=app, lifespan=True) as c:
+        yield c
+```
+
+State yielded by the lifespan is available on `request.state`, as a shallow copy per request just like under uvicorn. Shutdown runs even when the test fails, and an exception raised by startup or shutdown propagates unchanged. The client works as a fixture under both the anyio plugin and pytest-asyncio.
+
+The lifespan is called through `app.router.lifespan_context`, so `app` must be a FastAPI or Starlette app, and middleware does not see the lifespan events.
+
+!!! warning "Shutdown runs too"
+    A lifespan that tears down shared resources, such as one wired by `db.install(app)`, disposes the engine when the client closes. Open a client with `lifespan=True` only where that is what you want.
+
 ## Database sessions
 
 Use [`create_worker_database`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_worker_database) + [`create_db_session`](../reference/pytest.md#fastapi_toolsets.pytest.utils.create_db_session) to get a fully isolated `AsyncSession` for each test:
