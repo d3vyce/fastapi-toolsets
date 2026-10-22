@@ -55,6 +55,7 @@ from .conftest import (
     ArticleCrud,
     ArticleRead,
     Color,
+    Event,
     EventCreate,
     EventCrud,
     EventDateCursorCrud,
@@ -73,6 +74,7 @@ from .conftest import (
     Post,
     PostCrud,
     PostWithTagsRead,
+    Product,
     ProductCreate,
     ProductCrud,
     ProductNumericCursorCrud,
@@ -313,6 +315,28 @@ async def _orders(session: AsyncSession) -> None:
         )
 
 
+async def _products(session: AsyncSession, count: int) -> None:
+    """Products p0, p1, ... priced 1.99, 2.99, ..."""
+    for i in range(count):
+        await ProductCrud.create(
+            session, ProductCreate(name=f"p{i}", price=decimal.Decimal(f"{i + 1}.99"))
+        )
+
+
+async def _events(session: AsyncSession, count: int) -> None:
+    """Events e0, e1, ... an hour and a day apart from 2024-01-01."""
+    base = datetime.datetime(2024, 1, 1)
+    for i in range(count):
+        await EventCrud.create(
+            session,
+            EventCreate(
+                name=f"e{i}",
+                occurred_at=base + datetime.timedelta(hours=i),
+                scheduled_date=datetime.date(2024, 1, i + 1),
+            ),
+        )
+
+
 def _aggregates(statements: list[str]) -> list[str]:
     return [sql for sql in statements if "array_agg" in sql]
 
@@ -497,24 +521,13 @@ class TestCursorPaginate:
     async def test_cursor_values_round_trip_for_each_column_type(
         self, db_session, kind
     ):
-        base = datetime.datetime(2024, 1, 1)
-        for i in range(5):
-            if kind == "integer":
+        if kind == "integer":
+            for i in range(5):
                 await IntRoleCursorCrud.create(db_session, IntRoleCreate(name=f"r{i}"))
-            elif kind == "numeric":
-                await ProductCrud.create(
-                    db_session,
-                    ProductCreate(name=f"p{i}", price=decimal.Decimal(f"{i + 1}.99")),
-                )
-            else:
-                await EventCrud.create(
-                    db_session,
-                    EventCreate(
-                        name=f"e{i}",
-                        occurred_at=base + datetime.timedelta(hours=i),
-                        scheduled_date=datetime.date(2024, 1, i + 1),
-                    ),
-                )
+        elif kind == "numeric":
+            await _products(db_session, 5)
+        else:
+            await _events(db_session, 5)
         crud, schema = {
             "integer": (IntRoleCursorCrud, IntRoleRead),
             "datetime": (EventDateTimeCursorCrud, EventRead),
@@ -1650,6 +1663,8 @@ class TestFilterBy:
             ({"color": ["RED"]}, {"order-1", "order-3"}),
             ({"priority": OrderStatus.PENDING}, {"order-1", "order-3"}),
             ({"priority": 3}, {"order-2"}),
+            ({"priority": "3"}, {"order-2"}),
+            ({"priority": ["1", "3"]}, {"order-1", "order-2", "order-3"}),
             ({"status": 1}, KeyError),
             ({"status": [1, 3]}, KeyError),
         ],
@@ -1662,6 +1677,8 @@ class TestFilterBy:
             "str-enum-names",
             "integer-with-member",
             "integer-with-int",
+            "integer-with-str",
+            "integer-with-strs",
             "int-enum-plain-int",
             "int-enum-plain-list",
         ],
@@ -1674,6 +1691,46 @@ class TestFilterBy:
                 db_session, filter_by=filter_by, schema=OrderRead
             )
             assert {o.name for o in result.data} == expected
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("seed", "crud", "schema", "filter_by", "expected"),
+        [
+            (
+                _products,
+                CrudFactory(Product, facet_fields=[Product.price]),
+                ProductRead,
+                {"price": ["1.99", "3.99"]},
+                {"p0", "p2"},
+            ),
+            (
+                _events,
+                CrudFactory(Event, facet_fields=[Event.scheduled_date]),
+                EventRead,
+                {"scheduled_date": "2024-01-02"},
+                {"e1"},
+            ),
+            (
+                _events,
+                CrudFactory(Event, facet_fields=[Event.occurred_at]),
+                EventRead,
+                {"occurred_at": ["2024-01-01T00:00:00"]},
+                {"e0"},
+            ),
+        ],
+        ids=["numeric", "date", "datetime"],
+    )
+    async def test_string_values_coerced_to_column_type(
+        self, db_session, seed, crud, schema, filter_by, expected
+    ):
+        """Query parameters arrive as strings, whatever the column type."""
+        await seed(db_session, 3)
+
+        result = await crud.offset_paginate(
+            db_session, filter_by=filter_by, schema=schema
+        )
+
+        assert {row.name for row in result.data} == expected
 
 
 class TestParams:
