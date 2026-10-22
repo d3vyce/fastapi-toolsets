@@ -1,10 +1,11 @@
 """Search utilities for AsyncCrud."""
 
 import functools
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import TypeAdapter
 from sqlalchemy import (
     Column,
     String,
@@ -597,6 +598,41 @@ def _coerce_bool(value: Any) -> bool:
     raise ValueError(f"Cannot coerce {value!r} to bool")
 
 
+def _coerce_enum(enum_class: Any, value: Any) -> Any:
+    """Look up an enum member by name ("PENDING", "RED") unless given one."""
+    return value if isinstance(value, enum_class) else enum_class[value]
+
+
+@functools.cache
+def _validator(python_type: type) -> Callable[[Any], Any]:
+    """Pydantic validator for *python_type*, built once per type."""
+    return TypeAdapter(python_type).validate_python
+
+
+def _coercer(col_type: Any) -> Callable[[Any], Any]:
+    """Convert a filter value, often a query string, to the column's Python type."""
+    if isinstance(col_type, Boolean):
+        return _coerce_bool
+    if isinstance(col_type, Enum) and col_type.enum_class is not None:
+        return functools.partial(_coerce_enum, col_type.enum_class)
+    if isinstance(col_type, String) or not isinstance(col_type, _EQUALITY_TYPES):
+        return lambda value: value
+    return _validator(col_type.python_type)
+
+
+def _filter_condition(key: str, column: Any, value: Any) -> "ColumnElement[bool]":
+    """Equality, IN or array overlap condition on *column* for *value*."""
+    col_type = column.property.columns[0].type
+    if not isinstance(col_type, (ARRAY, Boolean, *_EQUALITY_TYPES)):
+        raise UnsupportedFacetTypeError(key, type(col_type).__name__)
+    coerce = _coercer(col_type)
+    many = isinstance(value, list)
+    coerced = [coerce(v) for v in value] if many else coerce(value)
+    if isinstance(col_type, ARRAY):
+        return column.overlap(coerced) if many else any_(column) == coerced
+    return column.in_(coerced) if many else column == coerced
+
+
 def build_filter_by(
     filter_by: dict[str, Any],
     facet_fields: Sequence[FacetFieldType],
@@ -630,45 +666,7 @@ def build_filter_by(
         if key not in index:
             raise InvalidFacetFilterError(key, valid_keys)
 
-        column, _ = index[key]
-
-        col_type = column.property.columns[0].type
-        if isinstance(col_type, Boolean):
-            coerce = _coerce_bool
-            if isinstance(value, list):
-                filters[key] = column.in_([coerce(v) for v in value])
-            else:
-                filters[key] = column == coerce(value)
-        elif isinstance(col_type, ARRAY):
-            if isinstance(value, list):
-                filters[key] = column.overlap(value)
-            else:
-                filters[key] = any_(column) == value
-        elif isinstance(col_type, Enum):
-            enum_class = col_type.enum_class
-            if enum_class is not None:
-
-                def _coerce_enum(v: Any, enum_class: Any = enum_class) -> Any:
-                    if isinstance(v, enum_class):
-                        return v
-                    return enum_class[v]  # lookup by name: "PENDING", "RED"
-
-                if isinstance(value, list):
-                    filters[key] = column.in_([_coerce_enum(v) for v in value])
-                else:
-                    filters[key] = column == _coerce_enum(value)
-            else:  # pragma: no cover
-                if isinstance(value, list):
-                    filters[key] = column.in_(value)
-                else:
-                    filters[key] = column == value
-        elif isinstance(col_type, _EQUALITY_TYPES):
-            if isinstance(value, list):
-                filters[key] = column.in_(value)
-            else:
-                filters[key] = column == value
-        else:
-            raise UnsupportedFacetTypeError(key, type(col_type).__name__)
+        filters[key] = _filter_condition(key, index[key][0], value)
 
     paths = {key: index[key][1] for key in filters}
     to_one = [key for key in filters if not is_to_many(paths[key])]
