@@ -616,6 +616,8 @@ def _coercer(col_type: Any) -> Callable[[Any], Any]:
         return _coerce_bool
     if isinstance(col_type, Enum) and col_type.enum_class is not None:
         return functools.partial(_coerce_enum, col_type.enum_class)
+    if isinstance(col_type, ARRAY):
+        return _coercer(col_type.item_type)
     if isinstance(col_type, String) or not isinstance(col_type, _EQUALITY_TYPES):
         return lambda value: value
     return _validator(col_type.python_type)
