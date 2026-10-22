@@ -269,7 +269,12 @@ def configure_logging(
     for new in handlers:
         root.addHandler(new)
     root.setLevel(config.level)
+    tune_loggers(config)
+    return root
 
+
+def tune_loggers(config: LoggingConfig) -> None:
+    """Apply the ``propagate`` and level options of *config* to the named loggers."""
     for name in config.propagate:
         third_party = logging.getLogger(name)
         third_party.handlers.clear()
@@ -284,5 +289,3 @@ def configure_logging(
         logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
     for name, level in config.levels.items():
         logging.getLogger(name).setLevel(level)
-
-    return root

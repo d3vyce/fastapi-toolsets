@@ -2,7 +2,9 @@
 
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 
 from fastapi import FastAPI
@@ -15,6 +17,7 @@ from .config import (
     LogLevel,
     LogStyle,
     configure_logging,
+    tune_loggers,
 )
 from .context import ContextFilter, bind_log_context, current_log_context, log_context
 from .files import SharedRotatingFileHandler
@@ -55,7 +58,9 @@ def init_logging(
 ) -> FastAPI:
     """Configure logging and add [`RequestLoggingMiddleware`][fastapi_toolsets.logger.RequestLoggingMiddleware] to an app.
 
-    Call it after adding your other middleware so it wraps them.
+    Call it after adding your other middleware so it wraps them. The named
+    loggers are configured again when the app starts, undoing a logging
+    config the server applied after importing the app.
 
     Args:
         app: The FastAPI application.
@@ -81,7 +86,9 @@ def init_logging(
     """
     if access_log is None:
         access_log = config is None or config.access_log is not False
-    configure_logging(config, access_log=access_log)
+    config = replace(config or LoggingConfig(), access_log=access_log)
+    configure_logging(config)
+    _tune_loggers_on_startup(app, config)
     app.add_middleware(
         RequestLoggingMiddleware,
         request_id_header=request_id_header,
@@ -91,6 +98,21 @@ def init_logging(
         access_log=access_log,
     )
     return app
+
+
+def _tune_loggers_on_startup(app: FastAPI, config: LoggingConfig) -> None:
+    # ``fastapi run`` imports the app, then lets uvicorn load its own logging
+    # config, which gives uvicorn's loggers their handlers back. The root
+    # level and handlers are left alone, as a test may have changed them.
+    lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def configured(app: Any) -> AsyncGenerator[Any]:
+        tune_loggers(config)
+        async with lifespan(app) as state:
+            yield state
+
+    app.router.lifespan_context = configured
 
 
 _SENTINEL: Any = object()

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import logging.config
 import multiprocessing
 import re
 import sys
@@ -72,6 +73,22 @@ def _reset_logging():
 
 # JSON records to stdout, where ``capsys`` reads them, with no OpenTelemetry.
 _JSON = LoggingConfig(otel=False, stream="stdout", style="json")
+
+
+# The parts of uvicorn's default ``LOGGING_CONFIG`` that touch its loggers.
+_UVICORN_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "default": {"class": "logging.StreamHandler", "stream": "ext://sys.stderr"},
+        "access": {"class": "logging.StreamHandler", "stream": "ext://sys.stdout"},
+    },
+    "loggers": {
+        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"level": "INFO"},
+        "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+    },
+}
 
 
 def _json_lines(text: str) -> list[dict]:
@@ -1094,6 +1111,35 @@ class TestRequestLoggingMiddleware:
 
         assert len(_access_lines(capsys.readouterr().out)) == access_lines_logged
         assert logging.getLogger("uvicorn.access").level == uvicorn_access_level
+
+    @pytest.mark.anyio
+    async def test_startup_undoes_the_log_config_uvicorn_loads_after_the_app(
+        self, capsys
+    ):
+        # ``fastapi run`` imports the app before uvicorn loads its config.
+        app = _app()
+        logging.config.dictConfig(_UVICORN_LOG_CONFIG)
+
+        async with app.router.lifespan_context(app):
+            logging.getLogger("uvicorn.error").info("started")
+            logging.getLogger("uvicorn.access").info("GET / 200")
+            await _get(app, "/openapi.json")
+
+        out, err = capsys.readouterr()
+        lines = _json_lines(out)
+        assert err == ""
+        assert lines[0]["message"] == "started"
+        assert len(_access_lines(out)) == 1
+        assert all(line["logger"] != "uvicorn.access" for line in lines)
+
+    @pytest.mark.anyio
+    async def test_startup_keeps_a_root_level_set_after_init_logging(self):
+        app = _app()
+        # As ``caplog.set_level`` does in a test.
+        logging.getLogger().setLevel(logging.DEBUG)
+
+        async with app.router.lifespan_context(app):
+            assert logging.getLogger().level == logging.DEBUG
 
     @pytest.mark.anyio
     async def test_non_http_scopes_pass_through_untouched(self):
