@@ -508,27 +508,19 @@ class AsyncCrud(Generic[ModelType]):
         fb_filters, fb_joins = cls._prepare_filter_by(
             filter_by, facet_fields, other_joins=other_joins
         )
-        plan = (
-            build_search_plan(
-                cls.model,
-                search,
-                search_fields,
-                cls.searchable_fields,
-                search_column,
-                other_joins=[*other_joins, *fb_joins],
-            )
-            if search
-            else None
+        plan = build_search_plan(
+            cls.model,
+            search or "",
+            search_fields,
+            cls.searchable_fields,
+            search_column,
+            other_joins=[*other_joins, *fb_joins],
         )
         return _QueryPlan(
-            filters=[
-                *filters,
-                *(plan.page_filters if plan else []),
-                *fb_filters.values(),
-            ],
-            joins=[*fb_joins, *(plan.page_joins if plan else [])],
-            facet_base=[*filters, *(plan.agg_filters if plan else [])],
-            search_joins=plan.agg_joins if plan else [],
+            filters=[*filters, *plan.page_filters, *fb_filters.values()],
+            joins=[*fb_joins, *plan.page_joins],
+            facet_base=[*filters, *plan.agg_filters],
+            search_joins=plan.agg_joins,
             fb_filters=fb_filters,
             fb_joins=fb_joins,
         )

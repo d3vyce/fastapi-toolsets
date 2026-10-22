@@ -47,6 +47,7 @@ from fastapi_toolsets.crud import (
 )
 from fastapi_toolsets.crud.factory import _CursorDirection, _encode_cursor
 from fastapi_toolsets.crud.search import (
+    _EMPTY_PLAN,
     _coerce_bool,
     _coercer,
     _facet_rows,
@@ -857,7 +858,7 @@ class TestSearch:
 
     @pytest.mark.anyio
     @_methods
-    async def test_search_column_narrows_and_is_validated(self, db_session, method):
+    async def test_search_column_narrows(self, db_session, method):
         admin = await RoleCrud.create(db_session, RoleCreate(name="admin"))
         await _users(db_session, "admin-user")
         await _users(db_session, "alice", role=admin)
@@ -877,15 +878,21 @@ class TestSearch:
         assert [u.username for u in narrowed.data] == ["admin-user"]
         assert len(everywhere.data) == 2
         assert narrowed.search_columns == ["id", "username", "role__name"]
+
+    @pytest.mark.anyio
+    @_methods
+    @pytest.mark.parametrize("search", ["x", "", None])
+    async def test_unknown_search_column_is_rejected(self, db_session, method, search):
         with pytest.raises(InvalidSearchColumnError) as exc:
             await _paginate(
                 UserSearchCrud,
                 method,
                 db_session,
-                search="x",
+                search=search,
                 search_column="email",
                 schema=UserRead,
             )
+
         assert exc.value.column == "email"
         assert exc.value.valid_columns == ["id", "role__name", "username"]
 
@@ -1144,6 +1151,14 @@ class TestSearchFilters:
         assert plan.agg_joins == ([to_one] if kept_joined else [])
         assert "nodes.id IN (SELECT nodes.parent_id" in sql
         assert sql.count("IN (SELECT") == (1 if kept_joined else 2)
+
+    def test_search_column_is_checked_without_a_query(self):
+        valid = build_search_plan(User, " ", [User.username], search_column="username")
+        unconfigured = build_search_plan(_Crate, "")
+
+        with pytest.raises(InvalidSearchColumnError):
+            build_search_plan(User, "", [User.username], search_column="email")
+        assert valid == _EMPTY_PLAN and unconfigured == _EMPTY_PLAN
 
     def test_casts_only_non_string_columns(self):
         plain, _ = build_search_filters(User, "john", search_fields=[User.username])
