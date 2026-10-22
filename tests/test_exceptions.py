@@ -18,6 +18,7 @@ from fastapi_toolsets.exceptions import (
     ForbiddenError,
     ForeignKeyViolationError,
     InvalidFacetFilterError,
+    InvalidFacetValueError,
     InvalidOrderFieldError,
     InvalidSearchColumnError,
     LockTimeoutError,
@@ -126,6 +127,14 @@ _BUILTIN_ERRORS = [
         "Invalid Facet Filter",
         "Valid keys: ['shape', 'size']",
         id="invalid-facet-filter",
+    ),
+    pytest.param(
+        InvalidFacetValueError("priority", "high"),
+        400,
+        "FACET-VALUE-400",
+        "Invalid Facet Value",
+        "Invalid value 'high' for facet field 'priority'",
+        id="invalid-facet-value",
     ),
     pytest.param(
         UnsupportedFacetTypeError("blob", "LargeBinary"),

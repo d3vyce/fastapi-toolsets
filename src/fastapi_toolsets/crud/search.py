@@ -36,6 +36,7 @@ from sqlalchemy.types import (
 from .._orm import is_to_many, key_expr
 from ..exceptions import (
     InvalidFacetFilterError,
+    InvalidFacetValueError,
     InvalidSearchColumnError,
     NoSearchableFieldsError,
     UnsupportedFacetTypeError,
@@ -627,7 +628,10 @@ def _filter_condition(key: str, column: Any, value: Any) -> "ColumnElement[bool]
         raise UnsupportedFacetTypeError(key, type(col_type).__name__)
     coerce = _coercer(col_type)
     many = isinstance(value, list)
-    coerced = [coerce(v) for v in value] if many else coerce(value)
+    try:
+        coerced = [coerce(v) for v in value] if many else coerce(value)
+    except (ValueError, KeyError) as exc:
+        raise InvalidFacetValueError(key, value) from exc
     if isinstance(col_type, ARRAY):
         return column.overlap(coerced) if many else any_(column) == coerced
     return column.in_(coerced) if many else column == coerced
@@ -653,6 +657,7 @@ def build_filter_by(
 
     Raises:
         InvalidFacetFilterError: If a key in filter_by is not a declared facet field
+        InvalidFacetValueError: If a value cannot be converted to the column type
     """
     index: dict[str, tuple[InstrumentedAttribute[Any], tuple[Any, ...]]] = {
         key: (_field_column(field), _field_rels(field))

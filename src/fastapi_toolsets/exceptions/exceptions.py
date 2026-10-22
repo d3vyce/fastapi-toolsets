@@ -146,6 +146,28 @@ class InvalidFacetFilterError(ApiException):
         )
 
 
+class InvalidFacetValueError(ApiException):
+    """Raised when a filter_by value cannot be converted to the facet column type."""
+
+    api_error = ApiError(
+        code=400,
+        msg="Invalid Facet Value",
+        desc="One or more filter_by values do not match the facet column type.",
+        err_code="FACET-VALUE-400",
+    )
+
+    def __init__(self, key: str, value: Any) -> None:
+        """Initialize the exception.
+
+        Args:
+            key: The facet field key.
+            value: The value that could not be converted.
+        """
+        self.key = key
+        self.value = value
+        super().__init__(desc=f"Invalid value {value!r} for facet field '{key}'.")
+
+
 class UnsupportedFacetTypeError(ApiException):
     """Raised when a facet field has a column type not supported by filter_by."""
 
