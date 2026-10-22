@@ -41,7 +41,13 @@ from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.roles import WhereHavingRole
 from sqlalchemy.sql.util import ClauseAdapter
 
-from .._orm import is_expired, is_to_many, key_expr, loaded_relationships
+from .._orm import (
+    is_expired,
+    is_to_many,
+    joined_tables,
+    key_expr,
+    loaded_relationships,
+)
 from ..db import transaction
 from ..exceptions import InvalidOrderFieldError, NotFoundError
 from ..schemas import (
@@ -487,6 +493,7 @@ class AsyncCrud(Generic[ModelType]):
         filter_by: dict[str, Any] | BaseModel | None,
         facet_fields: Sequence[FacetFieldType] | None,
         order_joins: Sequence[Any] | None,
+        joins: JoinType | None,
     ) -> _QueryPlan:
         """Combine the caller's filters, the search and ``filter_by`` into a plan.
 
@@ -494,9 +501,12 @@ class AsyncCrud(Generic[ModelType]):
         individually, so ``fb_filters`` is left out of ``facet_base``.
         """
         filters = list(filters) if filters else []
-        order_joins = order_joins or ()
+        other_joins = [
+            *(order_joins or ()),
+            *joined_tables(target for target, _ in joins or ()),
+        ]
         fb_filters, fb_joins = cls._prepare_filter_by(
-            filter_by, facet_fields, other_joins=order_joins
+            filter_by, facet_fields, other_joins=other_joins
         )
         plan = (
             build_search_plan(
@@ -505,7 +515,7 @@ class AsyncCrud(Generic[ModelType]):
                 search_fields,
                 cls.searchable_fields,
                 search_column,
-                other_joins=[*order_joins, *fb_joins],
+                other_joins=[*other_joins, *fb_joins],
             )
             if search
             else None
@@ -1679,6 +1689,7 @@ class AsyncCrud(Generic[ModelType]):
             filter_by=filter_by,
             facet_fields=facet_fields,
             order_joins=order_joins,
+            joins=joins,
         )
         q = select(cls.model)
         q = _apply_joins(q, joins, outer_join)
@@ -1811,6 +1822,7 @@ class AsyncCrud(Generic[ModelType]):
             filter_by=filter_by,
             facet_fields=facet_fields,
             order_joins=order_joins,
+            joins=joins,
         )
         # Rows sharing a cursor value are ordered, and resumed, by primary key.
         tiebreak = cls._tiebreak_attrs(cursor_column)
