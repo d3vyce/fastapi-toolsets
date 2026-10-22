@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from .context import ContextFilter, skip_logged_exceptions
 from .files import SharedRotatingFileHandler
@@ -16,6 +16,7 @@ __all__ = [
     "DEFAULT_PROPAGATE_LOGGERS",
     "DEFAULT_QUIET_LOGGERS",
     "LogLevel",
+    "LogStream",
     "LogStyle",
     "LoggingConfig",
     "configure_logging",
@@ -23,6 +24,7 @@ __all__ = [
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 LogStyle = Literal["console", "json", "auto"]
+LogStream = Literal["stderr", "stdout"]
 
 DEFAULT_QUIET_LOGGERS = (
     "asyncio",
@@ -79,7 +81,7 @@ class LoggingConfig:
 
     level: LogLevel | int = "INFO"
     style: LogStyle = "auto"
-    stream: Literal["stderr", "stdout"] = "stderr"
+    stream: LogStream = "stderr"
     colors: bool | None = None
     datefmt: str = "%H:%M:%S"
     request_id_length: int = 8
@@ -158,6 +160,10 @@ _ENV_PARSERS: dict[str, Callable[[str], Any]] = {
 }
 
 
+# The config of the last ``configure_logging`` call, for ``_tune_loggers``.
+_applied: LoggingConfig | None = None
+
+
 def owned_handlers() -> list[logging.Handler]:
     """Return the root handlers installed by ``configure_logging``."""
     return [h for h in logging.getLogger().handlers if getattr(h, _OWNED, False)]
@@ -182,6 +188,8 @@ def _build_formatter(
 
 
 def _build_stream_handler(config: LoggingConfig) -> logging.Handler:
+    if config.stream not in get_args(LogStream):
+        raise ValueError(f"Unknown log stream {config.stream!r}")
     stream = getattr(sys, config.stream)
     is_tty = hasattr(stream, "isatty") and stream.isatty()
     colors = is_tty if config.colors is None else config.colors
@@ -236,7 +244,7 @@ def configure_logging(
         The root logger.
 
     Raises:
-        ValueError: If ``style`` is unknown.
+        ValueError: If ``style`` or ``stream`` is unknown.
         ImportError: If ``otel`` is ``True`` and the ``otel`` extra is missing.
 
     Example:
@@ -270,6 +278,17 @@ def configure_logging(
         root.addHandler(new)
     root.setLevel(config.level)
 
+    global _applied
+    _applied = config
+    _tune_loggers()
+    return root
+
+
+def _tune_loggers() -> None:
+    """Apply the logger options of the last ``configure_logging`` call."""
+    config = _applied
+    if config is None:
+        return
     for name in config.propagate:
         third_party = logging.getLogger(name)
         third_party.handlers.clear()
@@ -284,5 +303,3 @@ def configure_logging(
         logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
     for name, level in config.levels.items():
         logging.getLogger(name).setLevel(level)
-
-    return root

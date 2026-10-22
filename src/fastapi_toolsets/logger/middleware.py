@@ -33,6 +33,11 @@ class RequestLoggingMiddleware:
     The access line is logged at ``ERROR`` for a 5xx status or an unhandled
     exception, whose traceback it then carries, and at ``INFO`` otherwise.
 
+    When the app starts, the logger options of the last
+    [`configure_logging`][fastapi_toolsets.logger.configure_logging] call are
+    applied again, undoing a logging config the server loaded after importing
+    the app, as ``fastapi run`` does.
+
     Args:
         app: The ASGI application to wrap.
         request_id_header: Response header carrying the request id. ``None``
@@ -73,6 +78,11 @@ class RequestLoggingMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or (self.exclude and self.exclude(scope)):
+            if scope["type"] == "lifespan":
+                # Imported here: the config module imports this one through formatters.
+                from .config import _tune_loggers
+
+                _tune_loggers()
             await self.app(scope, receive, send)
             return
 
