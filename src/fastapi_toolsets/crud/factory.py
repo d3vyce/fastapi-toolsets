@@ -706,6 +706,11 @@ class AsyncCrud(Generic[ModelType]):
                 )
                 reserved_names.update({"search", "search_column"})
 
+        # Reserved before the facets are checked, though added after them.
+        resolved_order = cls._resolve_order_fields(order_fields) if order else None
+        if resolved_order:
+            reserved_names.update({"order_by", "order"})
+
         filter_keys: list[str] | None = None
         if filter:
             resolved_facets = cls._resolve_facet_fields(facet_fields)
@@ -730,32 +735,30 @@ class AsyncCrud(Generic[ModelType]):
 
         order_field_map: dict[str, OrderFieldType] | None = None
         order_valid_keys: list[str] | None = None
-        if order:
-            resolved_order = cls._resolve_order_fields(order_fields)
-            if resolved_order:
-                keys = facet_keys(resolved_order)
-                order_field_map = dict(zip(keys, resolved_order))
-                order_valid_keys = sorted(order_field_map.keys())
-                all_params.extend(
-                    [
-                        inspect.Parameter(
-                            "order_by",
-                            inspect.Parameter.KEYWORD_ONLY,
-                            annotation=str | None,
-                            default=Query(
-                                None,
-                                description=f"Field to order by. Valid values: {order_valid_keys}",
-                                json_schema_extra={"enum": order_valid_keys},
-                            ),
+        if resolved_order:
+            keys = facet_keys(resolved_order)
+            order_field_map = dict(zip(keys, resolved_order))
+            order_valid_keys = sorted(order_field_map.keys())
+            all_params.extend(
+                [
+                    inspect.Parameter(
+                        "order_by",
+                        inspect.Parameter.KEYWORD_ONLY,
+                        annotation=str | None,
+                        default=Query(
+                            None,
+                            description=f"Field to order by. Valid values: {order_valid_keys}",
+                            json_schema_extra={"enum": order_valid_keys},
                         ),
-                        inspect.Parameter(
-                            "order",
-                            inspect.Parameter.KEYWORD_ONLY,
-                            annotation=Literal["asc", "desc"],
-                            default=Query(default_order, description="Sort direction"),
-                        ),
-                    ]
-                )
+                    ),
+                    inspect.Parameter(
+                        "order",
+                        inspect.Parameter.KEYWORD_ONLY,
+                        annotation=Literal["asc", "desc"],
+                        default=Query(default_order, description="Sort direction"),
+                    ),
+                ]
+            )
 
         fixed: dict[str, Any] = {
             **pagination_fixed,
