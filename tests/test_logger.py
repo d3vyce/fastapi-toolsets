@@ -291,9 +291,17 @@ class TestConfigureLogging:
         (line,) = capsys.readouterr().out.splitlines()
         assert re.fullmatch(pattern, line), line
 
-    def test_an_unknown_style_is_rejected(self):
-        with pytest.raises(ValueError, match="Unknown log style"):
-            configure_logging(otel=False, style="xml")
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"style": "xml"}, "Unknown log style 'xml'"),
+            ({"stream": "stdin"}, "Unknown log stream 'stdin'"),
+        ],
+        ids=["style", "stream"],
+    )
+    def test_an_unknown_style_or_stream_is_rejected(self, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            configure_logging(otel=False, **kwargs)
 
     @pytest.mark.parametrize(
         ("kwargs", "taken_over"),

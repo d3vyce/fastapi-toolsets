@@ -15,6 +15,7 @@ from fastapi_toolsets.logger import (
     JsonFormatter,
     LoggingConfig,
     LogLevel,
+    LogStream,
     LogStyle,
     RequestLoggingMiddleware,
     SharedRotatingFileHandler,

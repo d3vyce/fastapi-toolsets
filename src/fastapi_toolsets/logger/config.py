@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from .context import ContextFilter, skip_logged_exceptions
 from .files import SharedRotatingFileHandler
@@ -16,6 +16,7 @@ __all__ = [
     "DEFAULT_PROPAGATE_LOGGERS",
     "DEFAULT_QUIET_LOGGERS",
     "LogLevel",
+    "LogStream",
     "LogStyle",
     "LoggingConfig",
     "configure_logging",
@@ -23,6 +24,7 @@ __all__ = [
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 LogStyle = Literal["console", "json", "auto"]
+LogStream = Literal["stderr", "stdout"]
 
 DEFAULT_QUIET_LOGGERS = (
     "asyncio",
@@ -79,7 +81,7 @@ class LoggingConfig:
 
     level: LogLevel | int = "INFO"
     style: LogStyle = "auto"
-    stream: Literal["stderr", "stdout"] = "stderr"
+    stream: LogStream = "stderr"
     colors: bool | None = None
     datefmt: str = "%H:%M:%S"
     request_id_length: int = 8
@@ -186,6 +188,8 @@ def _build_formatter(
 
 
 def _build_stream_handler(config: LoggingConfig) -> logging.Handler:
+    if config.stream not in get_args(LogStream):
+        raise ValueError(f"Unknown log stream {config.stream!r}")
     stream = getattr(sys, config.stream)
     is_tty = hasattr(stream, "isatty") and stream.isatty()
     colors = is_tty if config.colors is None else config.colors
@@ -240,7 +244,7 @@ def configure_logging(
         The root logger.
 
     Raises:
-        ValueError: If ``style`` is unknown.
+        ValueError: If ``style`` or ``stream`` is unknown.
         ImportError: If ``otel`` is ``True`` and the ``otel`` extra is missing.
 
     Example:

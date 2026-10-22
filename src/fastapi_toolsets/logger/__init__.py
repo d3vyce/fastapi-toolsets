@@ -13,6 +13,7 @@ from .config import (
     DEFAULT_QUIET_LOGGERS,
     LoggingConfig,
     LogLevel,
+    LogStream,
     LogStyle,
     configure_logging,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "ContextFilter",
     "JsonFormatter",
     "LogLevel",
+    "LogStream",
     "LogStyle",
     "LoggingConfig",
     "RequestLoggingMiddleware",
