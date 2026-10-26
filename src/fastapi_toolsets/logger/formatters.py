@@ -12,10 +12,11 @@ from .middleware import ACCESS_FIELDS, ACCESS_LOGGER
 __all__ = ["ConsoleFormatter", "JsonFormatter"]
 
 # Attributes every LogRecord carries. Anything else was added through
-# ``extra`` or the context filter and is rendered as a field.
+# ``extra`` or the context filter and is rendered as a field. Uvicorn passes
+# a colored copy of its message as ``color_message``.
 _RESERVED_ATTRS = frozenset(
     logging.LogRecord("", 0, "", 0, "", None, None).__dict__
-) | {"message", "asctime"}
+) | {"message", "asctime", "color_message"}
 
 _LEVEL_COLORS = {
     "DEBUG": "\033[36m",
