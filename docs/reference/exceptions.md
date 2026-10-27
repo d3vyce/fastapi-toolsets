@@ -16,6 +16,7 @@ from fastapi_toolsets.exceptions import (
     InvalidFacetFilterError,
     InvalidFacetValueError,
     InvalidOrderFieldError,
+    BulkLimitExceededError,
     PoolExhaustedError,
     LockTimeoutError,
     IntegrityViolationError,
@@ -49,6 +50,8 @@ from fastapi_toolsets.exceptions import (
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidFacetValueError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError
+
+## ::: fastapi_toolsets.exceptions.exceptions.BulkLimitExceededError
 
 ## ::: fastapi_toolsets.exceptions.exceptions.PoolExhaustedError
 

@@ -3,6 +3,7 @@
 from .exceptions import (
     ApiError,
     ApiException,
+    BulkLimitExceededError,
     CheckViolationError,
     ConflictError,
     ExclusionViolationError,
@@ -29,6 +30,7 @@ from .handler import init_exceptions_handlers
 __all__ = [
     "ApiError",
     "ApiException",
+    "BulkLimitExceededError",
     "CheckViolationError",
     "ConflictError",
     "ExclusionViolationError",

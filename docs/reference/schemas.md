@@ -18,6 +18,10 @@ from fastapi_toolsets.schemas import (
     PaginatedResponse,
     OffsetPaginatedResponse,
     CursorPaginatedResponse,
+    BulkRequest,
+    BulkUpdateRequest,
+    BulkItemError,
+    BulkResult,
 )
 ```
 
@@ -44,3 +48,11 @@ from fastapi_toolsets.schemas import (
 ## ::: fastapi_toolsets.schemas.OffsetPaginatedResponse
 
 ## ::: fastapi_toolsets.schemas.CursorPaginatedResponse
+
+## ::: fastapi_toolsets.schemas.BulkRequest
+
+## ::: fastapi_toolsets.schemas.BulkUpdateRequest
+
+## ::: fastapi_toolsets.schemas.BulkItemError
+
+## ::: fastapi_toolsets.schemas.BulkResult

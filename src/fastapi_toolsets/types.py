@@ -11,6 +11,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 # Generic TypeVars
 DataT = TypeVar("DataT")
+IdT = TypeVar("IdT")
 ModelType = TypeVar("ModelType", bound=DeclarativeBase)
 SchemaType = TypeVar("SchemaType", bound=BaseModel)
 

@@ -31,7 +31,7 @@ from sqlalchemy import (
     tuple_,
 )
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import NoResultFound
+from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, QueryableAttribute, aliased, selectinload
 from sqlalchemy.orm.attributes import instance_state
@@ -49,8 +49,17 @@ from .._orm import (
     loaded_relationships,
 )
 from ..db import transaction
-from ..exceptions import InvalidOrderFieldError, NotFoundError
+from ..exceptions import (
+    ApiException,
+    BulkLimitExceededError,
+    InvalidOrderFieldError,
+    NotFoundError,
+    from_integrity_error,
+)
 from ..schemas import (
+    ApiError,
+    BulkItemError,
+    BulkResult,
     CursorPaginatedResponse,
     CursorPagination,
     OffsetPaginatedResponse,
@@ -81,6 +90,8 @@ from .search import (
 )
 
 _ForUpdateMode: TypeAlias = bool | Literal["nowait", "skip_locked"]
+_BulkMode: TypeAlias = Literal["atomic", "partial"]
+_BulkAction: TypeAlias = Callable[[AsyncSession, Any], Awaitable[Any]]
 
 
 def _apply_for_update(q: Any, mode: _ForUpdateMode) -> Any:
@@ -457,6 +468,21 @@ class AsyncCrud(Generic[ModelType]):
         if not cls.m2m_fields:
             return set()
         return set(cls.m2m_fields.keys())
+
+    @classmethod
+    def _m2m_load_options(cls: type[Self], obj: BaseModel) -> list[ExecutableOption]:
+        """Eager loads for the M2M collections *obj* sets.
+
+        Assigning a collection that is not loaded would lazy-load it, which
+        fails in async.
+        """
+        if not cls.m2m_fields:
+            return []
+        return [
+            selectinload(rel)
+            for schema_field, rel in cls.m2m_fields.items()
+            if schema_field in obj.model_fields_set
+        ]
 
     @classmethod
     def _resolve_facet_fields(
@@ -1444,20 +1470,11 @@ class AsyncCrud(Generic[ModelType]):
         """
         async with transaction(session):
             m2m_exclude = cls._m2m_schema_fields()
-
-            # Eagerly load M2M relationships that will be updated so that
-            # setattr does not trigger a lazy load (which fails in async).
-            m2m_load_options: list[ExecutableOption] = []
-            if m2m_exclude and cls.m2m_fields:
-                for schema_field, rel in cls.m2m_fields.items():
-                    if schema_field in obj.model_fields_set:
-                        m2m_load_options.append(selectinload(rel))
-
             db_model = await cls.get(
                 session=session,
                 filters=filters,
                 with_for_update=with_for_update,
-                load_options=m2m_load_options,
+                load_options=cls._m2m_load_options(obj),
             )
             values = obj.model_dump(
                 exclude_unset=exclude_unset,
@@ -1569,6 +1586,347 @@ class AsyncCrud(Generic[ModelType]):
         if return_response:
             return Response(data=None)
         return None
+
+    @staticmethod
+    def _bulk_ids(ids: Sequence[Any], max_items: int | None) -> list[Any]:
+        """*ids* without duplicates, checked against *max_items*."""
+        unique = list(dict.fromkeys(ids))
+        if max_items is not None and len(unique) > max_items:
+            raise BulkLimitExceededError(len(unique), max_items)
+        return unique
+
+    @classmethod
+    async def _bulk_rows(
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        *,
+        with_for_update: _ForUpdateMode,
+        load_options: Sequence[ExecutableOption] | None,
+    ) -> dict[Any, ModelType]:
+        """Load the rows whose primary key is in *ids*, keyed by that primary key.
+
+        Rows are read in primary key order, so concurrent calls that lock
+        overlapping sets take the locks in the same order.
+        """
+        pk_attrs = cls._pk_attrs()
+        q = select(cls.model).where(key_expr(pk_attrs).in_(ids)).order_by(*pk_attrs)
+        if resolved := cls._resolve_load_options(load_options):
+            q = q.options(*resolved)
+        q = _apply_for_update(q, with_for_update)
+        result = await session.execute(q)
+        rows: dict[Any, ModelType] = {}
+        for obj in result.unique().scalars().all():
+            identity = instance_state(obj).identity
+            assert identity is not None
+            rows[identity[0] if len(identity) == 1 else identity] = cast(ModelType, obj)
+        return rows
+
+    @overload
+    @classmethod
+    async def bulk_apply(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        action: _BulkAction,
+        *,
+        mode: _BulkMode = ...,
+        max_items: int | None = ...,
+        with_for_update: _ForUpdateMode = ...,
+        load_options: Sequence[ExecutableOption] | None = ...,
+        return_response: Literal[True],
+    ) -> Response[BulkResult[Any]]: ...
+
+    @overload
+    @classmethod
+    async def bulk_apply(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        action: _BulkAction,
+        *,
+        mode: _BulkMode = ...,
+        max_items: int | None = ...,
+        with_for_update: _ForUpdateMode = ...,
+        load_options: Sequence[ExecutableOption] | None = ...,
+        return_response: Literal[False] = ...,
+    ) -> BulkResult[Any]: ...
+
+    @classmethod
+    async def bulk_apply(
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        action: _BulkAction,
+        *,
+        mode: _BulkMode = "atomic",
+        max_items: int | None = 1000,
+        with_for_update: _ForUpdateMode = False,
+        load_options: Sequence[ExecutableOption] | None = None,
+        return_response: bool = False,
+    ) -> BulkResult[Any] | Response[BulkResult[Any]]:
+        """Run *action* on every row whose primary key is in *ids*.
+
+        The rows are loaded in one query, then ``await action(session, obj)``
+        runs on each in the order of *ids*. Changes go through the ORM, so
+        lifecycle events, M2M handling and cascades behave as in ``update``
+        and ``delete``.
+
+        Args:
+            session: DB async session
+            ids: Primary keys of the rows, as the primary key's Python type
+                (a tuple per row for a composite key). Duplicates are ignored.
+            action: Async callable applied to each row. Raise an
+                ``ApiException`` to fail a row.
+            mode: ``"atomic"`` runs the whole batch in one transaction: a
+                missing id raises ``NotFoundError`` and the first error rolls
+                every row back. ``"partial"`` runs each row in its own
+                savepoint and reports missing ids, ``ApiException`` errors and
+                known constraint violations in ``BulkResult.failed`` instead;
+                any other error still aborts the batch.
+            max_items: Maximum number of distinct ids, or ``None`` for no limit.
+            with_for_update: Lock the rows before applying *action*. ``True``
+                for plain ``FOR UPDATE``, ``"nowait"`` for ``FOR UPDATE NOWAIT``,
+                ``"skip_locked"`` for ``FOR UPDATE SKIP LOCKED``.
+            load_options: SQLAlchemy loader options for the rows, replacing
+                ``default_load_options``.
+            return_response: When ``True``, returns ``Response[BulkResult]``.
+
+        Returns:
+            A ``BulkResult``, or ``Response[BulkResult]`` when
+            ``return_response=True``.
+
+        Raises:
+            BulkLimitExceededError: If *ids* holds more than *max_items* ids
+            NotFoundError: In ``"atomic"`` mode, if an id matches no row
+        """
+        unique = cls._bulk_ids(ids, max_items)
+        result: BulkResult[Any] = BulkResult()
+        if unique:
+            async with transaction(session):
+                rows = await cls._bulk_rows(
+                    session,
+                    unique,
+                    with_for_update=with_for_update,
+                    load_options=load_options,
+                )
+                if mode == "atomic":
+                    if missing := [i for i in unique if i not in rows]:
+                        raise NotFoundError(
+                            f"{cls.model.__name__} not found for IDs: "
+                            + ", ".join(map(str, missing))
+                        )
+                    for id_ in unique:
+                        await action(session, rows[id_])
+                    result.succeeded = unique
+                else:
+                    for id_ in unique:
+                        error = await cls._bulk_apply_one(
+                            session, rows.get(id_), action
+                        )
+                        if error is None:
+                            result.succeeded.append(id_)
+                        else:
+                            result.failed.append(
+                                BulkItemError(
+                                    id=id_,
+                                    error_code=error.err_code,
+                                    message=error.msg,
+                                    description=error.desc,
+                                )
+                            )
+        if return_response:
+            return Response(data=result)
+        return result
+
+    @classmethod
+    async def _bulk_apply_one(
+        cls: type[Self],
+        session: AsyncSession,
+        obj: ModelType | None,
+        action: _BulkAction,
+    ) -> ApiError | None:
+        """Run *action* on *obj* in a savepoint; the error that rolled it back."""
+        if obj is None:
+            return NotFoundError().api_error
+        try:
+            async with transaction(session):
+                await action(session, obj)
+        except ApiException as exc:
+            return exc.api_error
+        except IntegrityError as exc:
+            if (api_exc := from_integrity_error(exc)) is None:
+                raise
+            return api_exc.api_error
+        return None
+
+    @overload
+    @classmethod
+    async def bulk_delete(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        *,
+        mode: _BulkMode = ...,
+        max_items: int | None = ...,
+        with_for_update: _ForUpdateMode = ...,
+        return_response: Literal[True],
+    ) -> Response[BulkResult[Any]]: ...
+
+    @overload
+    @classmethod
+    async def bulk_delete(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        *,
+        mode: _BulkMode = ...,
+        max_items: int | None = ...,
+        with_for_update: _ForUpdateMode = ...,
+        return_response: Literal[False] = ...,
+    ) -> BulkResult[Any]: ...
+
+    @classmethod
+    async def bulk_delete(
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        *,
+        mode: _BulkMode = "atomic",
+        max_items: int | None = 1000,
+        with_for_update: _ForUpdateMode = False,
+        return_response: bool = False,
+    ) -> BulkResult[Any] | Response[BulkResult[Any]]:
+        """Delete the rows whose primary key is in *ids*.
+
+        Args:
+            session: DB async session
+            ids: Primary keys of the rows to delete
+            mode: ``"atomic"`` or ``"partial"``, see ``bulk_apply``
+            max_items: Maximum number of distinct ids, or ``None`` for no limit
+            with_for_update: Lock the rows before deleting them
+            return_response: When ``True``, returns ``Response[BulkResult]``.
+
+        Returns:
+            A ``BulkResult``, or ``Response[BulkResult]`` when
+            ``return_response=True``.
+        """
+
+        async def delete(session: AsyncSession, obj: Any) -> None:
+            await session.delete(obj)
+
+        return await cls.bulk_apply(
+            session,
+            ids,
+            delete,
+            mode=mode,
+            max_items=max_items,
+            with_for_update=with_for_update,
+            load_options=[],
+            return_response=return_response,
+        )
+
+    @overload
+    @classmethod
+    async def bulk_update(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        obj: BaseModel,
+        *,
+        exclude_unset: bool = ...,
+        exclude_none: bool = ...,
+        mode: _BulkMode = ...,
+        max_items: int | None = ...,
+        with_for_update: _ForUpdateMode = ...,
+        return_response: Literal[True],
+    ) -> Response[BulkResult[Any]]: ...
+
+    @overload
+    @classmethod
+    async def bulk_update(  # pragma: no cover
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        obj: BaseModel,
+        *,
+        exclude_unset: bool = ...,
+        exclude_none: bool = ...,
+        mode: _BulkMode = ...,
+        max_items: int | None = ...,
+        with_for_update: _ForUpdateMode = ...,
+        return_response: Literal[False] = ...,
+    ) -> BulkResult[Any]: ...
+
+    @classmethod
+    async def bulk_update(
+        cls: type[Self],
+        session: AsyncSession,
+        ids: Sequence[Any],
+        obj: BaseModel,
+        *,
+        exclude_unset: bool = True,
+        exclude_none: bool = False,
+        mode: _BulkMode = "atomic",
+        max_items: int | None = 1000,
+        with_for_update: _ForUpdateMode = False,
+        return_response: bool = False,
+    ) -> BulkResult[Any] | Response[BulkResult[Any]]:
+        """Apply the same patch to the rows whose primary key is in *ids*.
+
+        M2M id fields set on *obj* are resolved once and assigned to every row.
+
+        Args:
+            session: DB async session
+            ids: Primary keys of the rows to update
+            obj: Pydantic model with update data
+            exclude_unset: Exclude fields not explicitly set in the schema
+            exclude_none: Exclude fields with None value
+            mode: ``"atomic"`` or ``"partial"``, see ``bulk_apply``
+            max_items: Maximum number of distinct ids, or ``None`` for no limit
+            with_for_update: Lock the rows before updating them
+            return_response: When ``True``, returns ``Response[BulkResult]``.
+
+        Returns:
+            A ``BulkResult``, or ``Response[BulkResult]`` when
+            ``return_response=True``.
+
+        Raises:
+            NotFoundError: If an M2M id matches no related row
+        """
+        unique = cls._bulk_ids(ids, max_items)
+        m2m_exclude = cls._m2m_schema_fields()
+        values = obj.model_dump(
+            exclude_unset=exclude_unset,
+            exclude_none=exclude_none,
+            exclude=m2m_exclude,
+        )
+
+        # The outer transaction covers resolving the M2M ids, so an unknown
+        # id rolls back like any other failure.
+        async with transaction(session):
+            m2m_resolved = (
+                await cls._resolve_m2m(session, obj, only_set=True)
+                if m2m_exclude
+                else {}
+            )
+
+            async def update(session: AsyncSession, db_model: Any) -> None:
+                for key, value in values.items():
+                    setattr(db_model, key, value)
+                for rel_attr, related_instances in m2m_resolved.items():
+                    setattr(db_model, rel_attr, list(related_instances))
+
+            return await cls.bulk_apply(
+                session,
+                unique,
+                update,
+                mode=mode,
+                max_items=max_items,
+                with_for_update=with_for_update,
+                load_options=cls._m2m_load_options(obj),
+                return_response=return_response,
+            )
 
     @classmethod
     async def count(
