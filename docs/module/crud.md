@@ -694,6 +694,88 @@ await UserCrud.upsert(
 )
 ```
 
+## Bulk operations
+
+!!! info "Added in `v6.1`"
+
+`bulk_delete`, `bulk_update` and `bulk_apply` act on a list of primary keys, as sent by a UI where users tick rows and pick an action. The rows are loaded in one query, then changed through the ORM, so [lifecycle events](models.md), M2M fields and cascades behave as they do for `update` and `delete`.
+
+```python
+from uuid import UUID
+
+from fastapi_toolsets.schemas import BulkRequest, BulkResult, BulkUpdateRequest, Response
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_users(
+    session: SessionDep, body: BulkRequest[UUID]
+) -> Response[BulkResult[UUID]]:
+    return await UserCrud.bulk_delete(session, body.ids, return_response=True)
+
+
+@router.post("/bulk-update")
+async def bulk_update_users(
+    session: SessionDep, body: BulkUpdateRequest[UUID, UserUpdate]
+) -> Response[BulkResult[UUID]]:
+    return await UserCrud.bulk_update(
+        session, body.ids, body.data, return_response=True
+    )
+```
+
+`bulk_update` applies the same patch to every row. As with `update`, only the fields set on the schema are written, and M2M id fields are resolved once for the whole batch.
+
+### Custom actions
+
+`bulk_apply` runs any async callable on each row. Raise an [`ApiException`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.ApiException) to fail a row:
+
+```python
+async def archive(session: AsyncSession, user: User) -> None:
+    if user.is_admin:
+        raise ForbiddenError()
+    user.archived_at = datetime.now(UTC)
+
+
+@router.post("/bulk-archive")
+async def bulk_archive_users(
+    session: SessionDep, body: BulkRequest[UUID]
+) -> Response[BulkResult[UUID]]:
+    return await UserCrud.bulk_apply(
+        session, body.ids, archive, mode="partial", return_response=True
+    )
+```
+
+### Atomic and partial modes
+
+| Mode | Missing id | Failing row | Result |
+| ---- | ---------- | ----------- | ------ |
+| `"atomic"` (default) | raises [`NotFoundError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.NotFoundError) | the error propagates and every row rolls back | every id in `succeeded` |
+| `"partial"` | reported in `failed` | its savepoint rolls back, the others are kept | `succeeded` and `failed` |
+
+In `"partial"` mode each row runs in its own savepoint. An `ApiException`, or a known constraint violation such as a foreign key still pointing at the row, fails only that row. Its error is reported in [`BulkResult.failed`](../reference/schemas.md#fastapi_toolsets.schemas.BulkResult):
+
+```json
+{
+  "status": "SUCCESS",
+  "data": {
+    "succeeded": ["3f1c..."],
+    "failed": [
+      {"id": "9a0e...", "error_code": "AUTH-403", "message": "Forbidden", "description": "..."}
+    ]
+  }
+}
+```
+
+Any other exception still aborts the whole batch. Lifecycle events fire only for the rows that were applied.
+
+!!! warning "A rolled-back row is expired."
+    SQLAlchemy expires the objects a rolled-back savepoint changed. Reading one of them afterwards reloads it, so keep the ids rather than the instances if you need them after the call.
+
+### Limits and locking
+
+- Ids must have the primary key's Python type (`BulkRequest[UUID]` parses them), with one tuple per row for a composite key. Duplicate ids are applied once.
+- `max_items` (default `1000`) caps the number of distinct ids. Above it, [`BulkLimitExceededError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.BulkLimitExceededError) (HTTP 422) is raised before any query. Pass `max_items=None` to lift the cap.
+- `with_for_update` locks the rows before the action runs. Rows are read in primary key order, so overlapping batches take their locks in the same order.
+
 ## Response serialization
 
 !!! info "Added in `v1.1`"

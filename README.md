@@ -44,7 +44,7 @@ uv add "fastapi-toolsets[all]"
 
 ### Core
 
-- **CRUD**: Generic async CRUD operations with `CrudFactory`, built-in full-text/faceted search and Offset/Cursor pagination.
+- **CRUD**: Generic async CRUD operations with `CrudFactory`, built-in full-text/faceted search, Offset/Cursor pagination and bulk delete/update/custom actions.
 - **Database**: Session management, transaction helpers, table locking, and polling-based row change detection
 - **Dependencies**: FastAPI dependency factories (`PathDependency`, `BodyDependency`) for automatic DB lookups from path or body parameters
 - **Fixtures**: Fixture system with dependency management, context support, and pytest integration

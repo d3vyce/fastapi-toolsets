@@ -6,10 +6,14 @@ from typing import Annotated, Any, ClassVar, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from .types import DataT
+from .types import DataT, IdT, SchemaType
 
 __all__ = [
     "ApiError",
+    "BulkItemError",
+    "BulkRequest",
+    "BulkResult",
+    "BulkUpdateRequest",
     "CursorPaginatedResponse",
     "CursorPagination",
     "ErrorResponse",
@@ -204,3 +208,54 @@ class CursorPaginatedResponse(PaginatedResponse[DataT]):
 
     pagination: CursorPagination
     pagination_type: Literal[PaginationType.CURSOR] = PaginationType.CURSOR
+
+
+class BulkRequest(PydanticBase, Generic[IdT]):
+    """Request body selecting the rows a bulk operation acts on.
+
+    Example:
+        ```python
+        @router.post("/bulk-delete")
+        async def bulk_delete(
+            session: SessionDep, body: BulkRequest[UUID]
+        ) -> Response[BulkResult[UUID]]:
+            return await UserCrud.bulk_delete(session, body.ids, return_response=True)
+        ```
+    """
+
+    ids: list[IdT] = Field(min_length=1)
+
+
+class BulkUpdateRequest(BulkRequest[IdT], Generic[IdT, SchemaType]):
+    """Request body applying one patch to every selected row."""
+
+    data: SchemaType
+
+
+class BulkItemError(PydanticBase, Generic[IdT]):
+    """Why a bulk operation failed for one row.
+
+    Attributes:
+        id: Primary key of the row
+        error_code: Application-specific error code (e.g., "RES-404")
+        message: Short error message
+        description: Detailed error description
+    """
+
+    id: IdT
+    error_code: str
+    message: str
+    description: str | None = None
+
+
+class BulkResult(PydanticBase, Generic[IdT]):
+    """Outcome of a bulk operation.
+
+    Attributes:
+        succeeded: Primary keys of the rows the operation was applied to
+        failed: One entry per row it could not be applied to. Always empty
+            in ``"atomic"`` mode, where the first failure aborts the batch.
+    """
+
+    succeeded: list[IdT] = Field(default_factory=list)
+    failed: list[BulkItemError[IdT]] = Field(default_factory=list)

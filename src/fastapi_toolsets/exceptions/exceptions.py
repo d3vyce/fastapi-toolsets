@@ -247,6 +247,30 @@ class InvalidOrderFieldError(ApiException):
         )
 
 
+class BulkLimitExceededError(ApiException):
+    """Raised when a bulk operation targets more rows than allowed."""
+
+    api_error = ApiError(
+        code=422,
+        msg="Bulk Limit Exceeded",
+        desc="The bulk operation targets too many rows.",
+        err_code="BULK-422",
+    )
+
+    def __init__(self, count: int, limit: int) -> None:
+        """Initialize the exception.
+
+        Args:
+            count: Number of distinct ids the caller sent.
+            limit: Maximum number of ids one call accepts.
+        """
+        self.count = count
+        self.limit = limit
+        super().__init__(
+            desc=f"{count} ids were given, but at most {limit} are allowed per call."
+        )
+
+
 class PoolExhaustedError(ApiException):
     """HTTP 503 - Database connection pool is exhausted."""
 

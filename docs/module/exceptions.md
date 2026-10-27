@@ -41,6 +41,7 @@ It also patches `app.openapi()` to replace the default Pydantic 422 schema with 
 | [`InvalidFacetFilterError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetFilterError) | 400 | Invalid Facet Filter |
 | [`InvalidFacetValueError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidFacetValueError) | 400 | Invalid Facet Value |
 | [`InvalidOrderFieldError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.InvalidOrderFieldError) | 422 | Invalid Order Field |
+| [`BulkLimitExceededError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.BulkLimitExceededError) | 422 | Bulk Limit Exceeded |
 | [`PoolExhaustedError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.PoolExhaustedError) | 503 | Service Unavailable |
 | [`LockTimeoutError`](../reference/exceptions.md#fastapi_toolsets.exceptions.exceptions.LockTimeoutError) | 503 | Service Unavailable |
 
